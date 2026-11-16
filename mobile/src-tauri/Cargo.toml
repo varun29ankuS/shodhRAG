@@ -3,7 +3,7 @@ name = "shodh-mobile"
 # The phone and the desktop must be the same Shodh version (the phone link
 # checks it), so it is set with the app's: scripts/release/versions.mjs.
 # lib.rs fails the build when it differs from shodh-link's.
-version = "0.0.10"
+version = "0.0.11"
 edition = "2021"
 description = "Shodh on the phone: a remote for the user's own Shodh computer, over the phone link"
 publish = false

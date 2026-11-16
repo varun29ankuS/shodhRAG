@@ -77,6 +77,37 @@ test("the nightly check the gate reads is nightly.yml's call of ci.yml", () => {
   assert.equal(NIGHTLY_CHECK, `${ci.name} / CI gate`);
 });
 
+test("the Tests job's slow steps run in parallel jobs (#162)", () => {
+  // Tests ran into its 60-minute limit with everything in one job: the app's
+  // tests and doc tests run in App tests, and the ANN recall test in the
+  // Library store job, each in parallel. Within a job every cargo test selects
+  // the same packages, so Cargo resolves the same features and reuses the
+  // job's build: run 43788930095 built shodh-rag again for a step selecting
+  // other packages (21 minutes) and for the workspace's doc tests (19).
+  const jobs = ciJobs();
+  const block = (id) => {
+    const job = jobs.find((j) => j.id === id);
+    assert.ok(job, `ci.yml has a ${id} job`);
+    return job.block;
+  };
+  const cargoTests = (text) => text.split('\n').filter((l) => /^\s*run: cargo test /.test(l));
+  const tests = block('test');
+  assert.match(tests, /cargo test --workspace --exclude shodh-rag-app --all-targets$/m);
+  assert.match(tests, /cargo test --workspace --exclude shodh-rag-app --doc$/m);
+  assert.match(tests, /harness::omp_live_tests::a_system_prompt_longer_than_a_command_line_reaches_omp_whole$/m);
+  assert.doesNotMatch(tests, /ann_recall_tests/);
+  for (const line of cargoTests(tests)) {
+    assert.match(line, /cargo test --workspace --exclude shodh-rag-app /, line);
+  }
+  const app = block('test-app');
+  assert.match(app, /cargo test --package shodh-rag-app --all-targets$/m);
+  assert.match(app, /cargo test --package shodh-rag-app --doc$/m);
+  for (const line of cargoTests(app)) {
+    assert.match(line, /cargo test --package shodh-rag-app /, line);
+  }
+  assert.match(block('upgrade'), /storage::ann_recall_tests::ann_search_past_the_index_threshold_recalls_the_exact_neighbours$/m);
+});
+
 test('CI gate waits for every other job of ci.yml but the not-required ones', () => {
   const jobs = ciJobs();
   const aggregate = jobs.find((j) => j.id === 'ci-gate');
@@ -114,7 +145,7 @@ test('a job skipped by the Changes job is decided by its own output', () => {
     filtered.push(job.id);
   }
   assert.deepEqual([...outputs].sort(), [...filtered].sort());
-  assert.deepEqual([...filtered].sort(), ['android', 'eval-recall', 'eval-retrieval', 'eval-retrieval-int8', 'footprint', 'release-builds']);
+  assert.deepEqual([...filtered].sort(), ['android', 'eval-recall', 'eval-retrieval', 'eval-retrieval-int8', 'footprint', 'release-builds', 'upgrade']);
   // The script's own list of the jobs it decides is the same set.
   const heavy = changes.block.match(/^ +heavy=\((.+)\)$/m)[1].split(/\s+/);
   assert.deepEqual([...heavy].sort(), [...filtered].sort());

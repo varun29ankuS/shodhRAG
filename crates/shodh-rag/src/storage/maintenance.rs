@@ -72,7 +72,7 @@ impl StoreMaintenance {
     }
 
     #[cfg(test)]
-    fn index_from(mut self, rows: usize) -> Self {
+    pub(crate) fn index_from(mut self, rows: usize) -> Self {
         self.index_min_rows = rows;
         self
     }

@@ -4327,7 +4327,7 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "shodh-link"
-version = "0.0.10"
+version = "0.0.11"
 dependencies = [
  "data-encoding",
  "getrandom 0.4.1",
@@ -4344,7 +4344,7 @@ dependencies = [
 
 [[package]]
 name = "shodh-mobile"
-version = "0.0.10"
+version = "0.0.11"
 dependencies = [
  "android-native-keyring-store",
  "jni 0.21.1",

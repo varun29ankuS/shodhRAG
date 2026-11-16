@@ -10148,7 +10148,7 @@ dependencies = [
 
 [[package]]
 name = "shodh-link"
-version = "0.0.10"
+version = "0.0.11"
 dependencies = [
  "blake2",
  "data-encoding",
@@ -10179,7 +10179,7 @@ dependencies = [
 
 [[package]]
 name = "shodh-rag"
-version = "0.0.10"
+version = "0.0.11"
 dependencies = [
  "anyhow",
  "arrow-array",
@@ -10248,7 +10248,7 @@ dependencies = [
 
 [[package]]
 name = "shodh-rag-app"
-version = "0.0.10"
+version = "0.0.11"
 dependencies = [
  "anyhow",
  "async-trait",

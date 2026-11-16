@@ -79,8 +79,10 @@ test("the nightly check the gate reads is nightly.yml's call of ci.yml", () => {
 
 test("the Tests job's slow steps run in parallel jobs (#162)", () => {
   // Tests ran into its 60-minute limit with everything in one job: the app's
-  // tests, the doc tests and the agent runtime test run in App tests, and the
-  // ANN recall test in the Library store job, each in parallel.
+  // tests and the doc tests run in App tests, and the ANN recall test in the
+  // Library store job, each in parallel. The agent runtime test stays in
+  // Tests, which already builds shodh-rag's tests (in App tests it built them
+  // again: 21 minutes against 6).
   const jobs = ciJobs();
   const block = (id) => {
     const job = jobs.find((j) => j.id === id);
@@ -89,11 +91,12 @@ test("the Tests job's slow steps run in parallel jobs (#162)", () => {
   };
   const tests = block('test');
   assert.match(tests, /cargo test --workspace --exclude shodh-rag-app --all-targets$/m);
-  assert.doesNotMatch(tests, /--doc|omp_live_tests|ann_recall_tests/);
+  assert.doesNotMatch(tests, /--doc|ann_recall_tests/);
+  assert.match(tests, /harness::omp_live_tests::a_system_prompt_longer_than_a_command_line_reaches_omp_whole$/m);
   const app = block('test-app');
   assert.match(app, /cargo test --package shodh-rag-app --all-targets$/m);
   assert.match(app, /cargo test --workspace --doc$/m);
-  assert.match(app, /harness::omp_live_tests::a_system_prompt_longer_than_a_command_line_reaches_omp_whole$/m);
+  assert.doesNotMatch(app, /omp_live_tests/);
   assert.match(block('upgrade'), /storage::ann_recall_tests::ann_search_past_the_index_threshold_recalls_the_exact_neighbours$/m);
 });
 

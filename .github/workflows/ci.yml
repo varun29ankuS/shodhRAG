@@ -315,14 +315,15 @@ jobs:
         run: python -I scripts/ci/ort_archive.py verify
 
   # The workspace's tests but the app's, which run in parallel in App tests
-  # (with the doc tests and the agent runtime test). Master pushes of
+  # (with the doc tests), and the agent runtime test. Master pushes of
   # 2026-11-14 and 15 took 23 to 54 minutes here with everything in one job
   # (the test step 38 minutes at most, the agent runtime test 6, the doc tests
-  # 5, the cache save 2): too close to the limit (#162).
+  # 5, the cache save 2): too close to the limit (#162). Without the app's
+  # tests, the doc tests and the agent runtime test, run 43740319109 took 34.
   test:
     name: Tests
     runs-on: windows-latest
-    timeout-minutes: 60  # slowest 54 minutes before the app's tests, doc tests and agent runtime test moved out
+    timeout-minutes: 60  # slowest 54 minutes before the app's tests and doc tests moved out
     env:
       # Line tables only (file:line in backtraces): smaller debug builds and
       # caches. Dev and test profiles only; the release profile is untouched.
@@ -362,17 +363,28 @@ jobs:
       - name: Tests (workspace but the app, all targets)
         run: cargo test --workspace --exclude shodh-rag-app --all-targets
 
+      # Against the real agent runtime, on Windows, where a command line is
+      # limited to 32,767 characters: a system prompt longer than that must
+      # reach omp whole through its file (it failed with os error 206 while
+      # it was passed on the command line). The test downloads the pinned omp
+      # release as setup does, checked against the pinned SHA-256. It runs
+      # here, where shodh-rag's test build already exists: in App tests it
+      # built shodh-rag's tests again and took 21 minutes, against 6 here
+      # (run 43740319109).
+      - name: Long system prompt against the agent runtime
+        run: cargo test --package shodh-rag --lib -- --ignored --exact harness::omp_live_tests::a_system_prompt_longer_than_a_command_line_reaches_omp_whole
+
       - name: ONNX Runtime came from the cache
         run: python -I scripts/ci/ort_archive.py verify
 
-  # The app's tests, the workspace's doc tests and the agent runtime test, in
-  # parallel with Tests, which runs every other crate's.
+  # The app's tests and the workspace's doc tests, in parallel with Tests,
+  # which runs every other crate's.
   test-app:
-    name: App tests, doc tests and agent runtime
+    name: App tests and doc tests
     runs-on: windows-latest
-    # No run history yet: these steps took 38 minutes at most inside Tests
-    # (the app's share of its test step, the doc tests 5, the agent runtime
-    # test 6), with their own build here.
+    # Run 43740319109, with no cache for this new job yet: the app's tests
+    # took 30 minutes, their own build included; the doc tests were 5 inside
+    # Tests.
     timeout-minutes: 60
     env:
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
@@ -397,14 +409,6 @@ jobs:
 
       - name: App tests (all targets)
         run: cargo test --package shodh-rag-app --all-targets
-
-      # Against the real agent runtime, on Windows, where a command line is
-      # limited to 32,767 characters: a system prompt longer than that must
-      # reach omp whole through its file (it failed with os error 206 while
-      # it was passed on the command line). The test downloads the pinned omp
-      # release as setup does, checked against the pinned SHA-256.
-      - name: Long system prompt against the agent runtime
-        run: cargo test --package shodh-rag --lib -- --ignored --exact harness::omp_live_tests::a_system_prompt_longer_than_a_command_line_reaches_omp_whole
 
       - name: Doc tests (workspace)
         run: cargo test --workspace --doc

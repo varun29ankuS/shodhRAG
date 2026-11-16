@@ -30,7 +30,7 @@ export const REQUIRED_CHECKS = [
   'Format',
   'Check + Clippy',
   'Tests',
-  'App tests, doc tests and agent runtime',
+  'App tests and doc tests',
   'macOS build + OCR tests (shodh-rag)',
   'Library store (0.0.10 upgrade, ANN recall)',
   'Retrieval eval',

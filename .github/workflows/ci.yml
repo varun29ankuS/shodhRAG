@@ -1961,6 +1961,34 @@ jobs:
       - name: Format (phone app)
         run: cargo fmt --manifest-path mobile/src-tauri/Cargo.toml --check
 
+      # Gradle's own download and every dependency of the Gradle build (its
+      # plugins, AGP, Kotlin, the AndroidX libraries, aapt2) came from
+      # services.gradle.org, Maven Central, Google's Maven and the plugin
+      # portal on every run, and Maven Central answered a shared runner with
+      # 429 Too Many Requests (run 43815171809). The Gradle distribution and
+      # the dependency cache are restored here instead. What the build
+      # resolves is set by the generated project, gen/android, which the
+      # pinned Tauri CLI (mobile/package-lock.json) writes from its template,
+      # with the Gradle projects of tauri and its plugins (their versions in
+      # mobile/src-tauri/Cargo.lock) and of the local plugin
+      # (mobile/plugins/shodh-android/android): the key is those files. A
+      # key that changed restores the newest entry, so only what changed is
+      # downloaded. Only master saves (a pull request's cache is not readable
+      # by other refs).
+      # v1 starts every entry over; change it when an entry grows stale.
+      - name: Restore the Gradle cache
+        id: gradle-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: |
+            ~/.gradle/wrapper/dists
+            ~/.gradle/caches/modules-2
+            !~/.gradle/caches/modules-2/modules-2.lock
+            !~/.gradle/caches/modules-2/gc.properties
+          key: v1-gradle-android-debug-${{ runner.os }}-${{ hashFiles('mobile/package-lock.json', 'mobile/src-tauri/Cargo.lock', 'mobile/plugins/shodh-android/android/*.gradle*') }}
+          restore-keys: |
+            v1-gradle-android-debug-${{ runner.os }}-
+
       - name: Generate the Android project
         working-directory: mobile
         run: |
@@ -2013,6 +2041,26 @@ jobs:
             echo
             echo "- debug APK \`$(basename "$apk")\`: $(du -h "$apk" | cut -f1), built in ${seconds} s; libraries: ${abis}"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # Saved right after the build, so a failure on the emulator below
+      # still leaves master an entry, and only after a build that passed. The
+      # Gradle daemon outlives the build with its caches open; it is stopped
+      # first, so the files saved are complete.
+      - name: Stop Gradle before its cache is saved
+        if: github.ref == 'refs/heads/master' && steps.gradle-cache.outputs.cache-hit != 'true'
+        working-directory: mobile/src-tauri/gen/android
+        run: ./gradlew --stop
+
+      - name: Save the Gradle cache
+        if: github.ref == 'refs/heads/master' && steps.gradle-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: |
+            ~/.gradle/wrapper/dists
+            ~/.gradle/caches/modules-2
+            !~/.gradle/caches/modules-2/modules-2.lock
+            !~/.gradle/caches/modules-2/gc.properties
+          key: ${{ steps.gradle-cache.outputs.cache-primary-key }}
 
       # allow_backup_is_off and no_emoji_compat, read from the built app's
       # merged manifest and resources: the same checks as the release APK's

@@ -3,7 +3,8 @@ description: >-
   What the built Shodh for Android declares in its merged manifest and
   resources: no backup or device-to-device move of its data, and no tie to
   Play Services' downloadable fonts. The same checks for the debug APK
-  (ci.yml's android job) and the release APK (release.yml's android job).
+  (ci.yml's android job) and the signed release APK (release.yml's
+  android-sign job).
 
 inputs:
   apk:

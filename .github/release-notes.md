@@ -4,6 +4,7 @@
 | --- | --- |
 | Windows 10 or 11 (64-bit) | `Shodh_<version>_x64-setup.exe` |
 | macOS 13.3 or later on Apple Silicon (M1 and later) | `Shodh_<version>_aarch64.dmg` |
+| Android 7 or later, 64-bit phones | `Shodh_<version>_android.apk` |
 
 There is no build for Intel Macs yet.
 
@@ -34,3 +35,13 @@ If macOS says the app "is damaged", or the steps above do not offer **Open Anywa
 ```sh
 xattr -dr com.apple.quarantine /Applications/Shodh.app
 ```
+
+## Android: install the APK
+
+Shodh for Android is not in Google Play yet. Install it from this release:
+
+1. On your phone, open this page and download `Shodh_<version>_android.apk`.
+2. Open the download. Android asks whether to allow installs from the app you downloaded it with (your browser or Files): choose **Settings**, turn on **Allow from this source**, and go back.
+3. Choose **Install**. If Google Play Protect warns about an unknown app, choose **More details**, then **Install anyway**.
+
+You allow that source once; you can turn it off again afterwards. The APK is signed with Shodh's own key, whose SHA-256 certificate fingerprint is `6A:67:45:33:E6:C7:96:B4:C5:92:5E:E3:5C:F2:58:DF:07:E6:BD:A3:24:94:11:10:65:D0:0A:16:B6:06:17:79`. Later versions install over it, and Shodh on your phone offers them when your computer runs a newer Shodh. The phone and the computer must run the same version.

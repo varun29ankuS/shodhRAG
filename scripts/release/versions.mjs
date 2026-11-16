@@ -4,6 +4,11 @@
 //
 //   node scripts/release/versions.mjs check [--tag vX.Y.Z] [--root DIR] [--github-output]
 //   node scripts/release/versions.mjs set X.Y.Z [--root DIR]
+//   node scripts/release/versions.mjs files
+//
+// `files` prints every file that carries the version, one per line: what the
+// release workflow extracts from a tag to check it (a tree checked without
+// one of them fails, so the list is this one, never a copy).
 //
 // Each value is found by parsing the file's structure (a JSON path; the
 // [package] table of a manifest; the [[package]] entry of Cargo.lock with
@@ -45,6 +50,11 @@ export const LOCATIONS = [
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
 export class VersionError extends Error {}
+
+/** Every file that carries the version, once each, in LOCATIONS order. */
+export function versionFiles() {
+  return [...new Set(LOCATIONS.map((l) => l.file))];
+}
 
 export function describe(location) {
   if (location.kind === 'json') return `${location.file} ${location.path.map((p) => JSON.stringify(p)).join(' > ')}`;
@@ -342,6 +352,10 @@ function main(argv) {
     },
   });
   const [command, arg] = positionals;
+  if (command === 'files') {
+    for (const file of versionFiles()) console.log(file);
+    return;
+  }
   const texts = readTexts(values.root);
   if (command === 'check') {
     const found = readVersions(texts);
@@ -362,7 +376,7 @@ function main(argv) {
     for (const l of LOCATIONS) console.log(`  ${describe(l)}`);
     return;
   }
-  throw new VersionError('Usage: versions.mjs check [--tag vX.Y.Z] | set X.Y.Z');
+  throw new VersionError('Usage: versions.mjs check [--tag vX.Y.Z] | set X.Y.Z | files');
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {

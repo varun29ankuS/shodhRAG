@@ -8,6 +8,7 @@ import { test } from 'node:test';
 import {
   ReleaseError,
   checksumsMarkdown,
+  expectedAssetNames,
   isNewer,
   latestJson,
   releaseAssetNames,
@@ -25,7 +26,7 @@ const VERSION = '1.2.3';
 const PRODUCT = 'Shodh';
 
 /** A complete, valid release in a temp folder, and its API record. */
-function makeRelease({ key = makeKey(), urlStyle = 'api' } = {}) {
+function makeRelease({ key = makeKey(), urlStyle = 'api', android = true } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'release-test-'));
   const names = releaseAssetNames(PRODUCT, VERSION);
   const contents = {
@@ -35,6 +36,10 @@ function makeRelease({ key = makeKey(), urlStyle = 'api' } = {}) {
   };
   contents[names['windows-signature']] = Buffer.from(signTauri(key, contents[names['windows-installer']]));
   contents[names['macos-signature']] = Buffer.from(signTauri(key, contents[names['macos-updater']]));
+  if (android) {
+    contents[names['android-apk']] = Buffer.from('android app');
+    contents[names['android-signature']] = Buffer.from(signTauri(key, contents[names['android-apk']]));
+  }
   let id = 100;
   const assets = Object.entries(contents).map(([name, data]) => ({ id: id++, name, size: data.length, state: 'uploaded' }));
   const url = (name) => {
@@ -75,12 +80,61 @@ const run = (r, overrides = {}) =>
 test('a complete release verifies and lists every asset with its SHA-256', async () => {
   const r = makeRelease();
   const rows = await run(r);
-  assert.equal(rows.length, 6);
+  assert.equal(rows.length, 8);
   const exe = rows.find((row) => row.name === r.names['windows-installer']);
   assert.equal(exe.sha256, createHash('sha256').update('windows installer').digest('hex'));
   const md = checksumsMarkdown(rows);
   assert.match(md, /^## SHA-256\n\n\| File \| SHA-256 \|\n\| --- \| --- \|\n/);
   assert.ok(md.includes(`| \`${r.names['windows-installer']}\` | \`${exe.sha256}\` |`));
+  // The Android app and its .sig get their SHA-256 in the notes like every other file.
+  const apk = rows.find((row) => row.name === 'Shodh_1.2.3_android.apk');
+  assert.equal(apk.sha256, createHash('sha256').update('android app').digest('hex'));
+  assert.ok(md.includes(`| \`Shodh_1.2.3_android.apk\` | \`${apk.sha256}\` |`));
+  assert.ok(md.includes('| `Shodh_1.2.3_android.apk.sig` |'));
+});
+
+test('the Android app: missing, unsigned, tampered, empty or too large fails', async () => {
+  let r = makeRelease();
+  r.release.assets = r.release.assets.filter((a) => a.name !== 'Shodh_1.2.3_android.apk');
+  await assert.rejects(run(r), /missing Shodh_1\.2\.3_android\.apk$/m);
+
+  r = makeRelease();
+  r.release.assets = r.release.assets.filter((a) => a.name !== 'Shodh_1.2.3_android.apk.sig');
+  await assert.rejects(run(r), /missing Shodh_1\.2\.3_android\.apk\.sig/);
+
+  r = makeRelease();
+  writeFileSync(join(r.dir, 'Shodh_1.2.3_android.apk'), 'android apP');
+  await assert.rejects(run(r), /Shodh_1\.2\.3_android\.apk: The signature does not match the file/);
+
+  r = makeRelease();
+  r.release.assets.find((a) => a.name === 'Shodh_1.2.3_android.apk').size = 0;
+  await assert.rejects(run(r), /Shodh_1\.2\.3_android\.apk is empty/);
+
+  r = makeRelease();
+  await assert.rejects(run(r, { maxApkBytes: 5 }), /Shodh_1\.2\.3_android\.apk is larger than the 5 bytes the phone's one-tap update downloads/);
+});
+
+test('a release from before the Android app (--no-android) has none, and must have none', async () => {
+  const old = makeRelease({ android: false });
+  const rows = await run(old, { android: false });
+  assert.equal(rows.length, 6);
+  // Without --no-android the same release is incomplete.
+  await assert.rejects(run(old), /missing Shodh_1\.2\.3_android\.apk/);
+  // A release that has it is not one from before.
+  await assert.rejects(run(makeRelease(), { android: false }), /unexpected asset Shodh_1\.2\.3_android\.apk/);
+});
+
+test('the release names: the Android app is named as the phone downloads it, and only it is optional', () => {
+  const names = releaseAssetNames('Shodh', '0.0.12');
+  assert.equal(names['android-apk'], 'Shodh_0.0.12_android.apk');
+  assert.equal(names['android-signature'], 'Shodh_0.0.12_android.apk.sig');
+  const all = expectedAssetNames('Shodh', '0.0.12');
+  const before = expectedAssetNames('Shodh', '0.0.12', { android: false });
+  assert.equal(all.size, 8);
+  assert.deepEqual(
+    [...all].filter((n) => !before.has(n)).sort(),
+    ['Shodh_0.0.12_android.apk', 'Shodh_0.0.12_android.apk.sig'],
+  );
 });
 
 test('download URLs (github.com/.../releases/download) are accepted too', async () => {
@@ -184,7 +238,8 @@ test("v0.0.10's published latest.json has the shape and asset URLs a release mus
   const latest = JSON.parse(readFileSync(new URL('./fixtures/v0.0.10-latest.json', import.meta.url), 'utf8'));
   const release = JSON.parse(readFileSync(new URL('./fixtures/v0.0.10-release.json', import.meta.url), 'utf8'));
   verifyLatestJsonShape(latest, '0.0.10');
-  const names = new Set(Object.values(releaseAssetNames('Shodh', '0.0.10')));
+  // Published before the Android app.
+  const names = expectedAssetNames('Shodh', '0.0.10', { android: false });
   assert.deepEqual(new Set(release.assets.map((a) => a.name)), names);
   for (const entry of Object.values(latest.platforms)) {
     const id = /\/releases\/assets\/(\d+)$/.exec(entry.url)[1];
@@ -199,19 +254,28 @@ function makeArtifacts({ signed = true } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'artifacts-test-'));
   const win = join(dir, 'shodh-windows-x64');
   const mac = join(dir, 'shodh-macos-aarch64');
+  const android = join(dir, 'shodh-android-arm64');
   mkdirSync(win, { recursive: true });
   mkdirSync(join(mac, 'dmg'), { recursive: true });
   mkdirSync(join(mac, 'macos'), { recursive: true });
+  mkdirSync(android, { recursive: true });
+  // ci.yml's debug APK artifact, which the same run's shodh-* download also
+  // fetches: never taken for the release's.
+  mkdirSync(join(dir, 'shodh-android-debug-apk'), { recursive: true });
+  writeFileSync(join(dir, 'shodh-android-debug-apk', 'app-universal-debug.apk'), 'debug app');
   const exe = join(win, `${PRODUCT}_${VERSION}_x64-setup.exe`);
   const tgz = join(mac, 'macos', `${PRODUCT}.app.tar.gz`);
+  const apk = join(android, `${PRODUCT}_${VERSION}_android.apk`);
   writeFileSync(exe, 'installer');
   writeFileSync(join(mac, 'dmg', `${PRODUCT}_${VERSION}_aarch64.dmg`), 'dmg');
   writeFileSync(tgz, 'archive');
+  writeFileSync(apk, 'android app');
   if (signed) {
     writeFileSync(`${exe}.sig`, signTauri(key, Buffer.from('installer')));
     writeFileSync(`${tgz}.sig`, signTauri(key, Buffer.from('archive')));
+    writeFileSync(`${apk}.sig`, signTauri(key, Buffer.from('android app')));
   }
-  return { dir, key, exe, tgz };
+  return { dir, key, exe, tgz, apk };
 }
 
 const artifacts = (a, overrides = {}) =>
@@ -232,6 +296,28 @@ test('artifacts: a missing or empty installer fails', async () => {
   await assert.rejects(artifacts(a, { version: '1.2.4' }), /Shodh_1\.2\.4_x64-setup\.exe: expected one file, found 0/);
 });
 
+test('artifacts: the Android app must be there under its release name, non-empty, small enough and signed', async () => {
+  let a = makeArtifacts();
+  rmSync(a.apk);
+  await assert.rejects(artifacts(a), /Shodh_1\.2\.3_android\.apk: expected one file, found 0/);
+  a = makeArtifacts();
+  writeFileSync(a.apk, '');
+  await assert.rejects(artifacts(a), /Shodh_1\.2\.3_android\.apk is empty/);
+  a = makeArtifacts();
+  await assert.rejects(artifacts(a, { maxApkBytes: 4 }), /is larger than the 4 bytes the phone's one-tap update downloads/);
+  a = makeArtifacts();
+  rmSync(`${a.apk}.sig`);
+  await assert.rejects(artifacts(a), /Shodh_1\.2\.3_android\.apk has no \.sig next to it/);
+  a = makeArtifacts();
+  writeFileSync(a.apk, 'android apP');
+  await assert.rejects(artifacts(a), /android\.apk: The signature does not match the file/);
+  // A second copy (another artifact's) is refused, not guessed between.
+  a = makeArtifacts();
+  mkdirSync(join(a.dir, 'elsewhere'));
+  writeFileSync(join(a.dir, 'elsewhere', 'Shodh_1.2.3_android.apk'), 'android app');
+  await assert.rejects(artifacts(a), /Shodh_1\.2\.3_android\.apk: expected one file, found 2/);
+});
+
 test('artifacts: every update bundle must be signed by the given key', async () => {
   const a = makeArtifacts({ signed: false });
   await assert.rejects(artifacts(a), /has no \.sig next to it/);
@@ -242,7 +328,7 @@ test('artifacts: every update bundle must be signed by the given key', async () 
   await assert.rejects(artifacts(makeArtifacts(), { pubkey: null }), /No updater public key/);
 });
 
-test('stage: the six release files and a latest.json that verifies as a release', async () => {
+test('stage: the eight release files and a latest.json that verifies as a release', async () => {
   const a = makeArtifacts();
   const out = mkdtempSync(join(tmpdir(), 'stage-test-'));
   const { record, latest, files } = await stageRelease({
@@ -251,12 +337,16 @@ test('stage: the six release files and a latest.json that verifies as a release'
   const names = releaseAssetNames(PRODUCT, VERSION);
   assert.deepEqual(new Set(files), new Set(Object.values(names)));
   assert.equal(readFileSync(join(out, names['macos-updater']), 'utf8'), 'archive');
+  assert.equal(readFileSync(join(out, names['android-apk']), 'utf8'), 'android app');
+  assert.equal(readFileSync(join(out, names['android-signature']), 'utf8'), readFileSync(`${a.apk}.sig`, 'utf8'));
+  // latest.json stays the desktop's: the phone finds its app by name.
+  assert.deepEqual(Object.keys(latest.platforms).sort(), ['darwin-aarch64', 'darwin-aarch64-app', 'windows-x86_64', 'windows-x86_64-nsis']);
   assert.equal(latest.platforms['darwin-aarch64'].url, `https://github.com/${REPO}/releases/download/${TAG}/${names['macos-updater']}`);
   assert.equal(latest.platforms['windows-x86_64'].signature, readFileSync(`${a.exe}.sig`, 'utf8').trim());
   assert.deepEqual(JSON.parse(readFileSync(join(out, 'release.json'), 'utf8')), record);
   // What publishing checks, on the staged files.
   const rows = await verifyRelease({ release: record, dir: out, tag: TAG, repo: REPO, product: PRODUCT, pubkey: a.key.tauri });
-  assert.equal(rows.length, 6);
+  assert.equal(rows.length, 8);
 });
 
 test('stage refuses incomplete or unsigned artifacts', async () => {

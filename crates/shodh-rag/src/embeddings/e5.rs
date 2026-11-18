@@ -533,9 +533,10 @@ struct Active {
     on_gpu: bool,
     accelerator: Accelerator,
     device: Option<Device>,
-    /// The CPU session small batches and queries run on while Core ML holds
-    /// `session` ([`runs_on_cpu`]); built when first needed, or the session
-    /// that served before Core ML was prepared.
+    /// The CPU session that queries, small batches and every batch during a
+    /// llama.cpp generation run on while Core ML holds `session`
+    /// ([`runs_on_cpu`]); built when first needed, or the session that served
+    /// before Core ML was prepared.
     cpu: Option<Session>,
     /// The model was dropped: a Core ML session prepared after is not used.
     dropped: bool,
@@ -555,9 +556,13 @@ fn fixed_shape(accelerator: Accelerator, on_gpu: bool) -> Option<FixedShape> {
 }
 
 /// Whether `rows` sequences in `mode` go to the CPU session rather than to
-/// the fixed-shape one.
-fn runs_on_cpu(rows: usize, mode: E5Mode) -> bool {
-    matches!(mode, E5Mode::Query) || rows < CORE_ML_MIN_ROWS
+/// the fixed-shape one. While llama.cpp generates (`generating`) every batch
+/// does: Core ML and llama.cpp share the graphics card, and together chat
+/// runs at about half its speed. The batch is not held until the generation
+/// ends instead: some callers embed on async worker threads, and a wait as
+/// long as a chat could stall the task streaming that chat.
+fn runs_on_cpu(rows: usize, mode: E5Mode, generating: bool) -> bool {
+    generating || matches!(mode, E5Mode::Query) || rows < CORE_ML_MIN_ROWS
 }
 
 pub struct E5Embeddings {
@@ -914,7 +919,7 @@ fn record<S>(
     key: &CalibrationKey,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Option<chrono::DateTime<chrono::Utc>> {
-    let competing = crate::compute::contention::ocr_active();
+    let competing = crate::compute::contention::competing();
     let keep: Vec<Learned> = chosen
         .learned
         .iter()
@@ -1587,7 +1592,7 @@ impl E5Embeddings {
         // Another call running or waiting: this batch's speed says nothing
         // about the machine.
         let waited = self.in_flight.fetch_add(1, Ordering::SeqCst) > 0;
-        let ocr_before = crate::compute::contention::ocr_active();
+        let competing_before = crate::compute::contention::competing();
         let run = |s: &mut Session, shape: Option<FixedShape>| {
             run_sequences(
                 s,
@@ -1610,7 +1615,8 @@ impl E5Embeddings {
                 cpu,
                 ..
             } = &mut *active;
-            if shape.is_some() && runs_on_cpu(all_token_ids.len(), mode) {
+            let generating = crate::compute::contention::generation_active();
+            if shape.is_some() && runs_on_cpu(all_token_ids.len(), mode, generating) {
                 cpu.take()
                     .map_or_else(cpu_session, Ok)
                     .and_then(|built| run(cpu.insert(built), None))
@@ -1637,8 +1643,8 @@ impl E5Embeddings {
         };
         let contended = waited
             || self.in_flight.load(Ordering::SeqCst) > 1
-            || ocr_before
-            || crate::compute::contention::ocr_active();
+            || competing_before
+            || crate::compute::contention::competing();
         self.in_flight.fetch_sub(1, Ordering::SeqCst);
         let ((embeddings, elapsed), timed) = result.map_err(|e| anyhow!(e))?;
         if let (Some(status), Some(())) = (&self.status, timed) {
@@ -1770,8 +1776,9 @@ mod tests {
     }
 
     /// While Core ML holds the model, queries and batches of fewer than three
-    /// rows go to the CPU; a full batch stays on Core ML. Without Core ML (the
-    /// CPU, DirectML, or a CPU that took over) nothing has a fixed shape.
+    /// rows go to the CPU; a full batch stays on Core ML unless llama.cpp
+    /// generates. Without Core ML (the CPU, DirectML, or a CPU that took
+    /// over) nothing has a fixed shape.
     #[test]
     fn queries_and_small_batches_go_to_the_cpu_while_core_ml_holds_the_model() {
         assert_eq!(fixed_shape(Accelerator::CoreMl, true), Some(CORE_ML_SHAPE));
@@ -1779,11 +1786,15 @@ mod tests {
         assert_eq!(fixed_shape(Accelerator::DirectMl, true), None);
         assert_eq!(fixed_shape(Accelerator::Cpu, false), None);
         for rows in [1, 2] {
-            assert!(runs_on_cpu(rows, E5Mode::Passage), "{rows} rows");
+            assert!(runs_on_cpu(rows, E5Mode::Passage, false), "{rows} rows");
         }
         for rows in [3, 8] {
-            assert!(!runs_on_cpu(rows, E5Mode::Passage), "{rows} rows");
-            assert!(runs_on_cpu(rows, E5Mode::Query), "{rows} queries");
+            assert!(!runs_on_cpu(rows, E5Mode::Passage, false), "{rows} rows");
+            assert!(runs_on_cpu(rows, E5Mode::Query, false), "{rows} queries");
+            assert!(
+                runs_on_cpu(rows, E5Mode::Passage, true),
+                "{rows} rows while llama.cpp generates"
+            );
         }
         assert_eq!(CALIBRATION_PASSAGES, CORE_ML_SHAPE.rows);
     }

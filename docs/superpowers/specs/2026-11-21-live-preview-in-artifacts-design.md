@@ -1,6 +1,6 @@
 # Live preview in Artifacts, with the chat floating over it
 
-Status: design, awaiting approval (2026-11-21).
+Status: approved by the user 2026-11-21 (option B; gaps closed in phase 3).
 
 ## Intent
 
@@ -111,7 +111,16 @@ This is the first step of "the agent operates the whole app visibly" (agent-firs
 ## Phases (each its own PR, each usable)
 
 1. **Embedded live preview with the floating-chat layer.** Covers goals 1, 2, 4 and 5 and the ACL changes. Without the chat layer, the chat would be covered, so they ship together.
+   - The floating chat over the preview does: the last exchange and live transcript, typing, send, steer, stop, approve or deny, minimise, and Open in Ask.
+   - What phase 3 adds shows as "Open in Ask" until then.
 2. **Pointing** (goal 3).
+3. **Parity with the in-page dock** (the user asked for the gaps to be closed). Each item runs in `main` and is driven from the dock. The dock webview gains no device access and no new commands:
+   - **Voice:** the dock's microphone button asks `main` to start or stop dictation. `main` holds the microphone (as today) and streams the transcript into the shared draft. The layer next to the generated page never gets microphone access.
+   - **Image paste:** the dock reads the pasted image, checks it against the same size and type limits as Ask, and hands it to `main`. `main` runs the existing image-text attachment.
+   - **Snippets:** a drag between webviews isn't possible. Snippets get "Add to chat", which inserts into the shared draft, and that already works for the in-page dock.
+   - **Setup card:** shown from the snapshot. Its buttons are actions forwarded to `main`.
+   - **File scope and queued questions:** the chips are shown from the snapshot. Removing a chip is a forwarded action. The file check runs in `main` before sending, as today.
+   - **Draft:** one draft, owned by `main`. The dock sends edits, and `main` echoes the draft back in the snapshot, so "Open in Ask" keeps what was typed.
 
 ## Verification
 

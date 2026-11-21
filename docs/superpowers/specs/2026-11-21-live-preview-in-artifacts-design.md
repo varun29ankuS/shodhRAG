@@ -90,7 +90,7 @@ This is the first step of "the agent operates the whole app visibly" (agent-firs
 ### Flow
 
 1. The user sends a Creator request.
-2. The first build step switches to Artifacts (existing `offer`), on the creation's **preview pane**. Today the switch passes `pane: null`, and this changes it.
+2. The first build step switches to Artifacts (existing `offer`), on the creation's preview pane. That pane already opens today (`ArtifactsView.tsx:88`). What changes is that the page shows in it at once: today `showPreview` is false and the pane shows only an "Open" card.
 3. The page appears live, and the chat floats in the corner, expanded (existing `openDock`).
 4. The user types or points, then sends. The page keeps reloading as the agent writes. **Pop out** moves it to the separate window, and the pane then says where it is.
 
@@ -98,8 +98,15 @@ This is the first step of "the agent operates the whole app visibly" (agent-firs
 
 - The preview may be a child webview only through the shared lockdown builder. The test asserts each lock (`incognito`, `data_directory`, `additional_browser_args`, `on_navigation`, `initialization_script_for_all_frames`, permission and crash handlers) is present in that builder, and that no other code builds a `preview-*` webview.
 - No capability names `preview-*`, as today.
-- `dock` has exactly the `dock-window` capability. Its granted commands are the ones its modules name, and every one of them is also granted to `main`. The dock gains no command main lacks.
+- `dock` has exactly the `dock-window` capability. Its granted commands are exactly the ones its modules name. Those are the forwarding command and read-only commands that `main-window` also grants. The test lists the forwarding command by name: it is dock-only and only relays to `main`, which acts on what it receives.
 - Rust bounds-clamps every rect it is sent, and the preview is hidden by default.
+
+## Decisions made in review (my calls, open to correction)
+
+- **Depends on PR #191** (the dock always floats) being merged first. This work builds on that dock.
+- **Main window structure.** Spike first: add the child webviews to the existing `main` window (`tauri.conf.json` stays `["main"]`). Move to a `Window` holding several webviews only if the spike shows the child API misbehaves on a config `WebviewWindow`. That move touches startup, the tray and the macOS launch test, so it would come back to the user as a size change.
+- **Pop out** closes the embedded page and opens today's window. The page reloads and loses its in-page state, which is acceptable for a page being built. A creation stays popped out until the user presses "Show here" in the pane. Only one preview shows at a time, as today (`SHOWN`).
+- **Pick channel spike before phase 2.** On Windows, custom schemes are rewritten to `http://<scheme>.localhost` (`preview_window.rs:714`). A navigation to a new scheme may be treated as an external launch and never reach `on_navigation`. The spike checks whether a navigation within the preview's own origin to a reserved path (`/__shodh_pick/<nonce>?d=…`) reaches `on_navigation` on both platforms and can be refused there. Phase 2 is planned from what the spike shows.
 
 ## Phases (each its own PR, each usable)
 

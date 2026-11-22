@@ -10,7 +10,8 @@ import {
   formatTimeLimit,
 } from './commandRun';
 import type { CommandRun } from './commandRun';
-import { agentApi, toAgentError } from './agentApi';
+import { toAgentError } from './agentApi';
+import { useTranscriptEffects } from './transcriptEffects';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-shodh-ground';
@@ -71,6 +72,7 @@ export function CommandPanel({ run, compact = false }: { run: CommandRun; compac
   // moves to the line that says how it ended instead of to the page.
   const stopFocused = useRef(false);
   const summaryRef = useRef<HTMLDivElement>(null);
+  const effects = useTranscriptEffects();
 
   useEffect(() => {
     mounted.current = true;
@@ -100,7 +102,7 @@ export function CommandPanel({ run, compact = false }: { run: CommandRun; compac
   const stop = useCallback(() => {
     setStopping(true);
     setStopError(null);
-    agentApi
+    effects
       .stopCommand(run.commandId)
       .then(found => {
         if (!mounted.current || found) return;
@@ -112,7 +114,7 @@ export function CommandPanel({ run, compact = false }: { run: CommandRun; compac
         setStopping(false);
         setStopError(`It could not be stopped: ${toAgentError(err).message}`);
       });
-  }, [run.commandId]);
+  }, [effects, run.commandId]);
 
   const textSize = compact ? 'text-caption' : 'text-small';
   const stateLabel = running && stopping ? 'Stopping' : commandStateLabel(run);

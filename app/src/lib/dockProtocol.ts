@@ -8,6 +8,7 @@
 
 import type { TranscriptState } from '../features/agent/reducer';
 import type { ChatMessage } from '../features/ask/types';
+import type { RuntimeSetupState } from '../features/setup/runtimeSetupHost';
 
 /** The largest snapshot or action relayed, in bytes of JSON (Rust's `MAX_RELAY_BYTES`). */
 export const MAX_SNAPSHOT_BYTES = 262144;
@@ -22,8 +23,15 @@ export interface DockSnapshot {
   title: string;
   /** The last question, as the chat shows it above the answer. */
   lastUser: { content: string } | null;
-  /** The last answer's transcript (live while it runs). */
+  /**
+   * The last answer's transcript (live while it runs). Only when it is too large for the relay
+   * are its oldest blocks left out (`fitTranscript`), and then `trimmed` says so, so the chat
+   * shows that earlier work is in Ask instead of hiding it.
+   */
   transcript: TranscriptState | null;
+  trimmed: boolean;
+  /** The answer engine's setup as main sees it, for the runtime card in the transcript. */
+  runtime: RuntimeSetupState;
   isStreaming: boolean;
   /** An answer runs in another conversation, or a side question holds the run. */
   busyElsewhere: boolean;
@@ -51,33 +59,73 @@ export type DockAction =
   | { kind: 'send' }
   | { kind: 'steer' }
   | { kind: 'cancel' }
-  | { kind: 'approve'; id: string; allow: boolean }
+  | { kind: 'approve'; id: string; allow: boolean; forConversation?: boolean; reviewToken?: string }
   | { kind: 'draft'; text: string }
   | { kind: 'dictate'; on: boolean }
   | { kind: 'open'; open: boolean }
   | { kind: 'openInAsk' }
-  | { kind: 'close' };
+  | { kind: 'close' }
+  /** The answer engine's card: install it, check again, or put away the "installed" note. */
+  | { kind: 'runtime'; op: RuntimeOp }
+  /** A start found the engine there or gone (the card's `onRuntimeInstalled`). */
+  | { kind: 'runtimeInstalled'; installed: boolean }
+  /** "Review this" on a code block of the answer: main opens its review pane on the snippet. */
+  | { kind: 'review'; code: string; language: string }
+  /** A web source of the answer, opened in the browser by main (http and https only). */
+  | { kind: 'openUrl'; url: string }
+  /** Stop a command the answer is running (Code mode). */
+  | { kind: 'stopCommand'; id: string }
+  | { kind: 'openSettings' };
+
+export const RUNTIME_OPS = ['install', 'refresh', 'dismissInstalled'] as const;
+export type RuntimeOp = typeof RUNTIME_OPS[number];
 
 type Kind = DockAction['kind'];
 
-/** Each kind's fields besides `kind`, and their types. */
-const ACTION_FIELDS: Record<Kind, Record<string, 'string' | 'boolean'>> = {
+interface Field {
+  type: 'string' | 'boolean';
+  optional?: true;
+}
+
+/** Each kind's fields besides `kind`, their types, and which may be left out. */
+const ACTION_FIELDS: Record<Kind, Record<string, Field>> = {
   send: {},
   steer: {},
   cancel: {},
-  approve: { id: 'string', allow: 'boolean' },
-  draft: { text: 'string' },
-  dictate: { on: 'boolean' },
-  open: { open: 'boolean' },
+  approve: { id: { type: 'string' }, allow: { type: 'boolean' }, forConversation: { type: 'boolean', optional: true }, reviewToken: { type: 'string', optional: true } },
+  draft: { text: { type: 'string' } },
+  dictate: { on: { type: 'boolean' } },
+  open: { open: { type: 'boolean' } },
   openInAsk: {},
   close: {},
+  runtime: { op: { type: 'string' } },
+  runtimeInstalled: { installed: { type: 'boolean' } },
+  review: { code: { type: 'string' }, language: { type: 'string' } },
+  openUrl: { url: { type: 'string' } },
+  stopCommand: { id: { type: 'string' } },
+  openSettings: {},
 };
 
-/** An approval id: 1 to 128 printable ASCII characters, no spaces. */
-const APPROVAL_ID = /^[\x21-\x7e]{1,128}$/;
+/** An approval, review token or command id: 1 to 128 printable ASCII characters, no spaces. */
+const ID = /^[\x21-\x7e]{1,128}$/;
+
+/** The longest code block the dock may send for review (characters). */
+export const MAX_REVIEW_CHARS = 200000;
+/** The longest web address the dock may send. */
+export const MAX_URL_CHARS = 2048;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isWebAddress(text: string): boolean {
+  if (text.length > MAX_URL_CHARS) return false;
+  try {
+    const url = new URL(text);
+    return (url.protocol === 'https:' || url.protocol === 'http:') && url.username === '' && url.password === '';
+  } catch {
+    return false;
+  }
 }
 
 /** The dock's action, or null for anything that is not exactly one of `DockAction`. */
@@ -86,13 +134,36 @@ export function parseDockAction(value: unknown): DockAction | null {
   if (!Object.prototype.hasOwnProperty.call(ACTION_FIELDS, value.kind)) return null;
   const kind = value.kind as Kind;
   const fields = ACTION_FIELDS[kind];
-  const keys = Object.keys(value).filter(key => key !== 'kind');
-  if (keys.length !== Object.keys(fields).length) return null;
-  for (const key of keys) {
-    if (!Object.prototype.hasOwnProperty.call(fields, key) || typeof value[key] !== fields[key]) return null;
+  for (const key of Object.keys(value)) {
+    if (key === 'kind') continue;
+    if (!Object.prototype.hasOwnProperty.call(fields, key) || typeof value[key] !== fields[key].type) return null;
   }
-  if (kind === 'draft' && (value.text as string).length > MAX_DRAFT_CHARS) return null;
-  if (kind === 'approve' && !APPROVAL_ID.test(value.id as string)) return null;
+  for (const [key, field] of Object.entries(fields)) {
+    if (!field.optional && !Object.prototype.hasOwnProperty.call(value, key)) return null;
+  }
+  switch (kind) {
+    case 'draft':
+      if ((value.text as string).length > MAX_DRAFT_CHARS) return null;
+      break;
+    case 'approve':
+      if (!ID.test(value.id as string)) return null;
+      if (value.reviewToken !== undefined && !ID.test(value.reviewToken as string)) return null;
+      break;
+    case 'runtime':
+      if (!(RUNTIME_OPS as readonly string[]).includes(value.op as string)) return null;
+      break;
+    case 'review':
+      if ((value.code as string).length > MAX_REVIEW_CHARS || !/^[\w+#.-]{0,64}$/.test(value.language as string)) return null;
+      break;
+    case 'openUrl':
+      if (!isWebAddress(value.url as string)) return null;
+      break;
+    case 'stopCommand':
+      if (!ID.test(value.id as string)) return null;
+      break;
+    default:
+      break;
+  }
   return value as DockAction;
 }
 
@@ -108,6 +179,24 @@ function isTranscript(value: unknown): value is TranscriptState {
     && isRecord(value.steps);
 }
 
+function isNumberOrNull(value: unknown): boolean {
+  return value === null || (typeof value === 'number' && Number.isFinite(value));
+}
+
+/** The runtime setup state as main publishes it (`runtimeSetupState`). */
+function isRuntimeState(value: unknown): value is RuntimeSetupState {
+  return isRecord(value)
+    && (value.status === null || isRecord(value.status))
+    && isStringOrNull(value.statusError)
+    && (value.installed === null || typeof value.installed === 'boolean')
+    && typeof value.installing === 'boolean'
+    && (value.progress === null || (isRecord(value.progress) && typeof value.progress.downloaded === 'number'))
+    && isStringOrNull(value.installError)
+    && typeof value.installOffline === 'boolean'
+    && (value.justInstalled === null || isRecord(value.justInstalled))
+    && isNumberOrNull(value.installedAt);
+}
+
 /** Main's snapshot as the dock receives it, or null when it is not one. */
 export function parseDockSnapshot(value: unknown): DockSnapshot | null {
   if (!isRecord(value) || value.v !== 1) return null;
@@ -118,6 +207,8 @@ export function parseDockSnapshot(value: unknown): DockSnapshot | null {
     && typeof s.title === 'string'
     && lastUserOk
     && (s.transcript === null || isTranscript(s.transcript))
+    && typeof s.trimmed === 'boolean'
+    && isRuntimeState(s.runtime)
     && typeof s.isStreaming === 'boolean'
     && typeof s.busyElsewhere === 'boolean'
     && isStringOrNull(s.sideRunLabel)
@@ -136,6 +227,8 @@ export function parseDockSnapshot(value: unknown): DockSnapshot | null {
     title: s.title as string,
     lastUser: lastUser === null ? null : { content: (lastUser as { content: string }).content },
     transcript: s.transcript as TranscriptState | null,
+    trimmed: s.trimmed as boolean,
+    runtime: s.runtime as RuntimeSetupState,
     isStreaming: s.isStreaming as boolean,
     busyElsewhere: s.busyElsewhere as boolean,
     sideRunLabel: s.sideRunLabel as string | null,
@@ -167,6 +260,7 @@ export interface SnapshotInput {
   unread: number;
   theme: 'light' | 'dark';
   zoom: number;
+  runtime: RuntimeSetupState;
 }
 
 function jsonBytes(value: unknown): number {
@@ -214,8 +308,12 @@ export function fitTranscript(transcript: TranscriptState, budget: number): Tran
 /** Room left for the transcript in a snapshot, after the other fields and some headroom. */
 const SNAPSHOT_HEADROOM = 8192;
 
-/** What main publishes for the floating chat: only the active conversation's last exchange. */
-export function snapshotOf(input: SnapshotInput): DockSnapshot {
+/**
+ * What the floating chat shows: only the active conversation's last exchange. `relay` (the
+ * snapshot main publishes to the dock) fits it to the relay's size; the in-page chat, which reads
+ * main's state directly, passes false and gets it whole.
+ */
+export function snapshotOf(input: SnapshotInput, relay = true): DockSnapshot {
   let lastUser: ChatMessage | null = null;
   let lastAnswer: ChatMessage | null = null;
   for (let i = input.messages.length - 1; i >= 0 && (!lastUser || !lastAnswer); i -= 1) {
@@ -230,11 +328,13 @@ export function snapshotOf(input: SnapshotInput): DockSnapshot {
     title: input.title,
     lastUser: lastUser ? { content: lastUser.content } : null,
     transcript: null,
+    trimmed: false,
+    runtime: input.runtime,
     isStreaming: input.isStreaming,
     busyElsewhere,
     sideRunLabel: input.sideRun?.label ?? null,
     readOnlyConnector: input.readOnlyConnector,
-    draft: input.draft.length > MAX_DRAFT_CHARS ? input.draft.slice(0, MAX_DRAFT_CHARS) : input.draft,
+    draft: relay && input.draft.length > MAX_DRAFT_CHARS ? input.draft.slice(0, MAX_DRAFT_CHARS) : input.draft,
     dictating: input.dictating,
     voiceSupported: input.voiceSupported,
     open: input.open,
@@ -244,6 +344,8 @@ export function snapshotOf(input: SnapshotInput): DockSnapshot {
   };
   const transcript = lastAnswer?.transcript ?? null;
   if (!transcript) return base;
+  if (!relay) return { ...base, transcript };
   const budget = MAX_SNAPSHOT_BYTES - jsonBytes(base) - SNAPSHOT_HEADROOM;
-  return { ...base, transcript: fitTranscript(transcript, budget) };
+  const fitted = fitTranscript(transcript, budget);
+  return { ...base, transcript: fitted, trimmed: fitted.blocks.length < transcript.blocks.length };
 }

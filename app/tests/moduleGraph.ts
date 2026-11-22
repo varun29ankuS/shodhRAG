@@ -33,14 +33,17 @@ function resolveImport(from: string, spec: string): string | null {
   throw new Error(`${relative(SRC, from)}: import '${spec}' names no file`);
 }
 
-/** Every module reachable from `roots` (paths relative to `app/src`), as relative paths with `/`. */
-export function moduleGraph(roots: readonly string[]): Map<string, string> {
+/**
+ * Every module reachable from `roots` (paths relative to `app/src`), as relative paths with
+ * `/`, never entering `excluded`.
+ */
+export function moduleGraph(roots: readonly string[], excluded: readonly string[] = []): Map<string, string> {
   const out = new Map<string, string>();
   const queue = roots.map(root => resolve(SRC, root));
   while (queue.length > 0) {
     const file = queue.shift() as string;
     const name = relative(SRC, file).replace(/\\/g, '/');
-    if (out.has(name)) continue;
+    if (out.has(name) || excluded.includes(name)) continue;
     const text = withoutComments(readFileSync(file, 'utf8'));
     out.set(name, text);
     for (const match of text.matchAll(IMPORT)) {

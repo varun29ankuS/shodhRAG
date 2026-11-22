@@ -26,6 +26,8 @@ export const OVERLAY_SELECTORS: readonly string[] = [
   '[data-radix-popper-content-wrapper]',
   '[data-sonner-toast]',
   '[cmdk-root]',
+  // A pane of the page's own over its right side (the code review pane).
+  '[data-shodh-overlay]',
 ];
 
 function intersects(a: Box, b: Box): boolean {

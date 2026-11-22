@@ -49,7 +49,7 @@ test('hidden unless on Artifacts, pane shown, not popped out, not covered and th
 });
 
 test('the overlays the preview must never hide are all watched, the in-page chat is not', () => {
-  for (const selector of ['[role="dialog"][aria-modal="true"]', '[role="menu"]', '[role="listbox"]', '[data-radix-popper-content-wrapper]', '[data-sonner-toast]', '[cmdk-root]']) {
+  for (const selector of ['[role="dialog"][aria-modal="true"]', '[role="menu"]', '[role="listbox"]', '[data-radix-popper-content-wrapper]', '[data-sonner-toast]', '[cmdk-root]', '[data-shodh-overlay]']) {
     assert.ok(OVERLAY_SELECTORS.includes(selector), selector);
   }
   // The in-page chat's panel is a non-modal dialog: never counted as covering.

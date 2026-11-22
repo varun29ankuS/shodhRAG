@@ -90,7 +90,7 @@ export const SHORTCUTS: Record<ShortcutId, Shortcut> = {
   newMenu: letter('New…', 'n', { shift: true }),
   commandPalette: letter('Search and commands', 'k'),
   toggleSidebar: letter('Show or hide the sidebar', 'b'),
-  toggleDock: letter('Open or minimise the conversation', 'j', { shownIn: ['components/shell/ConversationDock.tsx'] }),
+  toggleDock: letter('Open or minimise the conversation', 'j', { shownIn: ['components/shell/DockPanel.tsx'] }),
   findInChat: letter('Find', 'f'),
   findNext: letter('Next match', 'g'),
   findPrev: letter('Previous match', 'g', { shift: true }),

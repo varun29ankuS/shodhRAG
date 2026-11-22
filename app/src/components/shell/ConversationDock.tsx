@@ -1,22 +1,14 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { connectorName } from '../../features/connectors/conversations';
-import { Maximize2, Minus, X } from 'lucide-react';
-import { cn } from '../../lib/utils';
 import type { ViewTab } from '../../lib/viewTabs';
 import { RETIRED_DOCK_STORAGE_KEYS, dockLayout } from '../../lib/dockMode';
 import type { DockLayout } from '../../lib/dockMode';
-import { AgentComposer } from '../../features/agent/AgentComposer';
 import type { AgentComposerHandle } from '../../features/agent/AgentComposer';
 import { SnippetDropZone } from '../../features/research/SnippetDropZone';
 import { appendToDraft } from '../../features/research/snippetModel';
-import { passageHits } from '../../features/agent/citations';
-import { currentStep, isLive, pendingApproval } from '../../features/agent/reducer';
-import { StatusLine } from '../../features/agent/StatusLine';
-import { Transcript } from '../../features/agent/Transcript';
 import { SetupCard } from '../../features/setup/SetupCard';
-import { Kbd, IS_MAC } from '../ui/Kbd';
-import { ariaKeyShortcuts, matchesShortcut, withShortcut } from '../../lib/shortcuts';
+import { matchesShortcut } from '../../lib/shortcuts';
 import { useQueuedQuestion } from '../../features/setup/useQueuedQuestion';
+import { runtimeSetupState, useRuntimeSetup } from '../../features/setup/runtimeSetupHost';
 import { useChatSession } from '../../features/ask/ChatSessionContext';
 import { useDraft } from '../../features/ask/useDraft';
 import { composerDrafts } from '../../features/ask/draftStore';
@@ -28,9 +20,11 @@ import { composerFiles, limitedToFiles } from '../../features/ask/fileQuestion';
 import { missingIndexedFiles, reportMissingFiles } from '../../features/ask/fileQuestionApi';
 import type { OptionSource } from '../../features/ask/sendOptions';
 import type { ChatMessage } from '../../features/ask/types';
-
-const FOCUS_RING =
-  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-shodh-surface';
+import { useTheme } from '../../contexts/ThemeContext';
+import { snapshotOf } from '../../lib/dockProtocol';
+import type { DockAction } from '../../lib/dockProtocol';
+import { DockPanel, blockedReasonOf } from './DockPanel';
+import type { DockModel } from './DockPanel';
 
 /**
  * Height kept clear below the top of the page content for the overlay. Every
@@ -40,7 +34,6 @@ const FOCUS_RING =
  * overlay's top below them keeps those actions uncovered.
  */
 const OVERLAY_TOOLBAR_RESERVE = 112;
-const OVERLAY_HEIGHT = 470;
 const OVERLAY_EDGE = 16;
 
 function removeRetiredRecords() {
@@ -85,11 +78,14 @@ interface ConversationDockProps {
  * to watch) it floats over the page in that corner, kept below the page's
  * toolbar, at every window size: it never takes a column. Working on the page
  * leaves it open; Esc in it or Minimise collapses it. Layout rules live in
- * `lib/dockMode`.
+ * `lib/dockMode`; the markup, shared with the floating chat over the embedded
+ * preview, in `DockPanel`.
  */
 export function ConversationDock({ activeTab, sources, onExpand }: ConversationDockProps) {
   const session = useChatSession();
   const { messages, isStreaming, navigation, steer, send, cancel, approve, setRuntimeInstalled, streamingConversationId, sideRun } = session;
+  const { theme } = useTheme();
+  const runtime = useRuntimeSetup();
   /** Expanded or collapsed on a view; only applies while that view stays open. */
   const [override, setOverride] = useState<{ tab: ViewTab; open: boolean } | null>(null);
   const [dismissed, setDismissed] = useState(false);
@@ -112,9 +108,7 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
   shownConversationRef.current = session.activeConversationId;
   const checkingFileRef = useRef(false);
   const [unreadBase, setUnreadBase] = useState<number | null>(null);
-  const panelRef = useRef<HTMLElement | null>(null);
   const pillRef = useRef<HTMLButtonElement>(null);
-  const scrollerRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<AgentComposerHandle>(null);
   const focusComposerRef = useRef(false);
   const focusPillRef = useRef(false);
@@ -146,13 +140,6 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
     if (offAsk && isStreaming) setDismissed(false);
   }, [offAsk, isStreaming]);
 
-  const lastUser = useMemo(() => [...messages].reverse().find(m => m.role === 'user') ?? null, [messages]);
-  const lastAnswer = useMemo(() => [...messages].reverse().find(m => m.role === 'assistant' && m.transcript) ?? null, [messages]);
-  const transcript = lastAnswer?.transcript ?? null;
-  const hits = useMemo(() => passageHits(transcript?.passages ?? []), [transcript?.passages]);
-  const live = transcript !== null && isLive(transcript);
-  const waiting = live && transcript ? pendingApproval(transcript) : null;
-  const working = live && transcript ? currentStep(transcript) : null;
   const visible = offAsk && !dismissed && messages.length > 0;
   // Each visit starts minimised; an expand or collapse made on another view
   // does not carry over.
@@ -191,10 +178,6 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
       focusPillRef.current = false;
     }
   }, [layout]);
-  useLayoutEffect(() => {
-    const el = scrollerRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [messages, layout]);
 
   // Overlay: keep its top below the page's toolbar, measured from the content area.
   useLayoutEffect(() => {
@@ -203,22 +186,6 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
     const top = main ? main.getBoundingClientRect().top : 0;
     setOverlayTop(Math.max(0, Math.round(top)) + OVERLAY_TOOLBAR_RESERVE);
   }, [layout, windowSize]);
-
-  // Keyboard inside the dock: Esc denies a pending approval or interrupts the
-  // answer; with nothing running, Esc collapses it. It does not hold focus: the
-  // page stays usable while it floats, so Tab moves in and out of it freely.
-  const onPanelKeyDown = (e: React.KeyboardEvent<HTMLElement>) => {
-    if (e.key === 'Escape') {
-      if (live) {
-        e.preventDefault();
-        if (waiting) approve(waiting.id, false);
-        else cancel();
-        return;
-      }
-      e.preventDefault();
-      collapse(true);
-    }
-  };
 
   const busyElsewhere = (streamingConversationId !== null && !isStreaming) || sideRun !== null;
   // A connector's conversation is read-only here too.
@@ -275,151 +242,74 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
     steer(text);
   };
 
+  // The in-page chat reads main's state whole (no relay, nothing left out).
+  const snapshot = useMemo(() => snapshotOf({
+    conversationId: session.activeConversationId,
+    title: session.activeConversation?.title ?? '',
+    messages,
+    isStreaming,
+    streamingConversationId,
+    sideRun,
+    readOnlyConnector: readOnlySource?.connector ?? null,
+    draft,
+    dictating: false,
+    // The in-page chat offers no microphone (Ask does).
+    voiceSupported: false,
+    open,
+    unread,
+    theme,
+    zoom: 1,
+    runtime: runtimeSetupState(runtime),
+  }, false), [session.activeConversationId, session.activeConversation?.title, messages, isStreaming, streamingConversationId, sideRun, readOnlySource?.connector, draft, open, unread, theme, runtime]);
+
+  const onAction = (action: DockAction) => {
+    switch (action.kind) {
+      case 'send': submit(); break;
+      case 'steer': submitSteer(); break;
+      case 'cancel': cancel(); break;
+      case 'approve': approve(action.id, action.allow, action.forConversation, action.reviewToken); break;
+      case 'draft': setDraft(action.text); break;
+      case 'open':
+        if (action.open) expand();
+        else collapse(true);
+        break;
+      case 'close': setDismissed(true); break;
+      case 'openInAsk': onExpand(); break;
+      case 'runtimeInstalled': setRuntimeInstalled(action.installed); break;
+      case 'openSettings': window.dispatchEvent(new CustomEvent('switchTab', { detail: 'settings' })); break;
+      // The in-page chat's runtime card, review button, web sources and commands act in
+      // this window directly; only the floating chat sends these.
+      default: break;
+    }
+  };
+
   if (layout === null) return null;
 
-  if (layout === 'pill') {
-    return (
-      <button
-        ref={pillRef}
-        type="button"
-        onClick={expand}
-        aria-label={`Open the conversation${waiting ? ', needs your approval' : working ? `, working: ${working.label}` : live ? ', working' : ''}${unread > 0 ? `, ${unread} new` : ''}`}
-        aria-keyshortcuts={ariaKeyShortcuts('toggleDock', IS_MAC)}
-        title={withShortcut('Open the conversation', 'toggleDock', IS_MAC)}
-        className={cn(
-          'dock-pop fixed bottom-4 right-4 z-40 inline-flex items-center gap-2 h-10 max-w-[320px] pl-3 pr-3.5 rounded-full border border-shodh-border-strong bg-shodh-surface shadow-[0_8px_28px_rgba(0,0,0,0.3)] text-small text-shodh-text hover:bg-shodh-raised transition-colors duration-micro',
-          FOCUS_RING,
-        )}
-      >
-        <span
-          className={cn('w-2 h-2 rounded-full shrink-0', live ? (waiting ? 'bg-shodh-warning ask-breathe' : 'bg-shodh-accent-text ask-breathe') : 'bg-shodh-text-faint')}
-          aria-hidden="true"
-        />
-        <span className="font-semibold shrink-0">Assistant</span>
-        {live && (
-          <span className="min-w-0 truncate text-shodh-text-muted">
-            {waiting ? 'Needs your approval' : working ? working.label : 'Working…'}
-          </span>
-        )}
-        {unread > 0 && (
-          <span className="shrink-0 min-w-[18px] h-[18px] px-1 rounded-full bg-shodh-accent text-shodh-on-accent text-caption font-bold leading-[18px] text-center tabular-nums" aria-hidden="true">
-            {unread > 99 ? '99+' : unread}
-          </span>
-        )}
-        <Kbd shortcut="toggleDock" className="ml-0.5" />
-      </button>
-    );
-  }
-
-  const controls = [
-    { label: 'Open in Ask', icon: Maximize2, onClick: onExpand },
-    { label: withShortcut('Minimise', 'toggleDock', IS_MAC), icon: Minus, onClick: () => collapse(true) },
-    { label: 'Close', icon: X, onClick: () => setDismissed(true) },
-  ];
-
-  const body = (
-    <>
-      <header className="shrink-0 flex items-center gap-2 h-11 pl-3.5 pr-1.5 border-b border-shodh-border bg-shodh-surface">
-        <span
-          className={cn('w-2 h-2 rounded-full shrink-0', live ? 'bg-shodh-accent-text ask-breathe' : 'bg-shodh-success')}
-          aria-hidden="true"
-        />
-        <span className="text-small font-semibold text-shodh-text shrink-0">Assistant</span>
-        <span className="min-w-0 truncate text-caption text-shodh-text-muted">
-          {session.activeConversation?.title ?? ''}
-        </span>
-        <div className="ml-auto flex items-center">
-          {controls.map(({ label, icon: Icon, onClick }) => (
-            <button
-              key={label}
-              type="button"
-              onClick={onClick}
-              aria-label={label}
-              title={label}
-              className={cn(
-                'w-8 h-8 inline-flex items-center justify-center rounded-lg text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
-                FOCUS_RING,
-              )}
-            >
-              <Icon className="w-3.5 h-3.5" aria-hidden="true" />
-            </button>
-          ))}
-        </div>
-      </header>
-
-      <div ref={scrollerRef} className="flex-1 min-h-0 overflow-y-auto scrollbar-thin px-3.5 py-3 flex flex-col gap-3" role="log" aria-label="Latest exchange">
-        {lastUser && (
-          <div className="self-end max-w-[85%] px-3 py-2 rounded-[14px] bg-shodh-raised-2 text-small leading-[1.5] text-shodh-text whitespace-pre-wrap break-words">
-            {lastUser.content}
-          </div>
-        )}
-        {transcript && (
-          <Transcript
-            transcript={transcript}
-            hits={hits}
-            onOpenCitation={() => onExpand()}
-            onDecide={approve}
-            onRuntimeInstalled={() => setRuntimeInstalled(true)}
-            onOpenSettings={() => window.dispatchEvent(new CustomEvent('switchTab', { detail: 'settings' }))}
-            compact
-          />
-        )}
-      </div>
-
-      <div className="shrink-0 border-t border-shodh-border bg-shodh-surface px-2.5 pt-2 pb-2.5 flex flex-col gap-1.5">
-        <SetupCard compact waiting={queued.waiting} onCancelWaiting={queued.cancel} />
-        {transcript && (
-          <div className="px-1">
-            <StatusLine transcript={transcript} fallbackModel={null} compact />
-          </div>
-        )}
-        <SnippetDropZone onInsert={text => setDraft(prev => appendToDraft(prev, text))}>
-          <AgentComposer
-            id="dock-composer"
-            ref={composerRef}
-            value={draft}
-            onChange={setDraft}
-            onSubmit={submit}
-            onSteer={submitSteer}
-            onStop={cancel}
-            onApprove={waiting?.tier === 'write' ? () => approve(waiting.id, true) : undefined}
-            running={isStreaming}
-            canSteer={transcript?.status === 'running'}
-            approvalPending={waiting !== null}
-            blockedReason={readOnlySource
-              ? `This conversation happened in ${connectorName(readOnlySource.connector)}. Open it in Ask and choose Continue in Ask to reply.`
-              : queued.waiting ? 'Your question is sent as soon as Shodh is ready.'
-              : sideRun ? `Answering your side question about “${sideRun.label}”.` : busyElsewhere ? 'An answer is running in another conversation.' : null}
-            placeholder="Reply…"
-            attachments={(
-              <>
-                {aboutFile && <FileRefChip conversationId={session.activeConversationId} file={aboutFile} compact onRemove={fileScope.remove} />}
-                <AttachmentChips conversationId={session.activeConversationId} attachments={attachments} compact />
-              </>
-            )}
-            compact
-          />
-        </SnippetDropZone>
-      </div>
-    </>
-  );
+  const model: DockModel = {
+    snapshot,
+    onAction,
+    blockedReason: blockedReasonOf(snapshot, queued.waiting),
+    setupCard: <SetupCard compact waiting={queued.waiting} onCancelWaiting={queued.cancel} />,
+    composerExtras: (
+      <>
+        {aboutFile && <FileRefChip conversationId={session.activeConversationId} file={aboutFile} compact onRemove={fileScope.remove} />}
+        <AttachmentChips conversationId={session.activeConversationId} attachments={attachments} compact />
+      </>
+    ),
+    wrapComposer: composer => (
+      <SnippetDropZone onInsert={text => setDraft(prev => appendToDraft(prev, text))}>{composer}</SnippetDropZone>
+    ),
+  };
 
   return (
-    <div
-      ref={el => { panelRef.current = el; }}
-      role="dialog"
-      aria-modal="false"
-      aria-label="Conversation"
-      onKeyDown={onPanelKeyDown}
-      className="dock-pop fixed bottom-4 right-4 z-40 flex flex-col rounded-2xl border border-shodh-border-strong bg-shodh-ground shadow-[0_16px_48px_rgba(0,0,0,0.38)] overflow-hidden"
-      style={{
-        width: `min(380px, calc(100vw - ${OVERLAY_EDGE * 2}px))`,
-        height: OVERLAY_HEIGHT,
-        maxHeight: `calc(100vh - ${overlayTop + OVERLAY_EDGE}px)`,
-      }}
-    >
-      {body}
-    </div>
+    <DockPanel
+      model={model}
+      onExpandAsk={onExpand}
+      fixed
+      maxHeight={`calc(100vh - ${overlayTop + OVERLAY_EDGE}px)`}
+      pillRef={pillRef}
+      composerRef={composerRef}
+    />
   );
 }
 

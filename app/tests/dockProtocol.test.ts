@@ -18,6 +18,7 @@ import {
 import type { DockAction, SnapshotInput } from '../src/lib/dockProtocol.ts';
 import type { TranscriptState } from '../src/features/agent/reducer.ts';
 import type { ChatMessage } from '../src/features/ask/types.ts';
+import type { RuntimeSetupState } from '../src/features/setup/runtimeSetupHost.ts';
 
 const RUST_MAX_RELAY_BYTES = (() => {
   const source = readFileSync(new URL('../src-tauri/src/dock_layer.rs', import.meta.url), 'utf8');
@@ -51,6 +52,18 @@ function message(role: 'user' | 'assistant', content: string, transcript?: Trans
   return { id: `${role}-${content}`, role, content, timestamp: '2026-11-22T10:00:00Z', ...(transcript ? { transcript } : {}) } as ChatMessage;
 }
 
+const RUNTIME: RuntimeSetupState = {
+  status: null,
+  statusError: null,
+  installed: true,
+  installing: false,
+  progress: null,
+  installError: null,
+  installOffline: false,
+  justInstalled: null,
+  installedAt: null,
+};
+
 function input(messages: ChatMessage[], extra: Partial<SnapshotInput> = {}): SnapshotInput {
   return {
     conversationId: 'c1',
@@ -67,6 +80,7 @@ function input(messages: ChatMessage[], extra: Partial<SnapshotInput> = {}): Sna
     unread: 0,
     theme: 'dark',
     zoom: 1,
+    runtime: RUNTIME,
     ...extra,
   };
 }
@@ -86,6 +100,16 @@ test('every action round-trips', () => {
     { kind: 'open', open: false },
     { kind: 'openInAsk' },
     { kind: 'close' },
+    { kind: 'approve', id: 'step-9', allow: true, forConversation: true },
+    { kind: 'approve', id: 'step-9', allow: true, reviewToken: 'rt_0123' },
+    { kind: 'runtime', op: 'install' },
+    { kind: 'runtime', op: 'refresh' },
+    { kind: 'runtime', op: 'dismissInstalled' },
+    { kind: 'runtimeInstalled', installed: false },
+    { kind: 'review', code: 'fn main() {}', language: 'rust' },
+    { kind: 'openUrl', url: 'https://example.com/page?q=1' },
+    { kind: 'stopCommand', id: 'cmd-42' },
+    { kind: 'openSettings' },
   ];
   for (const action of actions) {
     assert.deepEqual(parseDockAction(JSON.parse(JSON.stringify(action))), action);
@@ -105,6 +129,17 @@ test('unknown or malformed actions are refused', () => {
     { kind: 'approve', id: 'a', allow: 'yes' },
     { kind: 'approve', id: 'a' },
     { kind: 'dictate', on: 1 },
+    { kind: 'approve', id: 'a', allow: true, reviewToken: 'has space' },
+    { kind: 'approve', id: 'a', allow: true, forConversation: 'yes' },
+    { kind: 'runtime', op: 'uninstall' },
+    { kind: 'runtime' },
+    { kind: 'review', code: 'x'.repeat(200001), language: 'ts' },
+    { kind: 'review', code: 'x', language: 'a b' },
+    { kind: 'openUrl', url: 'file:///C:/Users/' },
+    { kind: 'openUrl', url: 'javascript:alert(1)' },
+    { kind: 'openUrl', url: 'https://user:pw@example.com/' },
+    { kind: 'openUrl', url: 'not a url' },
+    { kind: 'stopCommand', id: '' },
     { kind: 'toString' },
     { kind: '__proto__' },
     [],
@@ -131,6 +166,8 @@ test('the snapshot carries only the last exchange', () => {
   ]));
   assert.deepEqual(snapshot.lastUser, { content: 'third question' });
   assert.deepEqual(snapshot.transcript, third);
+  assert.equal(snapshot.trimmed, false);
+  assert.deepEqual(snapshot.runtime, RUNTIME);
   const text = JSON.stringify(snapshot);
   assert.doesNotMatch(text, /first question|second question/);
   // Through JSON (the relay) and back, the dock reads the same snapshot.
@@ -153,6 +190,12 @@ test('a 200-step transcript fits the relay, newest activity kept', () => {
   for (const block of transcript.blocks) {
     if (block.kind === 'step') assert.ok(transcript.steps[block.stepId], block.stepId);
   }
+  // The chat is told that earlier work was left out, so it can say so.
+  assert.equal(snapshot.trimmed, true);
+  // The in-page chat reads it whole.
+  const whole = snapshotOf(input([message('user', 'build it'), message('assistant', '', long)]), false);
+  assert.equal(whole.transcript, long);
+  assert.equal(whole.trimmed, false);
   // A small transcript is never changed.
   const small = fixtureTranscript('02-approval-steer-interrupt.json');
   assert.equal(fitTranscript(small, MAX_SNAPSHOT_BYTES), small);
@@ -191,6 +234,9 @@ test('a malformed snapshot is not read', () => {
     { ...good, draft: 5 },
     { ...good, transcript: { blocks: 'no' } },
     { ...good, lastUser: { content: 1 } },
+    { ...good, trimmed: 'no' },
+    { ...good, runtime: null },
+    { ...good, runtime: { ...RUNTIME, installing: 'yes' } },
   ]) {
     assert.equal(parseDockSnapshot(bad), null, JSON.stringify(bad)?.slice(0, 80));
   }

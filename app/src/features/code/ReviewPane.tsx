@@ -496,6 +496,7 @@ export function ReviewPane() {
       <aside
         ref={pane.paneRef}
         aria-label="Design check"
+        data-shodh-overlay=""
         onKeyDown={e => {
           if (e.key === 'Escape') {
             e.stopPropagation();
@@ -634,6 +635,7 @@ export function ReviewPane() {
     <aside
       ref={pane.paneRef}
       aria-label="Code review"
+      data-shodh-overlay=""
       onKeyDown={e => {
         if (e.key === 'Escape') {
           e.stopPropagation();

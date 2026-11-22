@@ -385,6 +385,13 @@ jobs:
             exit 1
           fi
 
+      # rust-cache's keys hash every installed toolchain, the runner image's
+      # own `stable` included (1.99.1, then 1.100.0 from macos-26-arm64
+      # 20261117): each image update left no entry to restore, and the
+      # entries under the old keys stayed until evicted. Every rust-cache use
+      # runs this first (ci.yml's footprint job shares the Windows entry).
+      - uses: ./.github/actions/only-pinned-rust
+
       # Caches are saved by master runs only (a pull request's or a tag's
       # cache is not readable by other refs), so pull requests and releases
       # restore what master built. The Windows key is the footprint job's
@@ -404,6 +411,29 @@ jobs:
           prefix-key: v1-rust
           shared-key: release-${{ matrix.target }}
           save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      # With no restored entry the build compiles every dependency: 24 to 125
+      # minutes of cargo on the macOS runners from 2026-11-13 to 11-22,
+      # depending on the machine (the final thin-LTO link alone took 5 to
+      # more than 27 minutes, printing nothing while it runs). Two such
+      # builds reached the job's limit (jobs 133231378463, 136928560235).
+      # The entry goes missing when its key changes or when the repository's
+      # caches pass GitHub's 10 GB and the least recently used are evicted.
+      # The machine is logged so a slow build can be told from a stuck one.
+      - name: Report the runner and the restored Rust cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = macOS ]; then
+            echo "CPU: $(sysctl -n machdep.cpu.brand_string), $(sysctl -n hw.ncpu) cores, $(( $(sysctl -n hw.memsize) / 1073741824 )) GB memory"
+          else
+            echo "CPU: $(nproc) cores"
+          fi
+          if [ -d target/release ]; then
+            echo "Rust cache restored: $(du -sh target/release | cut -f1) in target/release"
+          else
+            echo "::warning::No Rust cache entry was restored for ${BUILD_TARGET}: this build compiles every dependency, up to 125 minutes of cargo on a slow macOS runner against the job's 130-minute limit. The entry was evicted (the repository's caches are over GitHub's 10 GB) or its key changed."
+          fi
 
       # LanceDB's protobuf definitions are compiled at build time: a pinned,
       # checksum-verified protoc from the official release (the Chocolatey
@@ -805,6 +835,8 @@ jobs:
         with:
           toolchain: 1.97.1  # keep in sync with rust-toolchain.toml
           targets: aarch64-linux-android
+
+      - uses: ./.github/actions/only-pinned-rust
 
       # Saved by master runs only (ci.yml calls this workflow on every
       # push), restored by pull requests and releases: the release profile's

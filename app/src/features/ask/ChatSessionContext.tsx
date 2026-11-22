@@ -640,7 +640,10 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
         // The System status panel opens over whatever view is shown.
         offer({ view: null, focus: null, target: nav.target, label: nav.label });
       } else if (tab) {
-        offer({ view: tab, focus: nav.focus, target: nav.target, label: nav.label });
+        // The assistant showing a creation's page (open_artifact on the preview pane): the chat
+        // floats over the page, open, so the user sees what it did and can steer.
+        const openDock = nav.target?.kind === 'artifact' && nav.target.pane === 'preview';
+        offer({ view: tab, focus: nav.focus, target: nav.target, label: nav.label, openDock });
       }
     }
     // A Creator answer started building: the Artifacts tab opens on its creation

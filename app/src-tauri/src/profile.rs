@@ -478,10 +478,5 @@ mod tests {
         assert_eq!(args, process_browser_args());
         assert_eq!(dir, demo.webview_data_dir());
         assert_eq!(dir, Some(absolute("shodh-demo").join("webview")));
-        // The builder takes them without error in the mock runtime.
-        let _ = child_webview_defaults::<tauri::test::MockRuntime>(WebviewBuilder::new(
-            "dock",
-            tauri::WebviewUrl::App("dock-view".into()),
-        ));
     }
 }

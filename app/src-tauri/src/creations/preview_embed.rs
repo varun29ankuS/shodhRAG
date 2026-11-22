@@ -209,38 +209,38 @@ pub fn dark() -> bool {
     DARK.load(Ordering::SeqCst)
 }
 
-/// Put `visibility` on the child webview `label`, unless it is on already.
+/// Put `visibility` on the child webview `label`, unless it is on already,
+/// and the floating chat with it ([`crate::dock_layer::follow`]).
 fn apply<R: Runtime>(app: &AppHandle<R>, label: &str, visibility: Visibility) {
-    {
-        let applied = APPLIED.lock().unwrap_or_else(|e| e.into_inner());
-        if applied
-            .as_ref()
-            .is_some_and(|(l, v)| l == label && *v == visibility)
-        {
-            return;
+    let unchanged = APPLIED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .is_some_and(|(l, v)| l == label && *v == visibility);
+    if !unchanged {
+        if let Some(webview) = app.get_webview(label) {
+            let result = match visibility {
+                Visibility::Shown(rect) => webview
+                    .set_bounds(Rect {
+                        position: LogicalPosition::new(rect.x, rect.y).into(),
+                        size: LogicalSize::new(rect.width, rect.height).into(),
+                    })
+                    .and_then(|()| webview.show()),
+                Visibility::Hidden => webview.hide(),
+            };
+            match result {
+                Ok(()) => {
+                    *APPLIED.lock().unwrap_or_else(|e| e.into_inner()) =
+                        Some((label.to_string(), visibility));
+                }
+                Err(e) => {
+                    tracing::warn!(window = %label, error = %e, "the embedded preview could not be placed")
+                }
+            }
         }
     }
-    let Some(webview) = app.get_webview(label) else {
-        return;
-    };
-    let result = match visibility {
-        Visibility::Shown(rect) => webview
-            .set_bounds(Rect {
-                position: LogicalPosition::new(rect.x, rect.y).into(),
-                size: LogicalSize::new(rect.width, rect.height).into(),
-            })
-            .and_then(|()| webview.show()),
-        Visibility::Hidden => webview.hide(),
-    };
-    match result {
-        Ok(()) => {
-            *APPLIED.lock().unwrap_or_else(|e| e.into_inner()) =
-                Some((label.to_string(), visibility));
-        }
-        Err(e) => {
-            tracing::warn!(window = %label, error = %e, "the embedded preview could not be placed")
-        }
-    }
+    // The chat's corner follows the window even when the pane did not move.
+    crate::dock_layer::follow(app, visibility);
 }
 
 /// Embed the preview described by `opening` in the main window, hidden.
@@ -258,6 +258,8 @@ pub fn embed<R: Runtime>(
         .map_err(|e| format!("The preview's data folder could not be made ({e})"))?;
     let main = crate::background::main_window(app)
         .ok_or_else(|| "The main window is not open.".to_string())?;
+    // The floating chat goes too, and is made again above the new page.
+    crate::dock_layer::below_new_preview(app);
     let webview = main
         .add_child(
             preview_window::locked_webview(app, &opening),
@@ -342,15 +344,18 @@ pub fn main_reloaded<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
-/// The main window was minimised or hidden (`true`), or came back.
+/// The main window was minimised or hidden (`true`), or came back. Only a
+/// change is applied (to hide the page): this runs on the event loop, where
+/// nothing may be shown or made.
 pub fn minimised<R: Runtime>(app: &AppHandle<R>, yes: bool) {
-    let (current, visibility) = {
+    let (current, before, after) = {
         let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
-        let visibility = state.minimised(yes);
-        (state.label().map(str::to_string), visibility)
+        let before = state.visibility();
+        let after = state.minimised(yes);
+        (state.label().map(str::to_string), before, after)
     };
-    if let Some(current) = current {
-        apply(app, &current, visibility);
+    if let Some(current) = current.filter(|_| before != after) {
+        apply(app, &current, after);
     }
 }
 
@@ -366,6 +371,9 @@ pub fn closed<R: Runtime>(app: &AppHandle<R>, label: &str) -> bool {
         if applied.as_ref().is_some_and(|(l, _)| l == label) {
             *applied = None;
         }
+    }
+    if was_current {
+        crate::dock_layer::follow(app, Visibility::Hidden);
     }
     let Some(webview) = app.get_webview(label) else {
         return was_current;

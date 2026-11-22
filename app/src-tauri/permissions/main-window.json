@@ -99,6 +99,7 @@
           "design_check_run",
           "discard_upload",
           "dismiss_missed_reminders",
+          "dock_layer_publish",
           "enola_install",
           "export_pdf",
           "fill_cancel",

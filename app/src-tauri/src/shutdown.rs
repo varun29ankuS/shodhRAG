@@ -103,7 +103,11 @@ pub async fn flush_frontend(app: &AppHandle) {
     }
     let state = app.state::<ShutdownState>();
     let (request_id, answer) = state.register();
-    if let Err(e) = app.emit_to(MAIN_WINDOW, APP_QUITTING_EVENT, QuitRequest { request_id }) {
+    // To the main webview alone (not a child webview of its window).
+    let main = tauri::EventTarget::Webview {
+        label: MAIN_WINDOW.to_string(),
+    };
+    if let Err(e) = app.emit_to(main, APP_QUITTING_EVENT, QuitRequest { request_id }) {
         tracing::warn!(error = %e, "could not ask the window to save before quitting");
         state.forget(request_id);
         return;

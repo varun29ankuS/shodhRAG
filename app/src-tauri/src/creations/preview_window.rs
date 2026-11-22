@@ -307,7 +307,7 @@ pub(crate) fn tell_main<R: Runtime>(
         place,
     };
     if let Err(e) = app.emit_to(
-        EventTarget::WebviewWindow {
+        EventTarget::Webview {
             label: MAIN_WINDOW.to_string(),
         },
         PREVIEW_EVENT,

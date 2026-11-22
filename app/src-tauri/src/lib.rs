@@ -66,6 +66,7 @@ mod code_review_commands;
 mod conversation_commands;
 mod conversation_turns;
 mod design_check_commands;
+mod dock_layer;
 mod event_emitter;
 
 use tauri::Manager;
@@ -999,6 +1000,10 @@ pub fn run() {
             creation_commands::creation_preview_embed,
             creation_commands::creation_preview_place,
             creation_commands::creation_preview_pop_out,
+            // The floating chat over the embedded preview (dock_layer.rs)
+            dock_layer::dock_layer_publish,
+            dock_layer::dock_layer_action,
+            dock_layer::dock_layer_size,
             creation_commands::creation_keep,
             creation_commands::creation_export,
             creation_commands::creation_delete,

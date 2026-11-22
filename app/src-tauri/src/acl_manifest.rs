@@ -17,17 +17,25 @@
 //! - **Print windows.** `print-window` allows only commands named in the
 //!   print view's modules, and every command named in the modules only the
 //!   print view loads.
+//! - **The floating chat** (webview `dock`, over the embedded preview).
+//!   `dock-window` allows exactly the commands named in the modules only the
+//!   dock view loads: its relay commands, which no other permission may
+//!   allow, and commands the main window may call itself. Its capability
+//!   grants that and event listening, nothing else.
 //! - Every registered command is granted to some window, and the permission
 //!   files name no other command.
 //! - Each capability is keyed by webview label, never by window label: Tauri
 //!   grants a window-keyed capability to every webview inside that window,
-//!   so a child webview added to `main` (for example an agent-built preview)
+//!   so a child webview added to `main` (the embedded preview, the dock)
 //!   would inherit everything `main` has. Each allows local pages only and
 //!   grants no file reads and no window management, and the webviews the app
 //!   opens are exactly the ones the capabilities name, plus the Artifacts
-//!   preview windows (`preview-<id>`), which no capability may name: their
-//!   agent-built pages hold the invoke key, so the ACL refuses them every
-//!   command, plugin command and event call.
+//!   previews (`preview-<id>`, a window of their own or a child webview of
+//!   `main`), which no capability may name: their agent-built pages hold the
+//!   invoke key, so the ACL refuses them every command, plugin command and
+//!   event call. A preview is built only by the `locked!` macro, which
+//!   carries every lock; only `preview_embed.rs` adds one to `main`, and
+//!   `dock_layer.rs` builds the dock alone, denying its every permission.
 //! - No module calls `invoke` or `listen` while it is evaluated: `main.tsx`
 //!   imports the whole app shell, so every module is evaluated in print
 //!   windows too. Code inside functions, methods and arrow functions counts
@@ -62,6 +70,20 @@ mod tests {
         "contexts/ThemeContext.tsx",
         "components/ErrorBoundary.tsx",
     ];
+    const DOCK_PERMISSION: &str = "dock-window";
+    /// The floating chat's webview over the embedded preview (dock_layer.rs).
+    const DOCK_WEBVIEW: &str = crate::dock_layer::DOCK_WEBVIEW;
+    /// The floating chat's module; `main.tsx` renders it on the dock route only.
+    const DOCK_VIEW: &str = "features/dock/DockView.tsx";
+    /// What `main.tsx` renders on the dock route.
+    const DOCK_ROOTS: &[&str] = &[
+        DOCK_VIEW,
+        "contexts/ThemeContext.tsx",
+        "components/ErrorBoundary.tsx",
+    ];
+    /// The dock's relay commands: granted to the dock alone, never to a
+    /// window that could act on what they carry.
+    const DOCK_ONLY_COMMANDS: &[&str] = &["dock_layer_action", "dock_layer_size"];
     const CODE_EXTENSIONS: &[&str] = &["ts", "tsx", "js", "jsx", "mjs", "cjs"];
     /// Registered commands no webview is granted, with the reason. The ACL
     /// refuses them to every window.
@@ -148,6 +170,39 @@ mod tests {
             }
         }
         out
+    }
+
+    /// `source` up to its unit tests (`#[cfg(test)] mod tests`), which may
+    /// build windows of their own in the mock runtime.
+    fn without_tests(source: &str) -> &str {
+        source
+            .find("#[cfg(test)]\nmod tests")
+            .map_or(source, |end| &source[..end])
+    }
+
+    /// The text of the item starting at `head` (a macro or a function), up
+    /// to the brace that closes its body; empty when there is none.
+    fn item_body<'a>(code: &'a str, head: &str) -> &'a str {
+        let Some(start) = code.find(head) else {
+            return "";
+        };
+        let Some(open) = code[start..].find('{').map(|i| start + i) else {
+            return "";
+        };
+        let mut depth = 0usize;
+        for (i, c) in code[open..].char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &code[start..open + i + 1];
+                    }
+                }
+                _ => {}
+            }
+        }
+        ""
     }
 
     fn capabilities() -> Vec<(String, Value)> {
@@ -690,10 +745,13 @@ mod tests {
         let print = permissions
             .get(PRINT_PERMISSION)
             .expect("the print-window permission");
+        let dock = permissions
+            .get(DOCK_PERMISSION)
+            .expect("the dock-window permission");
         let mut problems = Vec::new();
 
         for (id, allowed) in &permissions {
-            if id != MAIN_PERMISSION && id != PRINT_PERMISSION {
+            if ![MAIN_PERMISSION, PRINT_PERMISSION, DOCK_PERMISSION].contains(&id.as_str()) {
                 problems.push(format!(
                     "permissions/ defines {id}, which no window check here covers"
                 ));
@@ -713,9 +771,15 @@ mod tests {
             )) && main_tsx.contains("<PrintView />"),
             "main.tsx renders the print view on the print route; PRINT_ROOTS must follow it"
         );
-        let (main_files, mut unresolved) = module_graph(&["main.tsx"], &[PRINT_VIEW]);
+        assert!(
+            main_tsx.contains("path === '/dock-view'") && main_tsx.contains("<DockView />"),
+            "main.tsx renders the floating chat on the dock route (dock_layer.rs loads dock-view); DOCK_ROOTS must follow it"
+        );
+        let (main_files, mut unresolved) = module_graph(&["main.tsx"], &[PRINT_VIEW, DOCK_VIEW]);
         let (print_files, print_unresolved) = module_graph(PRINT_ROOTS, &[]);
+        let (dock_files, dock_unresolved) = module_graph(DOCK_ROOTS, &[]);
         unresolved.extend(print_unresolved);
+        unresolved.extend(dock_unresolved);
         problems.extend(unresolved);
         assert!(
             main_files.len() > 100,
@@ -726,6 +790,11 @@ mod tests {
         assert!(
             print_only.iter().any(|f| f.as_str() == PRINT_VIEW),
             "the print view is loaded by print windows only"
+        );
+        let dock_only: BTreeSet<String> = dock_files.difference(&main_files).cloned().collect();
+        assert!(
+            dock_only.contains(DOCK_VIEW),
+            "the floating chat's view is loaded by the dock webview only"
         );
 
         let main_named = named_commands(&main_files, &commands);
@@ -764,9 +833,47 @@ mod tests {
             }
         }
 
+        // The dock: exactly the commands its own modules name, which are its
+        // relay commands and what main may also call; the relay commands
+        // belong to the dock alone.
+        let dock_named = named_commands(&dock_only, &commands);
+        for (command, files) in &dock_named {
+            if !dock.contains(command) {
+                problems.push(format!(
+                    "{command} is named in {} (dock only), but {DOCK_PERMISSION} does not allow it",
+                    files.iter().cloned().collect::<Vec<_>>().join(", ")
+                ));
+            }
+        }
+        for command in dock {
+            if !dock_named.contains_key(command) {
+                problems.push(format!(
+                    "{DOCK_PERMISSION} allows {command}, which no module only the dock loads names"
+                ));
+            }
+            let dock_only_command = DOCK_ONLY_COMMANDS.contains(&command.as_str());
+            if !dock_only_command && !main.contains(command) {
+                problems.push(format!(
+                    "{DOCK_PERMISSION} allows {command}: the dock may call only its relay commands and what the main window may call itself"
+                ));
+            }
+        }
+        for command in DOCK_ONLY_COMMANDS {
+            if !dock.contains(*command) {
+                problems.push(format!("{DOCK_PERMISSION} must allow {command}"));
+            }
+            for (id, allowed) in &permissions {
+                if id != DOCK_PERMISSION && allowed.contains(*command) {
+                    problems.push(format!(
+                        "{id} allows {command}, which only the dock may call"
+                    ));
+                }
+            }
+        }
         for command in &commands {
             let ungranted = UNGRANTED.iter().any(|(c, _)| c == command);
-            let granted = main.contains(command) || print.contains(command);
+            let granted =
+                main.contains(command) || print.contains(command) || dock.contains(command);
             if !granted && !ungranted {
                 problems.push(format!(
                     "{command} is registered, but no window is granted it: grant it to the window that calls it, or list it in UNGRANTED with the reason"
@@ -839,9 +946,9 @@ mod tests {
                 problems.push(format!("{file}: names no webview"));
             }
             for window in &windows {
-                if window != MAIN_WINDOW && *window != print_windows {
+                if window != MAIN_WINDOW && *window != print_windows && window != DOCK_WEBVIEW {
                     problems.push(format!(
-                        "{file}: webview `{window}` is not one the app opens (main, {print_windows})"
+                        "{file}: webview `{window}` is not one the app opens (main, {print_windows}, {DOCK_WEBVIEW})"
                     ));
                 }
                 windows_named.insert(window.clone());
@@ -880,9 +987,48 @@ mod tests {
         };
         expect_grant(MAIN_PERMISSION, MAIN_WINDOW, &mut problems);
         expect_grant(PRINT_PERMISSION, &print_windows, &mut problems);
+        expect_grant(DOCK_PERMISSION, DOCK_WEBVIEW, &mut problems);
         for id in app_grants.keys() {
-            if id != MAIN_PERMISSION && id != PRINT_PERMISSION {
+            if ![MAIN_PERMISSION, PRINT_PERMISSION, DOCK_PERMISSION].contains(&id.as_str()) {
                 problems.push(format!("a capability grants unknown app permission {id}"));
+            }
+        }
+
+        // The dock: one capability, for the dock alone, with its relay
+        // permission and event listening only (no plugin, no device).
+        let dock_grant: BTreeSet<String> = [
+            DOCK_PERMISSION,
+            "core:event:allow-listen",
+            "core:event:allow-unlisten",
+        ]
+        .iter()
+        .map(|p| p.to_string())
+        .collect();
+        for (file, capability) in capabilities() {
+            let labels: Vec<&str> = capability["webviews"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect();
+            if !labels.contains(&DOCK_WEBVIEW) {
+                continue;
+            }
+            if labels != [DOCK_WEBVIEW] {
+                problems.push(format!(
+                    "{file}: the dock's capability names the dock alone, not {labels:?}"
+                ));
+            }
+            let granted: BTreeSet<String> = capability["permissions"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|entry| permission_id(entry).to_string())
+                .collect();
+            if granted != dock_grant {
+                problems.push(format!(
+                    "{file}: the dock is granted {granted:?}; it may have exactly {dock_grant:?}"
+                ));
             }
         }
 
@@ -904,14 +1050,25 @@ mod tests {
             }
         }
 
-        // The windows the app opens: the config's (the main window), the
-        // print windows of pdf_export.rs, and the preview windows of
-        // creations/preview_window.rs, which no capability names. The
-        // preview is a top-level window with its locks on, never a webview
-        // inside another window.
-        let preview_source = read(&manifest_dir().join("src/creations/preview_window.rs"));
+        // The windows and webviews the app opens: the config's (the main
+        // window), the print windows of pdf_export.rs, the Artifacts
+        // previews, which no capability names, and the floating chat over
+        // the embedded preview (`dock`). A preview, in its own window
+        // (creations/preview_window.rs) or embedded in the main window
+        // (creations/preview_embed.rs), is built only by the `locked!` macro,
+        // which carries every lock.
+        let source = |name: &str| read(&manifest_dir().join("src").join(name));
+        let preview_source = source("creations/preview_window.rs");
+        let embed_source = source("creations/preview_embed.rs");
+        let dock_source = source("dock_layer.rs");
+        let preview_code = without_tests(&preview_source);
+        let embed_code = without_tests(&embed_source);
+        let dock_code = without_tests(&dock_source);
+        let locked_macro = item_body(preview_code, "macro_rules! locked");
+        if locked_macro.is_empty() {
+            problems.push("creations/preview_window.rs has no locked! macro".to_string());
+        }
         for lock in [
-            "WebviewWindowBuilder::new(",
             ".incognito(true)",
             ".devtools(cfg!(debug_assertions))",
             ".initialization_script_for_all_frames(preview::GUARD_SCRIPT)",
@@ -921,13 +1078,22 @@ mod tests {
             ".data_directory(opening.data_dir.clone())",
             ".additional_browser_args(&browser_args(",
             "crate::profile::process_browser_args()",
+        ] {
+            if !locked_macro.contains(lock) {
+                problems.push(format!(
+                    "the locked! macro (creations/preview_window.rs) no longer locks a preview with {lock}"
+                ));
+            }
+        }
+        for lock in [
             "COREWEBVIEW2_PERMISSION_STATE_DENY",
             "add_ProcessFailed",
             "WindowEvent::Destroyed => on_preview_destroyed(",
+            "lock_platform(app, opening.label, Place::Window,",
         ] {
-            if !preview_source.contains(lock) {
+            if !preview_code.contains(lock) {
                 problems.push(format!(
-                    "creations/preview_window.rs no longer builds its window with {lock}"
+                    "creations/preview_window.rs no longer locks its preview with {lock}"
                 ));
             }
         }
@@ -938,15 +1104,70 @@ mod tests {
                     .to_string(),
             );
         }
-        for child in [".add_child(", "WebviewBuilder::new(", "WindowBuilder::new("] {
-            let found = preview_source
-                .replace("WebviewWindowBuilder::new(", "")
-                .contains(child);
-            if found {
-                problems.push(format!(
-                    "creations/preview_window.rs uses {child}: the preview must be a window of its own"
-                ));
-            }
+        // Every preview builder starts inside locked!, and only the embedded
+        // preview adds a child, with the locked builder.
+        let any_builder = Regex::new(r"\b(?:WebviewWindowBuilder|WebviewBuilder)::new\(").unwrap();
+        let locked_builder =
+            Regex::new(r"locked!\(\s*(?:WebviewWindowBuilder|WebviewBuilder)::new\(").unwrap();
+        let window_builder = Regex::new(r"\bWindowBuilder::new\(").unwrap();
+        let builders = any_builder.find_iter(preview_code).count();
+        if builders == 0 || builders != locked_builder.find_iter(preview_code).count() {
+            problems.push(
+                "creations/preview_window.rs builds a webview outside locked!: every preview gets every lock"
+                    .to_string(),
+            );
+        }
+        if window_builder.is_match(preview_code) || preview_code.contains(".add_child(") {
+            problems.push(
+                "creations/preview_window.rs builds a bare window or adds a child webview: only preview_embed.rs embeds, with locked_webview"
+                    .to_string(),
+            );
+        }
+        let children = embed_code.matches(".add_child(").count();
+        let locked_children = Regex::new(r"\.add_child\(\s*preview_window::locked_webview\(")
+            .unwrap()
+            .find_iter(embed_code)
+            .count();
+        if children == 0 || children != locked_children {
+            problems.push(
+                "creations/preview_embed.rs embeds a webview that is not preview_window::locked_webview"
+                    .to_string(),
+            );
+        }
+        if any_builder.is_match(embed_code) || window_builder.is_match(embed_code) {
+            problems.push(
+                "creations/preview_embed.rs builds a webview or window of its own: embed only the locked preview"
+                    .to_string(),
+            );
+        }
+        if !embed_code.contains("preview_window::lock_platform(") {
+            problems.push(
+                "creations/preview_embed.rs no longer sets WebView2's permission and crash handlers (lock_platform)"
+                    .to_string(),
+            );
+        }
+        // The dock: exactly one webview, labelled dock, every permission
+        // request denied.
+        let dock_builders: Vec<&str> = any_builder
+            .find_iter(dock_code)
+            .map(|m| m.as_str())
+            .collect();
+        let dock_labelled = Regex::new(r"WebviewBuilder::new\(\s*DOCK_WEBVIEW\s*,")
+            .unwrap()
+            .find_iter(dock_code)
+            .count();
+        if dock_builders.len() != 1 || dock_labelled != 1 || window_builder.is_match(dock_code) {
+            problems.push(format!(
+                "dock_layer.rs must build exactly one webview, WebviewBuilder::new(DOCK_WEBVIEW, ..); it builds {dock_builders:?}"
+            ));
+        }
+        if !dock_code.contains(".on_permission_request(deny_permissions)")
+            || !item_body(dock_code, "fn deny_permissions").contains("PermissionResponse::Deny")
+        {
+            problems.push(
+                "dock_layer.rs no longer denies the dock's every permission request (deny_permissions)"
+                    .to_string(),
+            );
         }
         let config = json(&manifest_dir().join("tauri.conf.json"));
         let config_windows: Vec<&str> = config["app"]["windows"]
@@ -971,7 +1192,15 @@ mod tests {
                     stack.push(path);
                 } else if path.extension().is_some_and(|e| e == "rs")
                     && path.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
-                        !["acl_manifest.rs", "pdf_export.rs", "preview_window.rs"].contains(&n)
+                        ![
+                            "acl_manifest.rs",
+                            "pdf_export.rs",
+                            "preview_window.rs",
+                            "preview_embed.rs",
+                            "dock_layer.rs",
+                            "lib.rs",
+                        ]
+                        .contains(&n)
                     })
                     && opens_windows.is_match(&read(&path))
                 {
@@ -983,8 +1212,14 @@ mod tests {
             }
         }
         // Each window the app opens is a WebviewWindow, whose one webview
-        // carries the window's label.
-        let expected: BTreeSet<String> = [MAIN_WINDOW.to_string(), print_windows.clone()].into();
+        // carries the window's label, and the dock is a child webview of the
+        // main window, with its own label and capability.
+        let expected: BTreeSet<String> = [
+            MAIN_WINDOW.to_string(),
+            print_windows.clone(),
+            DOCK_WEBVIEW.to_string(),
+        ]
+        .into();
         if windows_named != expected {
             problems.push(format!(
                 "capabilities name the webviews {windows_named:?}, the app opens {expected:?}"
@@ -1222,6 +1457,49 @@ mod tests {
         ] {
             let result = call(&print, cmd, local);
             assert!(refused(&result), "print window: {cmd}: {result:?}");
+        }
+
+        // The floating chat over the embedded preview: its relay commands
+        // and listening only. It is refused main's commands (a main-only
+        // read, main's publish, a plugin command main has) and every write.
+        let dock = window(&app, DOCK_WEBVIEW);
+        assert_eq!(call(&dock, "dock_layer_action", local), reached);
+        assert_eq!(call(&dock, "dock_layer_size", local), reached);
+        let result = call(&dock, "plugin:event|listen", local);
+        assert!(
+            past_the_acl(&result, NO_ARGUMENT),
+            "dock: listen: {result:?}"
+        );
+        for cmd in [
+            "creation_preview_status",
+            "dock_layer_publish",
+            "plugin:path|resolve_directory",
+            "get_app_settings",
+            "agent_approve",
+            "creation_delete",
+            "print_job",
+            "plugin:fs|write_file",
+            "plugin:dialog|save",
+            "plugin:opener|open_url",
+            "plugin:clipboard-manager|read_text",
+            "plugin:notification|request_permission",
+        ] {
+            let result = call(&dock, cmd, local);
+            assert!(refused(&result), "dock: {cmd}: {result:?}");
+        }
+        for url in ["https://example.com/", "http://localhost.evil.example/"] {
+            let result = call(&dock, "dock_layer_action", url);
+            assert!(
+                refused(&result),
+                "dock: dock_layer_action from {url}: {result:?}"
+            );
+        }
+        // No other window may send what only the dock sends.
+        for (name, other) in [("main", &main), ("print", &print)] {
+            for cmd in DOCK_ONLY_COMMANDS {
+                let result = call(other, cmd, local);
+                assert!(refused(&result), "{name}: {cmd}: {result:?}");
+            }
         }
 
         // A webview no capability names: nothing, from the preview origin or

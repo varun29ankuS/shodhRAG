@@ -4032,6 +4032,7 @@ pub async fn agent_install_runtime(
 mod tests {
     use super::*;
     use crate::conversation_commands::{ConversationMessage, ConversationStore, TurnWrite};
+    use crate::memory_commands::recall_for_run_unhurried;
 
     /// A store that refuses every write.
     struct FailingSink;
@@ -5156,7 +5157,8 @@ mod tests {
             .unwrap();
         switch.set(Embedder::Missing);
         let actor = Actor::agent(LOCAL_OWNER, "conv-1", "assistant", "run-1");
-        let given = recall_for_run(&memory, "Explain gradient descent", None, &actor).await;
+        let given =
+            recall_for_run_unhurried(&memory, "Explain gradient descent", None, &actor).await;
         let core = given.as_ref().expect("the core is injected");
         assert_eq!(core.ids, core.core_ids);
         assert!(private_context(given.as_ref(), false));

@@ -1,7 +1,7 @@
 {
   "about": "Every Tauri command the frontend uses must either map to the agent tool(s) that give the assistant the same ability, or be excluded with the reason the assistant must not (or need not) have it. Checked by agent_coverage::tests (cargo test -p shodh-rag-app --lib). A new UI command without an entry here fails CI.",
   "dynamicInvokeFiles": {
-    "features/agent/useAgentSession.ts": "Wraps invoke as call(command, args) to normalise agent errors; every command it sends is a string literal in the same file.",
+    "features/agent/agentApi.ts": "Wraps invoke as call(command, args) to normalise agent errors; every command it sends is a string literal in the same file.",
     "features/modelPicker/modelApi.ts": "Wraps invoke as call(command, args) to normalise model picker errors; every command it sends is a string literal in the same file.",
     "features/ask/viewer/sourceAccess.ts": "Wraps invoke as call(command, filePath) to normalise file access errors; every command it sends is a string literal in the same file."
   },

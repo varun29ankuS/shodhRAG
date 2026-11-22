@@ -1567,8 +1567,12 @@ jobs:
             Wait-Line 'Main window ready' 120
             Write-Host (Select-String -Path $log -Pattern 'Main window ready' | Select-Object -First 1).Line
             if (-not (Select-String -Path $log -SimpleMatch "App data directory: `"$data`"" -Quiet)) {
-              $escaped = $data.Replace('\', '\')
-              if (-not (Select-String -Path $log -SimpleMatch "App data directory: `"$escaped`"" -Quiet)) { throw "The app did not use $data as its data folder" }
+              # The app logs the path with Rust's {:?}, which doubles each backslash.
+              $escaped = $data.Replace('\', '\\')
+              if (-not (Select-String -Path $log -SimpleMatch "App data directory: `"$escaped`"" -Quiet)) {
+                Select-String -Path $log -SimpleMatch 'App data directory' | ForEach-Object { Write-Host $_.Line }
+                throw "The app did not use $data as its data folder"
+              }
             }
             Wait-Line 'Launch probe: screen points' 90
 

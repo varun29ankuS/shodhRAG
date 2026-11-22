@@ -1566,7 +1566,16 @@ jobs:
   publish:
     name: Verify and publish
     needs: [plan, create-release, build, android, launch-macos]
-    if: needs.plan.outputs.publish == 'true'
+    # build needs pr-key, which is skipped on publishing runs; a skipped ancestor makes the
+    # implicit success() false, so this job was skipped and the release stayed an empty
+    # draft (v0.0.11, run 43993975752). Each result is checked directly, as verify does.
+    if: >-
+      ${{ !cancelled() && needs.plan.outputs.publish == 'true'
+      && needs.plan.result == 'success'
+      && needs.create-release.result == 'success'
+      && needs.build.result == 'success'
+      && needs.android.result == 'success'
+      && needs.launch-macos.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: release

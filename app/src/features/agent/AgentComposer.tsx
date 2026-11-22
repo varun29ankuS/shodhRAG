@@ -47,6 +47,8 @@ interface AgentComposerProps {
   approvalPending?: boolean;
   /** Sending is blocked (e.g. an answer is running in another conversation). */
   blockedReason: string | null;
+  /** A one-click fix shown with `blockedReason`, e.g. "Turn on Code mode". */
+  blockedAction?: { label: string; onClick: () => void; busy: boolean } | null;
   placeholder: string;
   /** The model chip (Ask only): shows and changes the model the next answer uses. */
   modelChip?: React.ReactNode;
@@ -90,6 +92,7 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
     canSteer,
     approvalPending = false,
     blockedReason,
+    blockedAction = null,
     placeholder,
     modelChip,
     scopeLabel,
@@ -277,9 +280,25 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
         </div>
       </div>
       {blockedReason && (
-        <p id={blockedId} className={cn('-mt-1 text-caption text-shodh-text-muted', compact ? 'px-3 pb-2' : 'px-[18px] pb-3')}>
-          {blockedReason}
-        </p>
+        <div className={cn('-mt-1 flex flex-wrap items-center gap-x-2 gap-y-1', compact ? 'px-3 pb-2' : 'px-[18px] pb-3')}>
+          <p id={blockedId} className="m-0 text-caption text-shodh-text-muted">
+            {blockedReason}
+          </p>
+          {blockedAction && (
+            <button
+              type="button"
+              onClick={blockedAction.onClick}
+              disabled={blockedAction.busy}
+              aria-busy={blockedAction.busy}
+              className={cn(
+                'inline-flex items-center h-6 px-2.5 rounded-full text-caption font-medium bg-shodh-accent text-white hover:opacity-90 disabled:opacity-60 disabled:cursor-wait',
+                FOCUS_RING,
+              )}
+            >
+              {blockedAction.label}
+            </button>
+          )}
+        </div>
       )}
     </div>
   );

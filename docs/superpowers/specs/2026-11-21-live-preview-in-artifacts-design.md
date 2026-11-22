@@ -1,6 +1,7 @@
 # Live preview in Artifacts, with the chat floating over it
 
 Status: approved by the user 2026-11-21 (option B; gaps closed in phase 3).
+Voice moved to phase 1 by the user, 2026-11-22.
 
 ## Intent
 
@@ -14,7 +15,7 @@ This is the first step of "the agent operates the whole app visibly" (agent-firs
 ## Goals
 
 1. When a Creator build starts writing files, Artifacts shows the creation's page **live, inside the main window**. It reloads as files change, as today (at most every 1.5 s).
-2. The chat **floats over the page** in the bottom-right corner, pill or expanded, exactly as on every other view (PR #191). It is **never covered by the page**. The page stays live while the chat is open and while the user types.
+2. The chat **floats over the page** in the bottom-right corner, pill or expanded, exactly as on every other view (PR #191). It is **never covered by the page**. The page stays live while the chat is open and while the user types or dictates.
 3. **Pointing.** The user presses **Point**, the element under the mouse is outlined, and a click attaches it to the chat box as a chip (`Pointing at: button "Sign up"`). The user types the request and sends. The assistant receives the element's description as page data.
 4. **Pop out** moves the preview to its own window (today's window, unchanged) for a second screen.
 5. Every guarantee of today's preview window holds for the embedded one: no app commands or events, offline unless the user turns internet on, no camera or microphone, navigation only within its own token's path, no downloads, no new windows.
@@ -73,7 +74,7 @@ This is the first step of "the agent operates the whole app visibly" (agent-firs
 - **Separate entry.** A second entry page (`dock.html` → `dock.tsx`) renders the same `ConversationDock` component. It sits fixed at the bottom-right, and its bounds follow the pill or the expanded chat. The webview's background is transparent so the corners and shadow look as they do in-page.
 - **Single source of truth: the main webview.** The dock webview does not run its own chat session.
   - Main → dock: on every change, main sends a snapshot of what `ConversationDock` reads (`messages` of the active conversation, `isStreaming`, the pending approval, `sideRun`, `streamingConversationId`, setup state, the draft) through Rust to the `dock` webview only (`emit_to("dock", …)`).
-  - Dock → main: user actions (`send`, `steer`, `cancel`, `approve`, draft edits, minimise, Open in Ask, attach the pick) go through one Rust command. That command forwards them to `main` only, which runs them on its real session.
+  - Dock → main: user actions (`send`, `steer`, `cancel`, `approve`, draft edits, start or stop dictation, minimise, Open in Ask, attach the pick) go through one Rust command. That command forwards them to `main` only, which runs them on its real session.
   - The dock's React tree gets a `RemoteChatSession` provider with the same interface as `useChatSession`. `ConversationDock` stays unchanged, and only its provider differs.
   - The dock webview ignores `agent_event`s itself. A test asserts that its entry does not subscribe to them.
 - **Capability `dock-window`** (`webviews: ["dock"]`) grants only the commands the dock's modules name, computed by the same static check `acl_manifest.rs` already runs for `main-window` and `print-window`.
@@ -110,12 +111,12 @@ This is the first step of "the agent operates the whole app visibly" (agent-firs
 
 ## Phases (each its own PR, each usable)
 
-1. **Embedded live preview with the floating-chat layer.** Covers goals 1, 2, 4 and 5 and the ACL changes. Without the chat layer, the chat would be covered, so they ship together.
-   - The floating chat over the preview does: the last exchange and live transcript, typing, send, steer, stop, approve or deny, minimise, and Open in Ask.
-   - What phase 3 adds shows as "Open in Ask" until then.
+1. **Embedded live preview with the floating-chat layer, and voice.** Covers goals 1, 2 (typing and dictating), 4 and 5 and the ACL changes. Without the chat layer, the chat would be covered, so they ship together.
+   - The floating chat over the preview does: the last exchange and live transcript, typing, voice, send, steer, stop, approve or deny, minimise, and Open in Ask.
+   - **Voice:** the dock's microphone button asks `main` to start or stop dictation. `main` holds the microphone (as today) and streams the transcript into the shared draft. The layer next to the generated page never gets microphone access.
+   - What phase 3 adds (image paste, snippets, the setup card's buttons, file scope and queued-question chips) shows as "Open in Ask" until then.
 2. **Pointing** (goal 3).
 3. **Parity with the in-page dock** (the user asked for the gaps to be closed). Each item runs in `main` and is driven from the dock. The dock webview gains no device access and no new commands:
-   - **Voice:** the dock's microphone button asks `main` to start or stop dictation. `main` holds the microphone (as today) and streams the transcript into the shared draft. The layer next to the generated page never gets microphone access.
    - **Image paste:** the dock reads the pasted image, checks it against the same size and type limits as Ask, and hands it to `main`. `main` runs the existing image-text attachment.
    - **Snippets:** a drag between webviews isn't possible. Snippets get "Add to chat", which inserts into the shared draft, and that already works for the in-page dock.
    - **Setup card:** shown from the snapshot. Its buttons are actions forwarded to `main`.
@@ -124,11 +125,12 @@ This is the first step of "the agent operates the whole app visibly" (agent-firs
 
 ## Verification
 
-- Unit tests (Node, `app/tests`): the rect clamp, the covered decision, the snapshot and action protocol (round trip, unknown actions refused), pick validation (nonce, once, truncation, rejection), and the dock entry not subscribing to agent events.
+- Unit tests (Node, `app/tests`): the rect clamp, the covered decision, the snapshot and action protocol (round trip, unknown actions refused), the dictation start and stop actions and the transcript reaching the shared draft, pick validation (nonce, once, truncation, rejection), and the dock entry not subscribing to agent events.
 - Rust tests: the ACL gate's new rules, pick URL parsing and validation, and bounds clamping.
 - CI: the macOS launch test opens a creation preview embedded and checks that the child webview exists and is hidden when Artifacts is left.
 - By hand, on the user's Windows machine and the Mac:
   - The page stays live while typing.
+  - Dictating from the floating chat fills its box, and the dock webview is never asked for, or given, the microphone.
   - The chat and approvals are never covered.
   - Menus, dialogs and toasts are never hidden.
   - Offline really is offline (the network tab is empty with internet off).

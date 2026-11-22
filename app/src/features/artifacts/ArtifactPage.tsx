@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  AppWindow,
   ArrowLeft,
   Check,
   CheckCircle2,
@@ -14,31 +13,25 @@ import {
   Palette,
   Pencil,
   RefreshCw,
-  ShieldAlert,
   Trash2,
-  X,
 } from 'lucide-react';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import { cn } from '../../lib/utils';
 import { notify } from '../../lib/notify';
 import { relativeTime } from '../../utils/time';
 import { IS_MAC } from '../../components/ui/Kbd';
-import { useTheme } from '../../contexts/ThemeContext';
 import { showInFolder } from '../library/fileActions';
 import { useChatSession } from '../ask/ChatSessionContext';
 import { isLive } from '../agent/reducer';
-import { creationsApi, errorText, onCreationsChanged, onPreviewEvent } from './api';
+import { creationsApi, errorText, onCreationsChanged } from './api';
+import { EmbeddedPreview } from './EmbeddedPreview';
 import {
   ARTIFACT_PANES,
   PANE_LABELS,
-  PREVIEW_BLOCKED_TEXT,
-  PREVIEW_END_TEXT,
   STATUS_LABELS,
   buildProgress,
   fileRows,
-  previewEndFor,
   previewNetworkText,
-  previewShowingText,
   previousVersion,
   progressLine,
   sizeLabel,
@@ -49,9 +42,6 @@ import type {
   FileChange,
   FileContent,
   FileEntry,
-  PreviewEnd,
-  PreviewEvent,
-  PreviewShown,
 } from './model';
 import type { ArtifactSelection } from './ArtifactsView';
 import { CodeDiff, CodeFileView } from '../code/CodeDiff';
@@ -90,8 +80,8 @@ interface ArtifactPageProps {
 }
 
 /**
- * One creation: its live preview (agent-built code in a normal window of its own, which the
- * preview pane's card opens, with no access to the app, its files or the network unless the
+ * One creation: its live preview (agent-built code in a locked webview over the preview pane,
+ * or popped out to a window of its own, with no access to the app, its files or the network unless the
  * user allows it), its files, its saved versions with what changed, and Keep · Change something ·
  * Delete it, Open folder and Export.
  */
@@ -380,7 +370,7 @@ export function ArtifactPage({ selection, onBack, onOpenChat, onChange, onDelete
                 aria-selected={pane === name}
                 onClick={() => {
                   setPane(name);
-                  // Clicking Preview opens the preview window (or brings it to the front).
+                  // Clicking Preview shows the page (a popped-out window comes to the front).
                   if (name === 'preview') setOpenSeq(seq => seq + 1);
                 }}
                 className={cn(
@@ -434,13 +424,12 @@ export function ArtifactPage({ selection, onBack, onOpenChat, onChange, onDelete
                     : 'There is no index.html at the top of this folder, so there is no page to show. Its files are in Files.'}
               </div>
             ) : (
-              <PreviewCard
+              <EmbeddedPreview
                 creationId={id}
-                title={creation.title}
                 version={version}
                 network={network}
                 reloadSeq={reloadSeq}
-                openSeq={openSeq}
+                focusSeq={openSeq}
               />
             )}
           </div>
@@ -551,274 +540,6 @@ export function ArtifactPage({ selection, onBack, onOpenChat, onChange, onDelete
         )}
       </div>
     </div>
-  );
-}
-
-type PreviewStatus = 'opening' | 'loaded' | 'blocked';
-
-interface PreviewCardProps {
-  creationId: string;
-  title: string;
-  version: number | null;
-  network: boolean;
-  /** Increases when the files changed and the preview should load again. */
-  reloadSeq: number;
-  /** Increases each time the preview window should open (or come to the front). */
-  openSeq: number;
-}
-
-/**
- * The preview pane's card. The page runs in a normal window of its own
- * (`creations/preview_window.rs`) that the user moves, sizes and switches to like any
- * other; this card says what it shows and offers Bring to front · Reload · Close. The
- * window stays open across dialogs and tab changes, and closes when the user closes it,
- * when another version or internet setting is picked here (with a note), when the creation
- * is deleted, and when Shodh quits.
- */
-function PreviewCard({ creationId, title, version, network, reloadSeq, openSeq }: PreviewCardProps) {
-  const { theme } = useTheme();
-  const [shown, setShown] = useState<PreviewShown | null>(null);
-  const [status, setStatus] = useState<PreviewStatus>('opening');
-  const [stopped, setStopped] = useState(false);
-  const [end, setEnd] = useState<PreviewEnd | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const shownRef = useRef<PreviewShown | null>(null);
-  // Windows this card closed itself (their "closed" report needs no note).
-  const closing = useRef(new Set<string>());
-  // What Rust said about each window, kept so a report that comes before the window's
-  // label is known still counts.
-  const reports = useRef(new Map<string, PreviewEvent['state']>());
-  const openedAt = useRef(0);
-  const reloadedAt = useRef(reloadSeq);
-  const ours = shown !== null && shown.creationId === creationId ? shown : null;
-
-  const show = useCallback((next: PreviewShown | null) => {
-    shownRef.current = next;
-    setShown(next);
-  }, []);
-
-  const applyReport = useCallback((state: PreviewEvent['state']) => {
-    if (state === 'loaded') setStatus(prev => (prev === 'blocked' ? prev : 'loaded'));
-    else if (state === 'blocked') setStatus('blocked');
-    else if (state === 'stopped') setStopped(true);
-  }, []);
-
-  // The preview open now, if any (it outlives this page).
-  useEffect(() => {
-    let active = true;
-    creationsApi
-      .previewStatus()
-      .then(found => {
-        if (!active || shownRef.current) return;
-        show(found);
-        if (found) setStatus('loaded');
-      })
-      .catch(e => console.error('The preview window could not be found:', e));
-    return () => {
-      active = false;
-    };
-  }, [show]);
-
-  // Rust's reports on the preview window.
-  useEffect(() => {
-    let disposed = false;
-    let unlisten: UnlistenFn | null = null;
-    const known = reports.current;
-    const closed = closing.current;
-    onPreviewEvent(event => {
-      const current = shownRef.current;
-      if (event.state === 'closed') {
-        known.delete(event.label);
-        const ourClose = closed.delete(event.label);
-        if (current?.label === event.label) {
-          show(null);
-          setStopped(false);
-          if (!ourClose) setEnd('closed');
-        }
-        return;
-      }
-      known.set(event.label, known.get(event.label) === 'blocked' ? 'blocked' : event.state);
-      if (current?.label === event.label) applyReport(event.state);
-    })
-      .then(fn => {
-        if (disposed) fn();
-        else unlisten = fn;
-      })
-      .catch(e => console.error('Failed to listen for the preview window:', e));
-    return () => {
-      disposed = true;
-      unlisten?.();
-      known.clear();
-      closed.clear();
-    };
-  }, [show, applyReport]);
-
-  const close = useCallback(
-    async (why: PreviewEnd | null) => {
-      const current = shownRef.current;
-      if (!current) return;
-      closing.current.add(current.label);
-      show(null);
-      setStopped(false);
-      setEnd(why);
-      try {
-        await creationsApi.closePreview(current.label);
-      } catch (e) {
-        notify.error('The preview could not close', { description: errorText(e) });
-      }
-    },
-    [show],
-  );
-
-  const open = useCallback(async () => {
-    setBusy(true);
-    setError(null);
-    setEnd(null);
-    try {
-      // A stopped page is a dead window: a new one replaces it.
-      if (stopped) await close(null);
-      const info = await creationsApi.preview(creationId, version, network, theme === 'dark');
-      const already = shownRef.current?.label === info.label;
-      show({ label: info.label, creationId, version, network });
-      if (!already) {
-        setStopped(false);
-        setStatus('opening');
-        const early = reports.current.get(info.label);
-        if (early) applyReport(early);
-      }
-    } catch (e) {
-      setError(errorText(e));
-    } finally {
-      setBusy(false);
-    }
-  }, [creationId, version, network, theme, stopped, close, show, applyReport]);
-
-  // Clicking Preview, or the assistant showing the preview, opens it.
-  useEffect(() => {
-    if (openSeq === 0 || openSeq === openedAt.current) return;
-    openedAt.current = openSeq;
-    void open();
-  }, [openSeq, open]);
-
-  // Another version or internet setting picked here (a change, not this page opening on
-  // its defaults): the window showing the old one closes, and the card says why.
-  const picked = useRef({ version, network });
-  useEffect(() => {
-    const before = picked.current;
-    picked.current = { version, network };
-    if (before.version === version && before.network === network) return;
-    const current = shownRef.current;
-    if (!current) return;
-    const why = previewEndFor(current, creationId, version, network);
-    if (why) void close(why);
-  }, [creationId, version, network, close]);
-
-  // While the folder is being built, its preview loads again as files change.
-  useEffect(() => {
-    if (reloadSeq === reloadedAt.current) return;
-    reloadedAt.current = reloadSeq;
-    const current = shownRef.current;
-    if (!current || current.creationId !== creationId || current.version !== null) return;
-    creationsApi.reloadPreview(current.label).catch(e => console.error('The preview could not reload:', e));
-  }, [reloadSeq, creationId]);
-
-  const focus = async () => {
-    if (!ours) return;
-    try {
-      await creationsApi.focusPreview(ours.label);
-    } catch (e) {
-      setError(errorText(e));
-    }
-  };
-
-  const reload = async () => {
-    if (!ours) return;
-    if (stopped) {
-      await open();
-      return;
-    }
-    try {
-      setStatus('opening');
-      await creationsApi.reloadPreview(ours.label);
-      setStatus('loaded');
-    } catch (e) {
-      setError(errorText(e));
-    }
-  };
-
-  const headingId = `preview-card-${creationId}`;
-  return (
-    <section
-      aria-labelledby={headingId}
-      className="flex flex-col gap-3 rounded-xl border border-shodh-border bg-shodh-surface px-4 py-4"
-    >
-      <div className="flex items-start gap-3">
-        <AppWindow className="w-4 h-4 mt-0.5 shrink-0 text-shodh-text-secondary" aria-hidden="true" />
-        <div className="flex flex-col gap-1 min-w-0">
-          <h2 id={headingId} className="m-0 text-small font-semibold text-shodh-text">
-            Preview of {title}
-          </h2>
-          <p role="status" aria-live="polite" className="m-0 text-small text-shodh-text-secondary">
-            {ours
-              ? stopped
-                ? 'The page stopped working. Open it again to restart it.'
-                : status === 'opening'
-                  ? 'Opening the preview window'
-                  : previewShowingText(ours.version)
-              : end
-                ? PREVIEW_END_TEXT[end]
-                : 'The page opens in a window of its own, which you can move, resize and switch to like any other.'}
-          </p>
-          {ours && status === 'blocked' && (
-            <p role="status" className="m-0 inline-flex items-center gap-1.5 text-caption text-shodh-warning">
-              <ShieldAlert className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-              {PREVIEW_BLOCKED_TEXT}
-            </p>
-          )}
-          {error && (
-            <p role="alert" className="m-0 text-small text-shodh-error">
-              The preview could not open: {error}
-            </p>
-          )}
-        </div>
-      </div>
-      <div className="flex items-center gap-2 flex-wrap">
-        {ours && !stopped ? (
-          <>
-            <button type="button" onClick={() => void focus()} className={OUTLINE_BUTTON}>
-              <AppWindow className="w-3.5 h-3.5" aria-hidden="true" />
-              Bring to front
-            </button>
-            <button type="button" onClick={() => void reload()} className={QUIET_BUTTON}>
-              <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
-              Reload
-            </button>
-            <button type="button" onClick={() => void close(null)} className={QUIET_BUTTON}>
-              <X className="w-3.5 h-3.5" aria-hidden="true" />
-              Close
-            </button>
-          </>
-        ) : (
-          <>
-            <button type="button" onClick={() => void open()} disabled={busy} className={OUTLINE_BUTTON}>
-              {busy ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
-              ) : (
-                <AppWindow className="w-3.5 h-3.5" aria-hidden="true" />
-              )}
-              {stopped || end !== null ? 'Open it again' : 'Open preview'}
-            </button>
-            {ours && stopped && (
-              <button type="button" onClick={() => void close(null)} className={QUIET_BUTTON}>
-                <X className="w-3.5 h-3.5" aria-hidden="true" />
-                Close
-              </button>
-            )}
-          </>
-        )}
-      </div>
-    </section>
   );
 }
 

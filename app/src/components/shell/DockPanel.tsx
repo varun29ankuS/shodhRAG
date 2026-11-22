@@ -220,13 +220,14 @@ export function DockPanel({ model, onExpandAsk, fixed, maxHeight, pillRef, panel
           <button
             type="button"
             onClick={onExpandAsk}
+            title="This answer is too long to show whole here"
             className={cn(
               'self-stretch inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-dashed border-shodh-border text-caption text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
               FOCUS_RING,
             )}
           >
             <History className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-            <span className="min-w-0 text-left">Earlier steps of this answer are too long to show here. Show them in Ask</span>
+            <span className="min-w-0 text-left">Earlier steps · Show in Ask</span>
           </button>
         )}
         {snapshot.lastUser && (

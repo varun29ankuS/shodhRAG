@@ -114,20 +114,28 @@ export function previewNetworkText(network: boolean, mac: boolean): string {
   return mac ? PREVIEW_NETWORK_OFF_TEXT_MAC : PREVIEW_NETWORK_OFF_TEXT_WINDOWS;
 }
 
+/** Where a preview shows: inside Artifacts over its pane, or in a window of its own. */
+export type PreviewPlace = 'embedded' | 'window';
+
+function placeOf(value: unknown): PreviewPlace {
+  return value === 'embedded' ? 'embedded' : 'window';
+}
+
 /** The preview open now (`creation_preview_status`), if any. */
 export interface PreviewShown {
   label: string;
   creationId: string;
   version: number | null;
   network: boolean;
+  place: PreviewPlace;
 }
 
 export function parsePreviewShown(value: unknown): PreviewShown | null {
   if (typeof value !== 'object' || value === null) return null;
-  const { label, creationId, version, network } = value as Record<string, unknown>;
+  const { label, creationId, version, network, place } = value as Record<string, unknown>;
   if (typeof label !== 'string' || typeof creationId !== 'string' || typeof network !== 'boolean') return null;
   const at = typeof version === 'number' && Number.isInteger(version) && version > 0 ? version : null;
-  return { label, creationId, version: at, network };
+  return { label, creationId, version: at, network, place: placeOf(place) };
 }
 
 /** The event Rust sends the main window about its preview window (`preview_window.rs`). */
@@ -143,15 +151,17 @@ export interface PreviewEvent {
    * page's browser process crashed or hung.
    */
   state: PreviewState;
+  /** In Artifacts or in its own window. */
+  place: PreviewPlace;
 }
 
 const PREVIEW_STATES: readonly string[] = ['loaded', 'blocked', 'closed', 'stopped'];
 
 export function parsePreviewEvent(payload: unknown): PreviewEvent | null {
   if (typeof payload !== 'object' || payload === null) return null;
-  const { label, state } = payload as { label?: unknown; state?: unknown };
+  const { label, state, place } = payload as { label?: unknown; state?: unknown; place?: unknown };
   if (typeof label !== 'string' || typeof state !== 'string' || !PREVIEW_STATES.includes(state)) return null;
-  return { label, state: state as PreviewState };
+  return { label, state: state as PreviewState, place: placeOf(place) };
 }
 
 /** What the card says when the page was stopped from leaving its files. */
@@ -167,11 +177,40 @@ export const PREVIEW_END_TEXT: Record<PreviewEnd, string> = {
   network: 'The preview closed because you changed the internet switch. Open it again to use the new setting.',
 };
 
-/** What the card says about the window it shows. */
-export function previewShowingText(version: number | null): string {
-  return version === null
-    ? 'Showing the folder as it is now, in its own window.'
-    : `Showing version ${version}, in its own window.`;
+/** The pane's state line for the preview: live here, or in its own window. */
+export function previewShowingText(version: number | null, place: PreviewPlace = 'window'): string {
+  const what = version === null ? 'Now' : `Version ${version}`;
+  return place === 'embedded' ? `${what} · live` : `${what} · in its own window`;
+}
+
+/** What Artifacts opens on for a request (the assistant's, or a Creator build starting). */
+export interface ArtifactSelection {
+  id: string;
+  version: number | null;
+  pane: ArtifactPane;
+  /**
+   * Show the page itself, not only the pane: the request opened the preview pane (a build
+   * starting, or the assistant's open_artifact on the preview or on no pane in particular).
+   * The page shows inside Artifacts and takes no focus.
+   */
+  showPreview: boolean;
+  /** Increases with each request, so repeating one re-applies it. */
+  seq: number;
+}
+
+/** The selection an `artifact` navigation target opens. */
+export function selectionFor(
+  target: { artifactId: string; version: number | null; pane: string | null },
+  prev: { seq: number } | null,
+): ArtifactSelection {
+  const pane: ArtifactPane = isArtifactPane(target.pane) ? target.pane : 'preview';
+  return {
+    id: target.artifactId,
+    version: target.version,
+    pane,
+    showPreview: pane === 'preview',
+    seq: (prev?.seq ?? 0) + 1,
+  };
 }
 
 /**

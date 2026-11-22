@@ -938,17 +938,19 @@ function AppSplitView() {
     }
   };
 
-  // Tauri file drop event listener using getCurrentWebview
+  // Tauri file drop event listener, on the main window
   useEffect(() => {
-    debugLog('🔧 Setting up Tauri drag-drop listeners using webview API...');
+    debugLog('🔧 Setting up Tauri drag-drop listeners using window API...');
     let unlistenDrop: (() => void) | undefined;
 
     (async () => {
       try {
-        // Use getCurrentWebview() not getCurrentWebviewWindow()
-        const { getCurrentWebview } = await import('@tauri-apps/api/webview');
-        const webview = getCurrentWebview();
-        debugLog('✅ Got current webview');
+        // The window's drop events, not the webview's: while the embedded Artifacts preview
+        // or the floating chat is a child webview of this window, Tauri sends drops on the
+        // app's page to the window only (a webview-target listener would hear none).
+        const { getCurrentWindow } = await import('@tauri-apps/api/window');
+        const webview = getCurrentWindow();
+        debugLog('✅ Got current window');
 
         // Register file drop handler using onDragDropEvent
         unlistenDrop = await webview.onDragDropEvent(async (event: any) => {

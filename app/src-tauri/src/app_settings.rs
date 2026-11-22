@@ -13,6 +13,7 @@
 //! values it kept in local storage before this store existed.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
@@ -122,17 +123,46 @@ impl Default for Preferences {
     }
 }
 
+/// The zoom the main webview is drawn at now (its text size), as `f64` bits.
+/// The Artifacts pane reports its place in the main page's CSS pixels; the
+/// embedded preview is placed in logical pixels, which are this much larger.
+static MAIN_ZOOM: AtomicU64 = AtomicU64::new(1.0f64.to_bits());
+
+/// The main webview's zoom now (1.0 until a text size is applied).
+pub fn main_zoom() -> f64 {
+    f64::from_bits(MAIN_ZOOM.load(Ordering::SeqCst))
+}
+
+/// Zoom `webview` to `zoom`, and remember it when it is the main webview.
+fn zoom_to<R: tauri::Runtime>(webview: &tauri::Webview<R>, zoom: f64) {
+    match webview.set_zoom(zoom) {
+        Ok(()) => {
+            if webview.label() == crate::background::MAIN_WINDOW {
+                MAIN_ZOOM.store(zoom.to_bits(), Ordering::SeqCst);
+            }
+        }
+        Err(e) => {
+            tracing::warn!(window = %webview.label(), error = %e, "the text size could not be applied")
+        }
+    }
+}
+
+/// The webviews drawn at the user's text size: every one but a PDF export's
+/// offscreen page. Listed by webview, not by window: once the main window
+/// holds child webviews (the embedded preview, the floating chat), Tauri no
+/// longer lists it among the webview windows.
+pub fn zoomed_webviews<R: tauri::Runtime, M: Manager<R>>(app: &M) -> Vec<tauri::Webview<R>> {
+    app.webviews()
+        .into_values()
+        .filter(|webview| !is_print_window(webview.label()))
+        .collect()
+}
+
 /// Draw every open window at the text size in `prefs`.
 pub fn apply_text_size(app: &AppHandle, prefs: &Preferences) {
     let zoom = prefs.text_size.zoom();
-    for (label, window) in app.webview_windows() {
-        // A PDF export's offscreen page is printed as laid out, never zoomed.
-        if is_print_window(&label) {
-            continue;
-        }
-        if let Err(e) = window.set_zoom(zoom) {
-            tracing::warn!(window = %label, error = %e, "the text size could not be applied");
-        }
+    for webview in zoomed_webviews(app) {
+        zoom_to(&webview, zoom);
     }
 }
 
@@ -149,11 +179,7 @@ pub fn on_page_loaded(webview: &tauri::Webview) {
     }
     let app = webview.app_handle();
     match store(app).and_then(|s| s.load().map_err(|e| e.to_string())) {
-        Ok(settings) => {
-            if let Err(e) = webview.set_zoom(settings.preferences.text_size.zoom()) {
-                tracing::warn!(window = %webview.label(), error = %e, "the text size could not be applied");
-            }
-        }
+        Ok(settings) => zoom_to(webview, settings.preferences.text_size.zoom()),
         Err(e) => tracing::warn!(error = %e, "settings unreadable; the default text size is used"),
     }
 }

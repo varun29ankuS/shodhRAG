@@ -66,6 +66,14 @@ export interface PreviewInfo {
   page: string;
 }
 
+/** The Artifacts pane's place, as the embedded preview needs it (`preview_embed.rs`). */
+export interface PreviewPlacement {
+  /** The pane in this page's CSS pixels, or null while it is not on screen. */
+  rect: { x: number; y: number; width: number; height: number } | null;
+  /** Something of the app's own (a dialog, menu or toast) is above the pane. */
+  covered: boolean;
+}
+
 /** The panes of a creation's page, in order. */
 export const ARTIFACT_PANES = ['preview', 'files', 'versions'] as const;
 export type ArtifactPane = typeof ARTIFACT_PANES[number];

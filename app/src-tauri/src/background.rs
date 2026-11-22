@@ -28,6 +28,20 @@ use crate::audit_commands::AuditState;
 /// floating widget) close normally.
 pub const MAIN_WINDOW: &str = "main";
 
+/// The main window. Look it up with this (or [`main_webview`]), never with
+/// `get_webview_window`: while the main window holds child webviews (the
+/// embedded Artifacts preview, the floating chat over it), Tauri no longer
+/// counts it as a webview window, and that lookup finds nothing.
+pub fn main_window<R: tauri::Runtime, M: Manager<R>>(app: &M) -> Option<Window<R>> {
+    app.get_window(MAIN_WINDOW)
+}
+
+/// The main window's own webview (the app's page), with or without child
+/// webviews beside it.
+pub fn main_webview<R: tauri::Runtime, M: Manager<R>>(app: &M) -> Option<tauri::Webview<R>> {
+    app.get_webview(MAIN_WINDOW)
+}
+
 /// Name of the autostart entry (the Windows Run value, the macOS launch
 /// agent). Fixed rather than taken from the product name, which the plugin
 /// would otherwise use: an entry made before the app was renamed to Shodh
@@ -102,7 +116,7 @@ impl BackgroundState {
 }
 
 fn show_main(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+    if let Some(window) = main_window(app) {
         if let Err(e) = window.show().and_then(|()| window.unminimize()) {
             tracing::warn!(error = %e, "could not show the main window");
         }

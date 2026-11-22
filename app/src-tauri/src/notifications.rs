@@ -66,7 +66,6 @@ use tauri_plugin_opener::OpenerExt;
 
 use crate::app_settings::{broadcast, AppSettings, NotificationPrefs, SettingsStore};
 use crate::audit_commands::AuditState;
-use crate::background::MAIN_WINDOW;
 use crate::conversation_commands::ConversationStore;
 
 /// What a notification is about; each has its switch in Settings.
@@ -122,7 +121,7 @@ pub fn should_alert(prefs: &NotificationPrefs, category: Category, window: Windo
 /// The main window's state. A state that cannot be read counts as not
 /// focused: a notification too many is better than a reminder missed.
 fn window_state(app: &AppHandle) -> WindowState {
-    let Some(window) = app.get_webview_window(MAIN_WINDOW) else {
+    let Some(window) = crate::background::main_window(app) else {
         return WindowState::Hidden;
     };
     let visible = window.is_visible().unwrap_or(false);

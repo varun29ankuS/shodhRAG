@@ -7,7 +7,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import { PREVIEW_EVENT, parsePreviewEvent, parsePreviewShown } from './model';
-import type { CodeChange, Creation, FileChange, FileContent, FileEntry, PreviewEvent, PreviewInfo } from './model';
+import type { CodeChange, Creation, FileChange, FileContent, FileEntry, PreviewEvent, PreviewInfo, PreviewPlacement } from './model';
 
 export function errorText(error: unknown): string {
   if (typeof error === 'object' && error !== null && typeof (error as { message?: unknown }).message === 'string') {
@@ -37,6 +37,21 @@ export const creationsApi = {
    */
   preview: (id: string, version: number | null, network: boolean, dark: boolean) =>
     invoke<PreviewInfo>('creation_preview', { id, version, network, dark }),
+  /**
+   * Show the preview inside the main window over the Artifacts pane, hidden until the pane
+   * reports its place (`creations/preview_embed.rs`). The same one already embedded keeps its
+   * page; any other preview closes first.
+   */
+  embedPreview: (id: string, version: number | null, network: boolean, dark: boolean) =>
+    invoke<PreviewInfo>('creation_preview_embed', { id, version, network, dark }),
+  /**
+   * Where the pane is, in this page's CSS pixels (`rect` null: not on screen), and whether
+   * something of the app's own is above it (`covered`). The page shows only while both say so.
+   */
+  placePreview: (label: string, placement: PreviewPlacement) =>
+    invoke<null>('creation_preview_place', { label, placement }),
+  /** Move the embedded preview to a window of its own (its page loads again there). */
+  popOutPreview: (label: string) => invoke<PreviewInfo>('creation_preview_pop_out', { label }),
   /** The preview open now, if any. */
   previewStatus: () => invoke<unknown>('creation_preview_status').then(parsePreviewShown),
   /** Bring the preview window to the front, with the keyboard focus. */

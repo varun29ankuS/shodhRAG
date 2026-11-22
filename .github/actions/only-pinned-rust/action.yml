@@ -1,0 +1,44 @@
+name: Only the pinned Rust toolchain
+description: >
+  Uninstalls every Rust toolchain except the one rust-toolchain.toml pins, so
+  Swatinem/rust-cache's key depends on that toolchain alone. rust-cache hashes
+  `rustc -vV` of every toolchain `rustup toolchain list` shows into the key and
+  into the restore key, and the GitHub runner images ship their own `stable`
+  (1.99.1 on macos-26-arm64 20261102, 1.100.0 on 20261117). Each image update
+  changed every job's keys, so no saved entry matched and the builds ran
+  cold (the macOS release build of pull request 190 reached its 130-minute
+  limit that way), while the entries under the old keys took cache space
+  until evicted. Run it after dtolnay/rust-toolchain and before every
+  rust-cache use, from the repository root.
+
+runs:
+  using: composite
+  steps:
+    - name: Uninstall the runner image's Rust toolchains
+      shell: bash
+      run: |
+        set -euo pipefail
+        # The toolchain rust-toolchain.toml selects in the repository root,
+        # e.g. "1.97.1-aarch64-apple-darwin (overridden by '.../rust-toolchain.toml')".
+        pinned=$(rustup show active-toolchain | awk 'NR==1 {print $1}')
+        if [ -z "$pinned" ]; then
+          echo "::error::rustup reports no active toolchain in $(pwd)"
+          exit 1
+        fi
+        installed=$(rustup toolchain list --quiet | tr -d '\r')
+        if ! grep -qxF "$pinned" <<<"$installed"; then
+          echo "::error::The pinned toolchain ${pinned} is not installed (installed: $(tr '\n' ' ' <<<"$installed"))"
+          exit 1
+        fi
+        while IFS= read -r toolchain; do
+          if [ -n "$toolchain" ] && [ "$toolchain" != "$pinned" ]; then
+            echo "Uninstalling ${toolchain} (preinstalled on the runner image)"
+            rustup toolchain uninstall "$toolchain"
+          fi
+        done <<<"$installed"
+        remaining=$(rustup toolchain list --quiet | tr -d '\r')
+        if [ "$remaining" != "$pinned" ]; then
+          echo "::error::Toolchains other than ${pinned} are still installed: $(tr '\n' ' ' <<<"$remaining")"
+          exit 1
+        fi
+        echo "Rust toolchains left for the cache key: ${remaining}"

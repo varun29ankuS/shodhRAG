@@ -37,7 +37,12 @@ name: Release
 #                   minimum macOS and libraries checked, Gatekeeper's refusal
 #                   recorded, then (quarantine removed, as README.md says)
 #                   started on a macOS runner until the main window reports
-#                   ready, kept up and quit. Publishing waits for it.
+#                   ready, the embedded-preview probe run on a separate profile
+#                   (launch_probe.rs: hit test and screen pixels), kept up and quit.
+#                   Publishing waits for it.
+#   launch-windows  the Windows installer installed silently and started on a
+#                   separate profile with the same probe (hit test, pixels, the
+#                   layers hidden again). Publishing waits for it.
 #   publish         (environment `release`, one at a time across releases)
 #                   checks the artifacts' signatures with the release key,
 #                   stages the eight release files with latest.json, uploads them
@@ -64,7 +69,7 @@ name: Release
 #
 # Build-only runs (called by ci.yml without a tag: on pull requests whose
 # changed files can affect the installers or the phone app, on every master
-# push and in the nightly run): plan, build, android and launch-macos, then
+# push and in the nightly run): plan, build, android, launch-macos and launch-windows, then
 # verify checks the installers the builds uploaded, with update bundles signed
 # by a throwaway key made for that run (pr-key), and the APK signed by a
 # throwaway Android key the android job makes for itself: pull requests never
@@ -1274,7 +1279,9 @@ jobs:
           tester_home="$RUNNER_TEMP/tester-home"
           evidence="$RUNNER_TEMP/launch-evidence"
           mkdir -p "$tester_home" "$evidence"
-          data_dir="$tester_home/Library/Application Support/$id"
+          # A separate profile (SHODH_DATA_DIR), which alone may run the
+          # embedded-preview probe (launch_probe.rs, the next steps).
+          data_dir="$tester_home/probe-profile"
           log="$data_dir/logs/shodh.log"
           # Crash reports go to the logged-in user's folders whatever HOME the
           # app had: these are the ones from before the launch.
@@ -1287,6 +1294,7 @@ jobs:
             echo "TESTER_HOME=$tester_home"
             echo "EVIDENCE=$evidence"
             echo "APP_LOG=$log"
+            echo "PROBE_DATA=$data_dir"
           } >> "$GITHUB_ENV"
           if pgrep -x "$APP_NAME" >/dev/null; then echo "::error::$APP_NAME is already running"; exit 1; fi
 
@@ -1294,7 +1302,7 @@ jobs:
           open_help=$(open --help 2>&1 || true)
           grep -q -- '--env' <<< "$open_help" || { echo "::error::open on this runner has no --env"; echo "$open_help"; exit 1; }
           start=$(now_ms)
-          open -n -W --env "HOME=$tester_home" --stdout "$evidence/stdout.txt" --stderr "$evidence/stderr.txt" "$APP" >"$evidence/open.txt" 2>&1 &
+          open -n -W --env "HOME=$tester_home" --env "SHODH_DATA_DIR=$data_dir" --env "SHODH_LAUNCH_PROBE=embedded-preview" --stdout "$evidence/stdout.txt" --stderr "$evidence/stderr.txt" "$APP" >"$evidence/open.txt" 2>&1 &
           open_pid=$!
           echo "OPEN_PID=$open_pid" >> "$GITHUB_ENV"
 
@@ -1335,7 +1343,7 @@ jobs:
           echo "APP_PID=$pid" >> "$GITHUB_ENV"
           ready_line=$(grep -o 'Main window ready.*' "$log" | head -n 1)
           echo "$ready_line"
-          # The isolation held: the app's data folder is the tester home's.
+          # The isolation held: the app's data folder is the separate profile's.
           if ! grep -qF "App data directory: \"$data_dir\"" "$log"; then
             echo "::error::The app did not use $data_dir as its data folder"
             grep 'App data directory' "$log" || true
@@ -1348,6 +1356,63 @@ jobs:
             echo "- main window ready: ${ready_ms} ms after \`open\`"
             echo "- ${ready_line}"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # The embedded preview (launch_probe.rs): the app embeds a sample page (solid
+      # red) with the floating chat over its corner, checks which webview is under
+      # four points, logs their screen points, and waits for the screenshot. The
+      # pixels: the chat over the page, the page just left of the chat's box, the
+      # page alone, and the app above the page. Then the app hides both layers.
+      - name: The embedded preview and the chat over it
+        run: |
+          set -euo pipefail
+          probe_lines() { grep 'Launch probe:' "$APP_LOG" || true; }
+          wait_line() {
+            local pattern="$1" seconds="$2" end
+            end=$(( $(date +%s) + seconds ))
+            until grep -qE "$pattern" "$APP_LOG"; do
+              if grep -q 'Launch probe: FAIL' "$APP_LOG"; then probe_lines; echo "::error::$(grep 'Launch probe: FAIL' "$APP_LOG" | head -n 1)"; exit 1; fi
+              if [ "$(date +%s)" -gt "$end" ]; then probe_lines; echo "::error::No '$pattern' within $seconds s"; exit 1; fi
+              perl -e 'select(undef, undef, undef, 0.25)'
+            done
+          }
+          wait_line 'Launch probe: screen points' 90
+          shot="$EVIDENCE/embedded-preview.bmp"
+          screencapture -x -t bmp "$shot"
+          touch "$PROBE_DATA/launch-probe-captured"
+          # The colour at a screen point of a BMP (bottom-up rows, BGR(A)).
+          le() { od -An -tu1 -j "$2" -N "$3" "$1" | awk '{for(i=NF;i>=1;i--) v=v*256+$i} END{print v}' v=0; }
+          offset=$(le "$shot" 10 4); width=$(le "$shot" 18 4); height=$(le "$shot" 22 4); bpp=$(le "$shot" 28 2)
+          if [ "$height" -gt 2147483647 ]; then height=$(( 4294967296 - height )); top_down=1; else top_down=0; fi
+          row_bytes=$(( (width * bpp / 8 + 3) / 4 * 4 ))
+          colour() {
+            local x="$1" y="$2" row at
+            if [ "$x" -lt 0 ] || [ "$y" -lt 0 ] || [ "$x" -ge "$width" ] || [ "$y" -ge "$height" ]; then echo off-screen; return; fi
+            if [ "$top_down" = 1 ]; then row=$y; else row=$(( height - 1 - y )); fi
+            at=$(( offset + row * row_bytes + x * bpp / 8 ))
+            read -r b g r < <(od -An -tu1 -j "$at" -N 3 "$shot")
+            if [ "$r" -gt 200 ] && [ "$g" -lt 60 ] && [ "$b" -lt 60 ]; then echo "red(rgb $r,$g,$b)"; else echo "other(rgb $r,$g,$b)"; fi
+          }
+          points=$(grep -o 'Launch probe: screen points.*' "$APP_LOG" | head -n 1)
+          # The colour at the point the probe logged as $1.
+          at_point() {
+            local x y
+            read -r x y < <(sed -nE "s/.*$1=\((-?[0-9]+), (-?[0-9]+)\).*/\1 \2/p" <<< "$points") || true
+            if [ -z "${x:-}" ]; then echo missing; return; fi
+            colour "$x" "$y"
+          }
+          overlap=$(at_point overlap); outside=$(at_point outside); page=$(at_point preview); main=$(at_point main)
+          summary="Pixels: overlap=$overlap outside=$outside preview=$page main=$main"
+          wait_line 'Launch probe: (PASS|FAIL)' 30
+          probe_lines
+          echo "$summary"
+          { echo '### Embedded preview'; echo; probe_lines | sed 's/^/- /'; echo "- $summary"; } >> "$GITHUB_STEP_SUMMARY"
+          if grep -q 'Launch probe: FAIL' "$APP_LOG"; then echo "::error::$(grep 'Launch probe: FAIL' "$APP_LOG" | head -n 1)"; exit 1; fi
+          grep -q 'Launch probe: preview embedded label=preview-[0-9a-f]* shown=true' "$APP_LOG" || { echo "::error::The preview was not shown embedded"; exit 1; }
+          grep -q 'Launch probe: preview hidden=true chat hidden=true' "$APP_LOG" || { echo "::error::The preview or the chat stayed up after the pane went"; exit 1; }
+          case "$overlap $outside $page $main" in
+            other*' red'*' red'*' other'*) ;;
+            *) echo "::error::$summary (expected: the chat over the page, the page beside the chat and alone, the app above)"; exit 1 ;;
+          esac
 
       # 15 s after ready covers the delayed startup work: the background
       # loads started during setup and the calendar re-index 3 s after it
@@ -1422,8 +1487,8 @@ jobs:
           set -uo pipefail
           evidence="${EVIDENCE:-$RUNNER_TEMP/launch-evidence}"
           mkdir -p "$evidence"
-          if [ -n "${TESTER_HOME:-}" ] && [ -d "$TESTER_HOME/Library" ]; then
-            find "$TESTER_HOME/Library" -path '*/logs/shodh.log*' -type f -exec cp {} "$evidence/" \;
+          if [ -n "${TESTER_HOME:-}" ] && [ -d "$TESTER_HOME" ]; then
+            find "$TESTER_HOME" -path '*/logs/shodh.log*' -type f -exec cp {} "$evidence/" \;
           fi
           for d in "$HOME/Library/Logs/DiagnosticReports" /Library/Logs/DiagnosticReports; do
             if [ -d "$d" ]; then find "$d" -type f -iname '*shodh*' -exec cp {} "$evidence/" \;; fi
@@ -1443,6 +1508,122 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: macos-launch-evidence
+          path: ${{ runner.temp }}/launch-evidence
+          retention-days: 14
+          if-no-files-found: warn
+
+  # The Windows installer, installed silently and started on a separate profile
+  # with the embedded-preview probe (launch_probe.rs), as launch-macos does:
+  # which webview is under the probe's four points, then the screen's pixels at
+  # them (the chat over the page, the page just left of the chat's box, the page
+  # alone, the app above it), then both layers hidden again.
+  launch-windows:
+    name: Launch test (Windows)
+    needs: [plan, build]
+    if: >-
+      ${{ !cancelled() && needs.plan.result == 'success'
+      && needs.build.result == 'success' }}
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: shodh-windows-x64
+          path: ${{ runner.temp }}/dist
+
+      - name: Install, launch, and check the embedded preview
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:RUNNER_TEMP 'launch-evidence'
+          New-Item -ItemType Directory -Force $evidence | Out-Null
+          $installer = Get-ChildItem -Recurse "$env:RUNNER_TEMP/dist" -Filter '*-setup.exe' | Select-Object -First 1
+          if (-not $installer) { throw 'No installer in the artifact' }
+          $dir = Join-Path $env:RUNNER_TEMP 'Shodh'
+          $p = Start-Process -FilePath $installer.FullName -ArgumentList '/S', "/D=$dir" -PassThru -Wait
+          Write-Host "Installer exited $($p.ExitCode)"
+          $exe = Get-ChildItem -Recurse $dir, "$env:LOCALAPPDATA\Shodh" -Filter 'Shodh.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) { throw 'Shodh.exe was not installed' }
+          Write-Host "Installed $($exe.FullName)"
+          # A separate profile, which alone may run the probe.
+          $data = Join-Path $env:RUNNER_TEMP 'probe-profile'
+          New-Item -ItemType Directory -Force $data | Out-Null
+          $log = Join-Path $data 'logs\shodh.log'
+          $env:SHODH_DATA_DIR = $data
+          $env:SHODH_LAUNCH_PROBE = 'embedded-preview'
+          $app = Start-Process -FilePath $exe.FullName -PassThru
+          function Wait-Line([string]$pattern, [int]$seconds) {
+            $deadline = (Get-Date).AddSeconds($seconds)
+            while (-not ((Test-Path $log) -and (Select-String -Path $log -Pattern $pattern -Quiet))) {
+              if ((Test-Path $log) -and (Select-String -Path $log -Pattern 'Launch probe: FAIL' -Quiet)) { return }
+              if ($app.HasExited) { throw "Shodh exited ($($app.ExitCode)) while waiting for '$pattern'" }
+              if ((Get-Date) -gt $deadline) { throw "No '$pattern' within $seconds s" }
+              Start-Sleep -Milliseconds 250
+            }
+          }
+          try {
+            Wait-Line 'Main window ready' 120
+            Write-Host (Select-String -Path $log -Pattern 'Main window ready' | Select-Object -First 1).Line
+            if (-not (Select-String -Path $log -SimpleMatch "App data directory: `"$data`"" -Quiet)) {
+              $escaped = $data.Replace('\', '\')
+              if (-not (Select-String -Path $log -SimpleMatch "App data directory: `"$escaped`"" -Quiet)) { throw "The app did not use $data as its data folder" }
+            }
+            Wait-Line 'Launch probe: screen points' 90
+
+            Add-Type -AssemblyName System.Drawing
+            Add-Type -AssemblyName System.Windows.Forms
+            $bounds = [System.Windows.Forms.SystemInformation]::VirtualScreen
+            $bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
+            $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+            $points = (Select-String -Path $log -Pattern 'Launch probe: screen points' | Select-Object -First 1).Line
+            if ($points) {
+              $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+              $bitmap.Save((Join-Path $evidence 'embedded-preview.png'), [System.Drawing.Imaging.ImageFormat]::Png)
+            }
+            New-Item -ItemType File -Force (Join-Path $data 'launch-probe-captured') | Out-Null
+            $colour = {
+              param($name)
+              if ($points -notmatch "$name=\((-?\d+), (-?\d+)\)") { return 'missing' }
+              $x = [int]$Matches[1] - $bounds.X
+              $y = [int]$Matches[2] - $bounds.Y
+              if ($x -lt 0 -or $y -lt 0 -or $x -ge $bounds.Width -or $y -ge $bounds.Height) { return 'off-screen' }
+              $c = $bitmap.GetPixel($x, $y)
+              $word = 'other'
+              if ($c.R -gt 200 -and $c.G -lt 60 -and $c.B -lt 60) { $word = 'red' }
+              "$word(rgb $($c.R),$($c.G),$($c.B))"
+            }
+            $overlap = & $colour 'overlap'
+            $outside = & $colour 'outside'
+            $page = & $colour 'preview'
+            $main = & $colour 'main'
+            $summary = "Pixels: overlap=$overlap outside=$outside preview=$page main=$main"
+            Wait-Line 'Launch probe: (PASS|FAIL)' 30
+            $lines = @(Select-String -Path $log -Pattern 'Launch probe:' | ForEach-Object { $_.Line })
+            $lines | ForEach-Object { Write-Host $_ }
+            Write-Host $summary
+            '### Embedded preview' | Add-Content $env:GITHUB_STEP_SUMMARY
+            $lines | ForEach-Object { "- $_" } | Add-Content $env:GITHUB_STEP_SUMMARY
+            "- $summary" | Add-Content $env:GITHUB_STEP_SUMMARY
+            $failed = $lines | Where-Object { $_ -match 'Launch probe: FAIL' } | Select-Object -First 1
+            if ($failed) { throw $failed }
+            if (-not ($lines | Where-Object { $_ -match 'Launch probe: preview embedded label=preview-[0-9a-f]+ shown=true' })) { throw 'The preview was not shown embedded' }
+            if (-not ($lines | Where-Object { $_ -match 'Launch probe: hit-test overlap=dock outside=preview preview=preview main=main' })) { throw 'The hit test does not put the chat over the page and the page beside it' }
+            if (-not ($lines | Where-Object { $_ -match 'Launch probe: preview hidden=true chat hidden=true' })) { throw 'The preview or the chat stayed up after the pane went' }
+            if (-not ($overlap -like 'other*' -and $outside -like 'red*' -and $page -like 'red*' -and $main -like 'other*')) {
+              throw "$summary (expected: the chat over the page, the page beside the chat and alone, the app above)"
+            }
+          } finally {
+            if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force }
+            if (Test-Path $log) { Copy-Item $log $evidence }
+          }
+
+      - name: Upload the screenshot and the app's log
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: windows-launch-evidence
           path: ${{ runner.temp }}/launch-evidence
           retention-days: 14
           if-no-files-found: warn
@@ -1565,7 +1746,7 @@ jobs:
 
   publish:
     name: Verify and publish
-    needs: [plan, create-release, build, android, launch-macos]
+    needs: [plan, create-release, build, android, launch-macos, launch-windows]
     # build needs pr-key, which is skipped on publishing runs; a skipped ancestor makes the
     # implicit success() false, so this job was skipped and the release stayed an empty
     # draft (v0.0.11, run 43993975752). Each result is checked directly, as verify does.
@@ -1575,7 +1756,8 @@ jobs:
       && needs.create-release.result == 'success'
       && needs.build.result == 'success'
       && needs.android.result == 'success'
-      && needs.launch-macos.result == 'success' }}
+      && needs.launch-macos.result == 'success'
+      && needs.launch-windows.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: release

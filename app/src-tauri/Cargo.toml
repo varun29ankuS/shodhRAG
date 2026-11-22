@@ -125,6 +125,8 @@ windows = { version = "0.58", features = [
     # "Stay available for my phone": keeping the computer awake on mains power
     # (phone_link/stay_available.rs).
     "Win32_System_Power",
+    # The launch probe's hit test of the main window's child webviews (launch_probe.rs).
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 # A creation file opened without following a final link, and its real path read

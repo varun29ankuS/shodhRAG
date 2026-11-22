@@ -375,7 +375,7 @@ pub async fn creation_preview_pop_out(
 /// Show the preview of `id` (a version, or the folder now) at `place`. The
 /// same preview already showing there is kept (a window comes to the
 /// front); any other one closes first.
-async fn show_preview(
+pub(crate) async fn show_preview(
     app: &AppHandle,
     id: &str,
     version: Option<u32>,

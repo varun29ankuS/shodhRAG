@@ -17,6 +17,7 @@ mod graph_commands;
 mod image_upload_commands;
 mod inbox_commands;
 mod indexing_control;
+mod launch_probe;
 mod library_profile;
 mod llm_bootstrap;
 mod llm_commands;

@@ -65,6 +65,19 @@ static UP: AtomicBool = AtomicBool::new(false);
 /// Where the dock is up now (`None`: hidden or not made).
 static APPLIED: Mutex<Option<CssRect>> = Mutex::new(None);
 
+/// The dock page has reported its size since it was made (it is listening and drawn).
+static SIZED: AtomicBool = AtomicBool::new(false);
+
+/// Where the dock is up now, in logical pixels of the main window (`None`: hidden).
+pub fn shown_at() -> Option<CssRect> {
+    *APPLIED.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Whether the dock page has reported its size since the dock was made.
+pub fn sized() -> bool {
+    SIZED.load(Ordering::SeqCst)
+}
+
 /// Where the chat's box goes: its `panel` size, at the bottom right of a
 /// `window` of that logical size, `edge` from its edges, and never larger
 /// than the window leaves room for.
@@ -209,6 +222,7 @@ fn show<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
 /// made again above it when the preview shows.
 pub fn below_new_preview<R: Runtime>(app: &AppHandle<R>) {
     UP.store(false, Ordering::SeqCst);
+    SIZED.store(false, Ordering::SeqCst);
     *APPLIED.lock().unwrap_or_else(|e| e.into_inner()) = None;
     if let Some(dock) = app.get_webview(DOCK_WEBVIEW) {
         if let Err(e) = dock.close() {
@@ -266,6 +280,7 @@ pub fn resized<R: Runtime>(
         return Err("The floating chat's size is not a size.".to_string());
     }
     *PANEL.lock().unwrap_or_else(|e| e.into_inner()) = Some((width, height));
+    SIZED.store(true, Ordering::SeqCst);
     let snapshot = SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner()).clone();
     if let Some(snapshot) = snapshot {
         app.emit_to(

@@ -1,22 +1,10 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { connectorName } from '../../features/connectors/conversations';
-import { Maximize2, Minus, Pin, PinOff, X } from 'lucide-react';
+import { Maximize2, Minus, X } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import type { ViewTab } from '../../lib/viewTabs';
-import {
-  DOCK_MIN_WIDTH,
-  DOCK_STORAGE_KEY,
-  clampDockWidth,
-  maxDockWidth,
-  parseDockPrefs,
-  resolveDockLayout,
-  serializeDockPrefs,
-  viewPrefs,
-  widthForDrag,
-  widthForKey,
-  withViewPrefs,
-} from '../../lib/dockMode';
-import type { DockLayout, DockPrefs, DockViewPrefs } from '../../lib/dockMode';
+import { RETIRED_DOCK_STORAGE_KEYS, dockLayout } from '../../lib/dockMode';
+import type { DockLayout } from '../../lib/dockMode';
 import { AgentComposer } from '../../features/agent/AgentComposer';
 import type { AgentComposerHandle } from '../../features/agent/AgentComposer';
 import { SnippetDropZone } from '../../features/research/SnippetDropZone';
@@ -44,12 +32,6 @@ import type { ChatMessage } from '../../features/ask/types';
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-shodh-surface';
 
-const FOCUSABLE =
-  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
-
-/** Pre-v2 record (a single global 'hidden' | 'open' | 'minimized'); superseded by per-view prefs. */
-const LEGACY_STORAGE_KEY = 'shodh.conversationDock';
-
 /**
  * Height kept clear below the top of the page content for the overlay. Every
  * non-Ask view puts its primary actions at the top of the page (Library's
@@ -61,35 +43,23 @@ const OVERLAY_TOOLBAR_RESERVE = 112;
 const OVERLAY_HEIGHT = 470;
 const OVERLAY_EDGE = 16;
 
-/** Elements whose own interactions must not collapse the overlay (portaled dialogs, menus, toasts, drag sources). */
-const OUTSIDE_EXEMPT =
-  '[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"], [data-sonner-toaster], [draggable="true"]';
-
-function readPrefs(): DockPrefs {
+function removeRetiredRecords() {
   try {
-    window.localStorage.removeItem(LEGACY_STORAGE_KEY);
-    return parseDockPrefs(window.localStorage.getItem(DOCK_STORAGE_KEY));
+    RETIRED_DOCK_STORAGE_KEYS.forEach(key => window.localStorage.removeItem(key));
   } catch {
-    return {};
+    // Storage unavailable (private mode): nothing was stored either.
   }
 }
 
-function storePrefs(prefs: DockPrefs) {
-  try {
-    window.localStorage.setItem(DOCK_STORAGE_KEY, serializeDockPrefs(prefs));
-  } catch {
-    // Storage unavailable (private mode); the dock still works for this session.
-  }
-}
-
-function useWindowWidth(): number {
-  const [width, setWidth] = useState(() => window.innerWidth);
+/** The window's size, so the floating chat stays inside it as it is resized. */
+function useWindowSize(): { width: number; height: number } {
+  const [size, setSize] = useState(() => ({ width: window.innerWidth, height: window.innerHeight }));
   useEffect(() => {
-    const onResize = () => setWidth(window.innerWidth);
+    const onResize = () => setSize({ width: window.innerWidth, height: window.innerHeight });
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, []);
-  return width;
+  return size;
 }
 
 /** Grows with every new message, step and text segment: the unread measure. */
@@ -111,20 +81,19 @@ interface ConversationDockProps {
  * The active conversation while another view is open.
  *
  * Minimised it is a pill (bottom-right) with a working indicator and an unread
- * count. Expanded (pill, Ctrl+J) it is a resizable side panel that the page
- * reflows around, so nothing is covered; pinning makes the panel that view's
- * default. When the window is too narrow for a panel next to a usable page it
- * floats instead, kept below the page's toolbar, and collapses back to the
- * pill on Esc or a click outside. Layout rules live in `lib/dockMode`.
+ * count. Expanded (pill, Ctrl+J, or the assistant opening a view for the user
+ * to watch) it floats over the page in that corner, kept below the page's
+ * toolbar, at every window size: it never takes a column. Working on the page
+ * leaves it open; Esc in it or Minimise collapses it. Layout rules live in
+ * `lib/dockMode`.
  */
 export function ConversationDock({ activeTab, sources, onExpand }: ConversationDockProps) {
   const session = useChatSession();
   const { messages, isStreaming, navigation, steer, send, cancel, approve, setRuntimeInstalled, streamingConversationId, sideRun } = session;
-  const [prefs, setPrefs] = useState<DockPrefs>(readPrefs);
-  /** Expanded or collapsed by the person on a view; only applies while that view stays open. */
+  /** Expanded or collapsed on a view; only applies while that view stays open. */
   const [override, setOverride] = useState<{ tab: ViewTab; open: boolean } | null>(null);
   const [dismissed, setDismissed] = useState(false);
-  const [dragWidth, setDragWidth] = useState<number | null>(null);
+  useEffect(removeRetiredRecords, []);
   const [overlayTop, setOverlayTop] = useState(OVERLAY_TOOLBAR_RESERVE);
   // The same draft as the Ask composer: "Open in Ask" keeps what was typed here.
   const [draft, setDraft] = useDraft(session.activeConversationId);
@@ -147,20 +116,10 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
   const pillRef = useRef<HTMLButtonElement>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<AgentComposerHandle>(null);
-  const dragRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null);
   const focusComposerRef = useRef(false);
   const focusPillRef = useRef(false);
-  const windowWidth = useWindowWidth();
+  const windowSize = useWindowSize();
   const offAsk = activeTab !== 'ask';
-  const current: DockViewPrefs = viewPrefs(prefs, activeTab);
-
-  const updatePrefs = useCallback((patch: Partial<DockViewPrefs>) => {
-    setPrefs(prev => {
-      const next = withViewPrefs(prev, activeTab, patch);
-      storePrefs(next);
-      return next;
-    });
-  }, [activeTab]);
 
   const expand = useCallback(() => {
     focusComposerRef.current = true;
@@ -173,8 +132,7 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
   }, [activeTab]);
 
   // The agent opened another view, or an answer is running off Ask: bring the
-  // dock back if it was closed. It shows in the view's own form (a pill unless
-  // pinned) so the page is never shifted or covered unasked.
+  // dock back if it was closed, as a pill, so the page is not covered unasked.
   const lastNavSeq = useRef(navigation?.seq ?? 0);
   useEffect(() => {
     if (!navigation || navigation.seq === lastNavSeq.current) return;
@@ -196,12 +154,10 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
   const waiting = live && transcript ? pendingApproval(transcript) : null;
   const working = live && transcript ? currentStep(transcript) : null;
   const visible = offAsk && !dismissed && messages.length > 0;
-  // Each visit starts from the view's own preference; an expand or collapse
-  // made on another view does not carry over.
-  const openOverride = override !== null && override.tab === activeTab ? override.open : null;
-  const open = openOverride ?? current.pinned;
-  const layout: DockLayout | null = visible ? resolveDockLayout(open, windowWidth, openOverride === true) : null;
-  const panelWidth = clampDockWidth(dragWidth ?? current.width, windowWidth);
+  // Each visit starts minimised; an expand or collapse made on another view
+  // does not carry over.
+  const open = override !== null && override.tab === activeTab && override.open;
+  const layout: DockLayout | null = visible ? dockLayout(open) : null;
 
   // Ctrl+J expands or minimises the dock (outside Ask, where the conversation is already shown).
   useEffect(() => {
@@ -224,10 +180,10 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
   }, [layout, size]);
   const unread = unreadBase === null ? 0 : Math.max(0, size - unreadBase);
 
-  // Focus follows explicit actions only: a pinned panel restored on a view
-  // switch must not take focus from the page.
+  // Focus follows explicit actions only: the chat the assistant opens beside a
+  // view it navigated to must not take focus from the page.
   useEffect(() => {
-    if (layout === 'panel' || layout === 'overlay') {
+    if (layout === 'overlay') {
       if (focusComposerRef.current) composerRef.current?.focus();
       focusComposerRef.current = false;
     } else if (layout === 'pill') {
@@ -246,25 +202,11 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
     const main = document.getElementById('main-content');
     const top = main ? main.getBoundingClientRect().top : 0;
     setOverlayTop(Math.max(0, Math.round(top)) + OVERLAY_TOOLBAR_RESERVE);
-  }, [layout, windowWidth]);
-
-  // Overlay: a press outside collapses it to the pill.
-  useEffect(() => {
-    if (layout !== 'overlay') return;
-    const onPointerDown = (e: PointerEvent) => {
-      const target = e.target;
-      if (!(target instanceof Element)) return;
-      if (panelRef.current?.contains(target) || target.closest(OUTSIDE_EXEMPT)) return;
-      collapse(false);
-    };
-    document.addEventListener('pointerdown', onPointerDown, true);
-    return () => document.removeEventListener('pointerdown', onPointerDown, true);
-  }, [layout, collapse]);
+  }, [layout, windowSize]);
 
   // Keyboard inside the dock: Esc denies a pending approval or interrupts the
-  // answer; with nothing running, Esc collapses the overlay. Tab stays within
-  // the overlay (it floats over the page); the side panel is part of the page
-  // and Tab moves freely in and out of it.
+  // answer; with nothing running, Esc collapses it. It does not hold focus: the
+  // page stays usable while it floats, so Tab moves in and out of it freely.
   const onPanelKeyDown = (e: React.KeyboardEvent<HTMLElement>) => {
     if (e.key === 'Escape') {
       if (live) {
@@ -273,62 +215,9 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
         else cancel();
         return;
       }
-      if (layout === 'overlay') {
-        e.preventDefault();
-        collapse(true);
-      }
-      return;
+      e.preventDefault();
+      collapse(true);
     }
-    if (layout !== 'overlay' || e.key !== 'Tab' || !panelRef.current) return;
-    const items = Array.from(panelRef.current.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(el => el.offsetParent !== null);
-    if (items.length === 0) return;
-    const first = items[0];
-    const last = items[items.length - 1];
-    if (e.shiftKey && document.activeElement === first) {
-      e.preventDefault();
-      last.focus();
-    } else if (!e.shiftKey && document.activeElement === last) {
-      e.preventDefault();
-      first.focus();
-    }
-  };
-
-  // Resizing the side panel from its left edge.
-  const endDrag = (e: React.PointerEvent<HTMLDivElement>) => {
-    const drag = dragRef.current;
-    if (!drag || drag.pointerId !== e.pointerId) return;
-    dragRef.current = null;
-    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
-    const finalWidth = widthForDrag(drag.startWidth, drag.startX, e.clientX, window.innerWidth);
-    setDragWidth(null);
-    if (finalWidth !== drag.startWidth) updatePrefs({ width: finalWidth });
-  };
-  const resizeHandlers = {
-    onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => {
-      if (e.button !== 0) return;
-      e.preventDefault();
-      e.currentTarget.setPointerCapture(e.pointerId);
-      dragRef.current = { pointerId: e.pointerId, startX: e.clientX, startWidth: panelWidth };
-      setDragWidth(panelWidth);
-    },
-    onPointerMove: (e: React.PointerEvent<HTMLDivElement>) => {
-      const drag = dragRef.current;
-      if (!drag || drag.pointerId !== e.pointerId) return;
-      setDragWidth(widthForDrag(drag.startWidth, drag.startX, e.clientX, window.innerWidth));
-    },
-    onPointerUp: endDrag,
-    onPointerCancel: endDrag,
-    onLostPointerCapture: (e: React.PointerEvent<HTMLDivElement>) => {
-      if (dragRef.current?.pointerId !== e.pointerId) return;
-      dragRef.current = null;
-      setDragWidth(null);
-    },
-    onKeyDown: (e: React.KeyboardEvent<HTMLDivElement>) => {
-      const next = widthForKey(e.key, panelWidth, windowWidth, e.shiftKey);
-      if (next === null) return;
-      e.preventDefault();
-      if (next !== current.width) updatePrefs({ width: next });
-    },
   };
 
   const busyElsewhere = (streamingConversationId !== null && !isStreaming) || sideRun !== null;
@@ -422,16 +311,8 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
     );
   }
 
-  const pinned = current.pinned;
   const controls = [
     { label: 'Open in Ask', icon: Maximize2, onClick: onExpand },
-    pinned
-      ? { label: 'Unpin side panel', icon: PinOff, onClick: () => { focusPillRef.current = true; updatePrefs({ pinned: false }); setOverride(null); } }
-      : {
-          label: layout === 'overlay' ? 'Pin as side panel (shown when the window is wider)' : 'Pin as side panel',
-          icon: Pin,
-          onClick: () => updatePrefs({ pinned: true }),
-        },
     { label: withShortcut('Minimise', 'toggleDock', IS_MAC), icon: Minus, onClick: () => collapse(true) },
     { label: 'Close', icon: X, onClick: () => setDismissed(true) },
   ];
@@ -522,47 +403,6 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
       </div>
     </>
   );
-
-  if (layout === 'panel') {
-    const dragging = dragWidth !== null;
-    return (
-      <aside
-        ref={el => { panelRef.current = el; }}
-        id="conversation-dock"
-        aria-label="Conversation"
-        onKeyDown={onPanelKeyDown}
-        className={cn('relative h-full shrink-0 flex flex-col border-l border-shodh-border bg-shodh-ground', dragging && 'select-none')}
-        style={{ width: panelWidth }}
-      >
-        <div
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="Resize conversation panel"
-          aria-controls="conversation-dock"
-          aria-valuenow={panelWidth}
-          aria-valuemin={DOCK_MIN_WIDTH}
-          aria-valuemax={maxDockWidth(windowWidth)}
-          aria-valuetext={`${panelWidth} pixels wide`}
-          tabIndex={0}
-          title="Drag or use the arrow keys to resize"
-          {...resizeHandlers}
-          className={cn(
-            'group absolute inset-y-0 left-0 z-10 w-2 cursor-col-resize touch-none flex justify-start',
-            'focus-visible:outline-none',
-          )}
-        >
-          <span
-            className={cn(
-              'h-full w-0.5 transition-colors duration-micro',
-              dragging ? 'bg-shodh-accent' : 'bg-transparent group-hover:bg-shodh-border-strong group-focus-visible:bg-shodh-accent',
-            )}
-            aria-hidden="true"
-          />
-        </div>
-        {body}
-      </aside>
-    );
-  }
 
   return (
     <div

@@ -75,6 +75,8 @@ import type { FileNode } from './features/library/fileTree';
 import { errorMessage as searchErrorMessage } from './features/setup/searchModels';
 import Sidebar from './components/shell/Sidebar';
 import { ConversationDock } from './components/shell/ConversationDock';
+import { DockBridge } from './features/dock/useDockBridge';
+import { useDockLayerActive } from './features/dock/layerState';
 import { MODEL_CHANGED_EVENT } from './features/modelPicker/modelApi';
 import { normalizeViewTab, VIEW_TAB_LABELS } from './lib/viewTabs';
 import { agentItemKey, revealAgentItem } from './lib/agentHighlight';
@@ -173,6 +175,8 @@ function AppSplitView() {
   // Theme
   const { theme, colors, toggleTheme } = useTheme();
   const { collapsed, toggleSidebar } = useSidebar();
+  // The floating chat over the embedded Artifacts preview is up (features/dock).
+  const dockLayerActive = useDockLayerActive();
   const { config: searchConfig, updateConfig: updateSearchConfig, resetConfig: resetSearchConfig } = useSearchConfig();
 
   // Conversations and the active chat session
@@ -2016,7 +2020,10 @@ function AppSplitView() {
       <TableModelPrompt />
 
       {/* Active conversation while another view is open */}
-      <ConversationDock activeTab={viewTab} sources={sources} onExpand={() => setActiveTab('ask')} />
+      {/* Over the embedded preview the chat floats in a layer of its own, which this window runs. */}
+      {dockLayerActive
+        ? <DockBridge active sources={sources} onExpand={() => setActiveTab('ask')} />
+        : <ConversationDock activeTab={viewTab} sources={sources} onExpand={() => setActiveTab('ask')} />}
 
     </div>
   );

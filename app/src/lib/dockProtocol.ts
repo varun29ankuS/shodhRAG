@@ -50,8 +50,6 @@ export interface DockSnapshot {
   /** New activity while minimised. */
   unread: number;
   theme: 'light' | 'dark';
-  /** Main's text-size zoom, which the dock page is drawn at too. */
-  zoom: number;
 }
 
 /** What the dock may ask main to do. Anything else is refused. */
@@ -218,8 +216,7 @@ export function parseDockSnapshot(value: unknown): DockSnapshot | null {
     && typeof s.voiceSupported === 'boolean'
     && typeof s.open === 'boolean'
     && typeof s.unread === 'number' && Number.isFinite(s.unread) && s.unread >= 0
-    && (s.theme === 'light' || s.theme === 'dark')
-    && typeof s.zoom === 'number' && Number.isFinite(s.zoom) && s.zoom > 0;
+    && (s.theme === 'light' || s.theme === 'dark');
   if (!ok) return null;
   return {
     v: 1,
@@ -239,7 +236,6 @@ export function parseDockSnapshot(value: unknown): DockSnapshot | null {
     open: s.open as boolean,
     unread: s.unread as number,
     theme: s.theme as 'light' | 'dark',
-    zoom: s.zoom as number,
   };
 }
 
@@ -259,7 +255,6 @@ export interface SnapshotInput {
   open: boolean;
   unread: number;
   theme: 'light' | 'dark';
-  zoom: number;
   runtime: RuntimeSetupState;
 }
 
@@ -340,7 +335,6 @@ export function snapshotOf(input: SnapshotInput, relay = true): DockSnapshot {
     open: input.open,
     unread: input.unread,
     theme: input.theme,
-    zoom: input.zoom,
   };
   const transcript = lastAnswer?.transcript ?? null;
   if (!transcript) return base;

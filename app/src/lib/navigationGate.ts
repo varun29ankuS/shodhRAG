@@ -67,6 +67,11 @@ export function holdsDraft(element: EditableLike | null | undefined): boolean {
 export interface TypingTracker {
   /** An `input` event on `target` at `now`. */
   note(target: EditableLike | null | undefined, now: number): void;
+  /**
+   * The user typed in the floating chat over the embedded preview at `now`: its own webview
+   * holds the focus, so this window sees no input; it counts as typing for the quiet time.
+   */
+  noteRemote(now: number): void;
   /** Dictation into the composer started (`true`) or stopped. */
   setDictating(on: boolean): void;
   /** A message was sent: the recent typing is spent. */
@@ -78,18 +83,24 @@ export interface TypingTracker {
 export function createTypingTracker(quietMs: number = TYPING_QUIET_MS): TypingTracker {
   let lastInputAt: number | null = null;
   let dictating = false;
+  let lastRemoteAt: number | null = null;
   return {
     note(target, now) {
       if (isEditable(target)) lastInputAt = now;
+    },
+    noteRemote(now) {
+      lastRemoteAt = now;
     },
     setDictating(on) {
       dictating = on;
     },
     reset() {
       lastInputAt = null;
+      lastRemoteAt = null;
     },
     isTyping(focused, now) {
       if (dictating) return true;
+      if (lastRemoteAt !== null && now - lastRemoteAt < quietMs) return true;
       if (holdsDraft(focused)) return true;
       return isEditable(focused) && lastInputAt !== null && now - lastInputAt < quietMs;
     },

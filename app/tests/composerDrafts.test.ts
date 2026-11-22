@@ -56,12 +56,18 @@ test('subscribers hear real changes only, and stop hearing once unsubscribed', (
 });
 
 test('Ask and the dock read one draft store and one send-options function', () => {
-  for (const file of ['../src/features/ask/AskView.tsx', '../src/components/shell/ConversationDock.tsx']) {
-    const source = readFileSync(new URL(file, import.meta.url), 'utf8');
-    assert.match(source, /useDraft\(session\.activeConversationId\)/, file);
-    assert.match(source, /useSendOptions\(sources\)/, file);
+  const read = (file: string) => readFileSync(new URL(file, import.meta.url), 'utf8');
+  const ask = read('../src/features/ask/AskView.tsx');
+  assert.match(ask, /useDraft\(session\.activeConversationId\)/);
+  assert.match(ask, /useSendOptions\(sources\)/);
+  // The in-page chat and the floating chat over the preview send through one shared path.
+  for (const file of ['../src/components/shell/ConversationDock.tsx', '../src/features/dock/useDockBridge.ts']) {
+    const source = read(file);
+    assert.match(source, /useDraft\((session\.activeConversationId|conversationId)\)/, file);
+    assert.match(source, /useDraftSubmit\(sources\)/, file);
     assert.doesNotMatch(source, /useState\(''\)/, file);
   }
+  assert.match(read('../src/features/dock/useDraftSubmit.ts'), /useSendOptions\(sources\)/);
 });
 
 const src = (id: string, selected: boolean) => ({ id, name: `Folder ${id}`, selected });

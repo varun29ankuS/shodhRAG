@@ -79,7 +79,6 @@ function input(messages: ChatMessage[], extra: Partial<SnapshotInput> = {}): Sna
     open: true,
     unread: 0,
     theme: 'dark',
-    zoom: 1,
     runtime: RUNTIME,
     ...extra,
   };
@@ -229,7 +228,6 @@ test('a malformed snapshot is not read', () => {
     null,
     { ...good, v: 2 },
     { ...good, theme: 'blue' },
-    { ...good, zoom: 0 },
     { ...good, unread: -1 },
     { ...good, draft: 5 },
     { ...good, transcript: { blocks: 'no' } },

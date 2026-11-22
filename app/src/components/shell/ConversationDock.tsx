@@ -7,17 +7,11 @@ import { SnippetDropZone } from '../../features/research/SnippetDropZone';
 import { appendToDraft } from '../../features/research/snippetModel';
 import { SetupCard } from '../../features/setup/SetupCard';
 import { matchesShortcut } from '../../lib/shortcuts';
-import { useQueuedQuestion } from '../../features/setup/useQueuedQuestion';
 import { runtimeSetupState, useRuntimeSetup } from '../../features/setup/runtimeSetupHost';
 import { useChatSession } from '../../features/ask/ChatSessionContext';
 import { useDraft } from '../../features/ask/useDraft';
-import { composerDrafts } from '../../features/ask/draftStore';
-import { useSendOptions } from '../../features/ask/useSendOptions';
-import { AttachmentChips, FileRefChip, useChatFileScope, useImageAttachments } from '../../features/ask/AttachmentChips';
-import type { ConversationFile } from '../../features/ask/fileQuestion';
-import { attachedContextOf, composerAttachments } from '../../features/ask/imageAttachments';
-import { composerFiles, limitedToFiles } from '../../features/ask/fileQuestion';
-import { missingIndexedFiles, reportMissingFiles } from '../../features/ask/fileQuestionApi';
+import { AttachmentChips, FileRefChip } from '../../features/ask/AttachmentChips';
+import { useDraftSubmit } from '../../features/dock/useDraftSubmit';
 import type { OptionSource } from '../../features/ask/sendOptions';
 import type { ChatMessage } from '../../features/ask/types';
 import { useTheme } from '../../contexts/ThemeContext';
@@ -83,7 +77,7 @@ interface ConversationDockProps {
  */
 export function ConversationDock({ activeTab, sources, onExpand }: ConversationDockProps) {
   const session = useChatSession();
-  const { messages, isStreaming, navigation, steer, send, cancel, approve, setRuntimeInstalled, streamingConversationId, sideRun } = session;
+  const { messages, isStreaming, navigation, steer, cancel, approve, setRuntimeInstalled, streamingConversationId, sideRun } = session;
   const { theme } = useTheme();
   const runtime = useRuntimeSetup();
   /** Expanded or collapsed on a view; only applies while that view stays open. */
@@ -93,20 +87,9 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
   const [overlayTop, setOverlayTop] = useState(OVERLAY_TOOLBAR_RESERVE);
   // The same draft as the Ask composer: "Open in Ask" keeps what was typed here.
   const [draft, setDraft] = useDraft(session.activeConversationId);
-  const sendOptions = useSendOptions(sources);
-  // Image text attached in Ask goes out with a reply sent from here too.
-  const attachments = useImageAttachments(session.activeConversationId);
-  // As in Ask: an "About <file>" chat stays limited to that file until its chip is removed.
-  const saveAboutFile = useCallback((file: ConversationFile | null) => {
-    const id = session.activeConversationId;
-    if (id) session.updateConversationMeta(id, { aboutFile: file ?? undefined });
-  }, [session.activeConversationId, session.updateConversationMeta]);
-  const fileScope = useChatFileScope(session.activeConversationId, session.activeConversation?.aboutFile, saveAboutFile);
+  // Sending, with Ask's rules (attachments, the file limit, setup), as the floating chat does.
+  const { submit: submitDraft, attachments, fileScope, queued } = useDraftSubmit(sources);
   const aboutFile = fileScope.file;
-  // Read after the file check: a conversation switch meanwhile cancels the send.
-  const shownConversationRef = useRef(session.activeConversationId);
-  shownConversationRef.current = session.activeConversationId;
-  const checkingFileRef = useRef(false);
   const [unreadBase, setUnreadBase] = useState<number | null>(null);
   const pillRef = useRef<HTMLButtonElement>(null);
   const composerRef = useRef<AgentComposerHandle>(null);
@@ -187,54 +170,9 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
     setOverlayTop(Math.max(0, Math.round(top)) + OVERLAY_TOOLBAR_RESERVE);
   }, [layout, windowSize]);
 
-  const busyElsewhere = (streamingConversationId !== null && !isStreaming) || sideRun !== null;
   // A connector's conversation is read-only here too.
   const readOnlySource = session.activeConversation?.source ?? null;
 
-  // As in Ask: a question asked before Shodh is ready waits for setup.
-  const queued = useQueuedQuestion(session.activeConversationId);
-
-  const submit = () => {
-    const text = draft.trim();
-    if (!text || isStreaming || busyElsewhere || checkingFileRef.current) return;
-    // As in Ask: the attached image text goes beside the typed words, and both are
-    // cleared only once the question is accepted.
-    const conversationId = session.activeConversationId;
-    const options = sendOptions;
-    const sendComposer = (): boolean => {
-      const current = composerDrafts.get(conversationId).trim();
-      if (!current) return true;
-      const queuedFile = composerFiles.get(conversationId);
-      const attached = composerAttachments.get(conversationId);
-      if (!send(current, limitedToFiles(options, queuedFile ? [queuedFile.path] : []), { attachedContext: attachedContextOf(attached) })) return false;
-      composerDrafts.set(conversationId, '');
-      composerAttachments.consume(conversationId, attached);
-      if (queuedFile) fileScope.keep(queuedFile);
-      return true;
-    };
-    // As in Ask: before Shodh is ready the question waits for setup.
-    if (queued.hold(sendComposer)) return;
-    // The file the question is about ("Ask about this file") goes with it as its search limit.
-    const file = composerFiles.get(conversationId);
-    const go = () => {
-      sendComposer();
-    };
-    if (!file) {
-      go();
-      return;
-    }
-    // As in Ask: a file removed or renamed since it was chosen is said plainly.
-    checkingFileRef.current = true;
-    void missingIndexedFiles([file.path])
-      .then(missing => {
-        if (shownConversationRef.current !== conversationId) return;
-        if (missing.length === 0) go();
-        else reportMissingFiles(missing, false, fileScope.remove);
-      })
-      .finally(() => {
-        checkingFileRef.current = false;
-      });
-  };
   const submitSteer = () => {
     const text = draft.trim();
     if (!text || !isStreaming) return;
@@ -258,13 +196,12 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
     open,
     unread,
     theme,
-    zoom: 1,
     runtime: runtimeSetupState(runtime),
   }, false), [session.activeConversationId, session.activeConversation?.title, messages, isStreaming, streamingConversationId, sideRun, readOnlySource?.connector, draft, open, unread, theme, runtime]);
 
   const onAction = (action: DockAction) => {
     switch (action.kind) {
-      case 'send': submit(); break;
+      case 'send': submitDraft(draft); break;
       case 'steer': submitSteer(); break;
       case 'cancel': cancel(); break;
       case 'approve': approve(action.id, action.allow, action.forConversation, action.reviewToken); break;

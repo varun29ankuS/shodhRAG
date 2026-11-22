@@ -196,3 +196,15 @@ test('a navigation focus opens the connector page it names', () => {
   assert.equal(connectorFocus('task-12'), null);
   assert.equal(connectorFocus(null), null);
 });
+
+test('typing in the floating chat over the preview counts as typing for the quiet time', () => {
+  const tracker = createTypingTracker(1000);
+  assert.equal(tracker.isTyping(null, 0), false);
+  tracker.noteRemote(5000);
+  // The focus is in the chat's own webview: this window has none on a field.
+  assert.equal(tracker.isTyping(null, 5500), true);
+  assert.equal(tracker.isTyping(null, 6001), false);
+  tracker.noteRemote(7000);
+  tracker.reset();
+  assert.equal(tracker.isTyping(null, 7100), false);
+});

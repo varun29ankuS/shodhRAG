@@ -475,6 +475,22 @@ pub async fn recall_for_run(
     recall_for_run_until(memory, text, workspace, actor, deadline).await
 }
 
+/// [`recall_for_run`] with no deadline that a test could reach, for tests of what a run is
+/// given. A test machine running every other test at once can take longer than
+/// [`RECALL_TIMEOUT`] to open the memory or embed the question, and the run would then be
+/// given nothing, failing a test that is not about the deadline. The deadline has its own
+/// tests, which call [`recall_for_run`] and [`recall_for_run_until`].
+#[cfg(test)]
+pub(crate) async fn recall_for_run_unhurried(
+    memory: &MemoryState,
+    text: &str,
+    workspace: Option<&str>,
+    actor: &Actor,
+) -> Option<RunMemories> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(24 * 60 * 60);
+    recall_for_run_until(memory, text, workspace, actor, deadline).await
+}
+
 /// [`recall_for_run`] with the deadline of opening the memory and of recall given.
 async fn recall_for_run_until(
     memory: &MemoryState,
@@ -956,7 +972,7 @@ mod tests {
         let (memory, audit, invoices, gym) = two_notes(dir.path()).await;
         let actor = Actor::agent("local-owner", "conv-1", "assistant", "run-1");
         // The default floor is tuned for E5; the test embedder scores identical words 1.
-        let recalled = recall_for_run(&memory, "Invoices go to Priya?", None, &actor)
+        let recalled = recall_for_run_unhurried(&memory, "Invoices go to Priya?", None, &actor)
             .await
             .unwrap();
         assert!(recalled.block.contains("Invoices go to Priya"));
@@ -967,7 +983,7 @@ mod tests {
         assert_eq!(use_count(&memory, &gym).await, 0);
         assert!(use_events(&audit).is_empty());
         assert!(
-            recall_for_run(&memory, "Explain gradient descent", None, &actor)
+            recall_for_run_unhurried(&memory, "Explain gradient descent", None, &actor)
                 .await
                 .is_none()
         );
@@ -1098,7 +1114,7 @@ mod tests {
         let rule = own_note(&memory, "Keep answers short", None).await;
         let actor = Actor::agent("local-owner", "conv-1", "assistant", "run-1");
         // A question the core has nothing to do with still gets it, and only it.
-        let unrelated = recall_for_run(&memory, "Explain gradient descent", None, &actor)
+        let unrelated = recall_for_run_unhurried(&memory, "Explain gradient descent", None, &actor)
             .await
             .unwrap();
         assert_eq!(unrelated.ids, vec![rule.clone()]);
@@ -1109,7 +1125,7 @@ mod tests {
         )));
         assert!(!unrelated.block.contains("Invoices") && !unrelated.block.contains("Gym"));
         // A relevant question gets the core first, then the recalled memories.
-        let relevant = recall_for_run(&memory, "Invoices go to Priya?", None, &actor)
+        let relevant = recall_for_run_unhurried(&memory, "Invoices go to Priya?", None, &actor)
             .await
             .unwrap();
         assert_eq!(relevant.ids, vec![rule.clone(), invoices.clone()]);
@@ -1122,7 +1138,7 @@ mod tests {
         assert!(core_at < recalled_at, "{}", relevant.block);
         assert!(relevant.block.len() <= MAX_RUN_MEMORY_CHARS);
         // A core memory the question is about is not repeated among the recalled ones.
-        let about_core = recall_for_run(&memory, "Keep answers short?", None, &actor)
+        let about_core = recall_for_run_unhurried(&memory, "Keep answers short?", None, &actor)
             .await
             .unwrap();
         assert_eq!(about_core.ids, vec![rule.clone()]);
@@ -1141,7 +1157,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            recall_for_run(&memory, "Explain gradient descent", None, &actor)
+            recall_for_run_unhurried(&memory, "Explain gradient descent", None, &actor)
                 .await
                 .is_none()
         );
@@ -1153,13 +1169,13 @@ mod tests {
         let (memory, _audit, _, _) = two_notes(dir.path()).await;
         let mine = own_note(&memory, "This workspace cites in IEEE style", Some("a")).await;
         let actor = Actor::agent("local-owner", "conv-1", "assistant", "run-1");
-        let in_a = recall_for_run(&memory, "Explain gradient descent", Some("a"), &actor)
+        let in_a = recall_for_run_unhurried(&memory, "Explain gradient descent", Some("a"), &actor)
             .await
             .unwrap();
         assert_eq!(in_a.core_ids, vec![mine]);
         for other in [Some("b"), None] {
             assert!(
-                recall_for_run(&memory, "Explain gradient descent", other, &actor)
+                recall_for_run_unhurried(&memory, "Explain gradient descent", other, &actor)
                     .await
                     .is_none(),
                 "{other:?}"
@@ -1204,7 +1220,7 @@ mod tests {
         let (memory, switch, rule, _) = rule_and_note(dir.path()).await;
         switch.set(Embedder::Missing);
         let actor = Actor::agent("local-owner", "conv-1", "assistant", "run-1");
-        let given = recall_for_run(&memory, "Invoices go to Priya?", None, &actor)
+        let given = recall_for_run_unhurried(&memory, "Invoices go to Priya?", None, &actor)
             .await
             .expect("the core needs no search models");
         assert_eq!(given.ids, vec![rule.clone()]);
@@ -1220,7 +1236,7 @@ mod tests {
         let (memory, switch, rule, _) = rule_and_note(dir.path()).await;
         switch.set(Embedder::Failing);
         let actor = Actor::agent("local-owner", "conv-1", "assistant", "run-1");
-        let given = recall_for_run(&memory, "Invoices go to Priya?", None, &actor)
+        let given = recall_for_run_unhurried(&memory, "Invoices go to Priya?", None, &actor)
             .await
             .expect("a failing recall leaves the core");
         assert_eq!(given.ids, vec![rule]);
@@ -1271,7 +1287,7 @@ mod tests {
         let (memory, audit, _, _) = two_notes(dir.path()).await;
         let rule = own_note(&memory, "Keep answers short", None).await;
         let actor = Actor::agent("local-owner", "conv-1", "assistant", "run-5");
-        let given = recall_for_run(&memory, "Explain gradient descent", None, &actor)
+        let given = recall_for_run_unhurried(&memory, "Explain gradient descent", None, &actor)
             .await
             .unwrap();
         memory.track_run("run-5", given.ids.clone(), None, actor, Vec::new());

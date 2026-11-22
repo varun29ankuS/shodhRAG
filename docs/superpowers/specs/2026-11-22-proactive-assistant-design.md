@@ -19,7 +19,9 @@ separate timers:
 - memory consolidation (`memory_learn.rs`, when idle).
 
 A fourth and a fifth would make it worse. PR 5 folds the first two into the engine. Consolidation stays
-separate, because it is triggered by idleness, not by time. The decision of 2026-10-31 stands: **one engine** serves both the
+separate, because it is triggered by idleness, not by time.
+
+The decision of 2026-10-31 stands: **one engine** serves both the
 work people do (Projects and Tasks) and the work Shodh does (Automations). The engine is never named in the UI.
 Nothing on screen says cron, DAG, YAML, job or trigger.
 

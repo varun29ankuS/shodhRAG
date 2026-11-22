@@ -65,7 +65,7 @@ impl LlamaCppProvider {
 
         tracing::info!(path = %model_path.display(), "Loading GGUF model via llama.cpp");
 
-        // CPU inference; no GPU offload.
+        // llama.cpp's default offloads every layer (Metal on Apple silicon).
         let model_params = LlamaModelParams::default();
         let model =
             LlamaModel::load_from_file(&backend, model_path, &model_params).map_err(|e| {
@@ -110,6 +110,7 @@ impl LlamaCppProvider {
         config: &GenerationConfig,
         token_sender: Option<mpsc::Sender<Result<String, ProviderFailure>>>,
     ) -> Result<String> {
+        let _generating = crate::compute::contention::GenerationActive::begin();
         // Limit context to a reasonable size for inference (not the model's max)
         let n_ctx = 4096u32;
 

@@ -1,0 +1,13 @@
+{
+  "permission": [
+    {
+      "identifier": "dock-window",
+      "description": "SPIKE (throwaway): the dock child webview may only report what it was refused.",
+      "commands": {
+        "allow": [
+          "spike_dock_report"
+        ]
+      }
+    }
+  ]
+}

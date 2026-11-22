@@ -91,7 +91,7 @@ impl Profile {
     }
 
     /// A stable 16-byte id of the profile folder.
-    fn folder_id(&self) -> [u8; 16] {
+    pub(crate) fn folder_id(&self) -> [u8; 16] {
         let mut id = [0u8; 16];
         if let Some(dir) = self.data_dir.as_deref() {
             let digest = Sha256::digest(dir.as_os_str().as_encoded_bytes());

@@ -42,6 +42,7 @@ mod search_models_commands;
 mod shutdown;
 mod source_viewer_commands;
 mod space_manager;
+mod spike_child_webviews;
 mod startup;
 mod storage_commands;
 mod store_notices;
@@ -1078,6 +1079,7 @@ pub fn run() {
             shutdown::quit_ready,
             // The main window's first-load handshake (the log says it is ready)
             startup::startup_ready,
+            spike_child_webviews::spike_dock_report,
             // Damaged data files (backup used, settings reset)
             store_notices::store_notices,
         ])

@@ -1294,7 +1294,7 @@ jobs:
           open_help=$(open --help 2>&1 || true)
           grep -q -- '--env' <<< "$open_help" || { echo "::error::open on this runner has no --env"; echo "$open_help"; exit 1; }
           start=$(now_ms)
-          open -n -W --env "HOME=$tester_home" --stdout "$evidence/stdout.txt" --stderr "$evidence/stderr.txt" "$APP" >"$evidence/open.txt" 2>&1 &
+          open -n -W --env "HOME=$tester_home" --env "SHODH_SPIKE_CHILD_WEBVIEWS=1" --stdout "$evidence/stdout.txt" --stderr "$evidence/stderr.txt" "$APP" >"$evidence/open.txt" 2>&1 &
           open_pid=$!
           echo "OPEN_PID=$open_pid" >> "$GITHUB_ENV"
 
@@ -1352,6 +1352,31 @@ jobs:
       # 15 s after ready covers the delayed startup work: the background
       # loads started during setup and the calendar re-index 3 s after it
       # (lib.rs). The first update check (5 minutes) is outside it.
+      # SPIKE (throwaway): the app added a locked preview child and a dock
+      # child to the main window (app/src-tauri/src/spike_child_webviews.rs)
+      # and logs each fact as a SPIKE line, then SPIKE PASS or SPIKE FAIL.
+      - name: "Spike: child webviews in the main window"
+        run: |
+          set -euo pipefail
+          end=$(( $(date +%s) + 45 ))
+          while ! grep -qE 'SPIKE (PASS|FAIL)' "$APP_LOG"; do
+            if [ "$(date +%s)" -gt "$end" ]; then echo "::error::No SPIKE PASS or FAIL within 45 s"; grep 'SPIKE' "$APP_LOG" || true; exit 1; fi
+            perl -e 'select(undef, undef, undef, 0.5)'
+          done
+          grep 'SPIKE' "$APP_LOG"
+          screencapture -x "$EVIDENCE/spike-screen.png" || echo "screencapture failed"
+          grep 'SPIKE' "$APP_LOG" | sed 's/^/- /' >> "$GITHUB_STEP_SUMMARY"
+          if grep -q 'SPIKE FAIL' "$APP_LOG"; then echo "::error::$(grep 'SPIKE FAIL' "$APP_LOG")"; exit 1; fi
+
+      - name: "Spike: screenshot"
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: spike-macos-screen
+          path: ${{ runner.temp }}/launch-evidence/spike-screen.png
+          retention-days: 7
+          if-no-files-found: warn
+
       - name: It stays up after ready
         run: |
           set -euo pipefail
@@ -1445,6 +1470,108 @@ jobs:
           name: macos-launch-evidence
           path: ${{ runner.temp }}/launch-evidence
           retention-days: 14
+          if-no-files-found: warn
+
+  # SPIKE (throwaway): the Windows installer installed silently and started
+  # with SHODH_SPIKE_CHILD_WEBVIEWS=1; the same SPIKE lines as on macOS, plus
+  # the screen's pixels at the points the app logged (green where the dock
+  # covers the preview, red where only the preview is).
+  launch-windows:
+    name: Launch test (Windows)
+    needs: [plan, build]
+    if: >-
+      ${{ !cancelled() && needs.plan.result == 'success'
+      && needs.build.result == 'success' }}
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: shodh-windows-x64
+          path: ${{ runner.temp }}/dist
+
+      - name: "Spike: install, launch, check the child webviews"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:RUNNER_TEMP 'launch-evidence'
+          New-Item -ItemType Directory -Force $evidence | Out-Null
+          $installer = Get-ChildItem -Recurse "$env:RUNNER_TEMP/dist" -Filter '*-setup.exe' | Select-Object -First 1
+          if (-not $installer) { throw 'No installer in the artifact' }
+          $dir = Join-Path $env:RUNNER_TEMP 'Shodh'
+          $p = Start-Process -FilePath $installer.FullName -ArgumentList '/S', "/D=$dir" -PassThru -Wait
+          Write-Host "Installer exited $($p.ExitCode)"
+          $exe = Get-ChildItem -Recurse $dir, "$env:LOCALAPPDATA\Shodh" -Filter 'Shodh.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) { throw 'Shodh.exe was not installed' }
+          Write-Host "Installed $($exe.FullName)"
+          $log = Join-Path $env:APPDATA 'com.shodh.rag-app\logs\shodh.log'
+          $env:SHODH_SPIKE_CHILD_WEBVIEWS = '1'
+          $app = Start-Process -FilePath $exe.FullName -PassThru
+          $deadline = (Get-Date).AddSeconds(120)
+          while (-not ((Test-Path $log) -and (Select-String -Path $log -Pattern 'Main window ready' -Quiet))) {
+            if ($app.HasExited) { throw "Shodh exited ($($app.ExitCode)) before ready" }
+            if ((Get-Date) -gt $deadline) { throw 'Shodh did not report ready within 120 s' }
+            Start-Sleep -Milliseconds 250
+          }
+          Write-Host (Select-String -Path $log -Pattern 'Main window ready' | Select-Object -First 1).Line
+          $deadline = (Get-Date).AddSeconds(45)
+          while (-not (Select-String -Path $log -Pattern 'SPIKE (PASS|FAIL)' -Quiet)) {
+            if ($app.HasExited) { throw "Shodh exited ($($app.ExitCode)) during the spike" }
+            if ((Get-Date) -gt $deadline) { Select-String -Path $log -Pattern 'SPIKE' | ForEach-Object { Write-Host $_.Line }; throw 'No SPIKE PASS or FAIL within 45 s' }
+            Start-Sleep -Milliseconds 250
+          }
+          $lines = @(Select-String -Path $log -Pattern 'SPIKE' | ForEach-Object { $_.Line })
+          $lines | ForEach-Object { Write-Host $_ }
+          $lines | ForEach-Object { "- $_" } | Add-Content $env:GITHUB_STEP_SUMMARY
+
+          Add-Type -AssemblyName System.Drawing
+          Add-Type -AssemblyName System.Windows.Forms
+          $bounds = [System.Windows.Forms.SystemInformation]::VirtualScreen
+          $bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
+          $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+          $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+          $bitmap.Save((Join-Path $evidence 'spike-screen.png'), [System.Drawing.Imaging.ImageFormat]::Png)
+          Write-Host "Screen $($bounds.Width)x$($bounds.Height) at $($bounds.X),$($bounds.Y)"
+          $pixelFailed = $false
+          $points = $lines | Where-Object { $_ -match 'SPIKE screen points' } | Select-Object -First 1
+          if ($points) {
+            $color = {
+              param($name)
+              if ($points -notmatch "$name=\((-?\d+), (-?\d+)\)") { return 'unknown' }
+              $x = [int]$Matches[1] - $bounds.X
+              $y = [int]$Matches[2] - $bounds.Y
+              if ($x -lt 0 -or $y -lt 0 -or $x -ge $bounds.Width -or $y -ge $bounds.Height) { return 'off-screen' }
+              $c = $bitmap.GetPixel($x, $y)
+              $word = 'other'
+              if ($c.G -gt 200 -and $c.R -lt 60 -and $c.B -lt 60) { $word = 'green' }
+              if ($c.R -gt 200 -and $c.G -lt 60 -and $c.B -lt 60) { $word = 'red' }
+              "$word(rgb $($c.R),$($c.G),$($c.B))"
+            }
+            $overlap = & $color 'overlap'
+            $previewOnly = & $color 'preview'
+            $mainOnly = & $color 'main'
+            $transparent = & $color 'transparent'
+            $summary = "Pixels: overlap=$overlap preview=$previewOnly main=$mainOnly transparent=$transparent"
+            Write-Host $summary
+            "- $summary" | Add-Content $env:GITHUB_STEP_SUMMARY
+            if (-not ($overlap -like 'green*' -and $previewOnly -like 'red*')) { $pixelFailed = $true }
+          }
+          if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force }
+          Copy-Item $log $evidence
+          $failed = $lines | Where-Object { $_ -match 'SPIKE FAIL' } | Select-Object -First 1
+          if ($failed) { throw $failed }
+          if (-not $points) { throw 'The app logged no screen points' }
+          if ($pixelFailed) { throw 'The pixels do not show the dock above the preview' }
+
+      - name: "Spike: screenshot and log"
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: spike-windows-evidence
+          path: ${{ runner.temp }}/launch-evidence
+          retention-days: 7
           if-no-files-found: warn
 
   verify:

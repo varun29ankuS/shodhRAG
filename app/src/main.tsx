@@ -6,6 +6,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App-SplitView";
 import PrintView from "./features/print/PrintView";
+import SpikeDockView from "./features/dock/SpikeDockView";
 import { ThemeProvider, useTheme } from "./contexts/ThemeContext";
 import { SidebarProvider } from "./contexts/SidebarContext";
 import { SearchModelsProvider } from "./features/setup/SearchModelsContext";
@@ -76,6 +77,9 @@ if (path === '/print-view') {
       </ErrorBoundary>
     </React.StrictMode>,
   );
+} else if (path === '/dock-view') {
+  // SPIKE (throwaway): the dock child webview.
+  root.render(<SpikeDockView />);
 } else {
   root.render(
     <React.StrictMode>

@@ -44,11 +44,12 @@ impl StartupTimings {
 /// The main window reached every startup milestone (each page load reports
 /// once: the first, and a reload).
 #[tauri::command]
-pub fn startup_ready(timings: StartupTimings) {
+pub fn startup_ready(app: tauri::AppHandle, timings: StartupTimings) {
     tracing::info!(
         "{READY_LINE} (ms since the page started loading: {})",
         timings.summary()
     );
+    crate::spike_child_webviews::start(&app);
 }
 
 #[cfg(test)]

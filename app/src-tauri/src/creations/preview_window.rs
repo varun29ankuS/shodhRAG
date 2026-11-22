@@ -314,97 +314,154 @@ pub struct Opening<'a> {
     pub data_dir: PathBuf,
 }
 
+/// The webview locks every preview gets, as a window or as a child webview
+/// in the main window: one list, applied to either builder type.
+macro_rules! locked {
+    ($builder:expr, $app:expr, $opening:expr) => {{
+        let opening = $opening;
+        let app = $app;
+        let label = opening.label.to_string();
+        let blocked = Arc::new(AtomicBool::new(false));
+        let loaded = Arc::new(AtomicBool::new(false));
+        let on_navigation = (
+            app.clone(),
+            label.clone(),
+            opening.token.to_string(),
+            blocked.clone(),
+        );
+        let on_new_window = (app.clone(), label.clone(), blocked.clone());
+        let on_download = (app.clone(), label.clone(), blocked);
+        let on_load = (app.clone(), label, loaded);
+        $builder
+            // Its own browser process (Windows), arguments and private profile.
+            .additional_browser_args(&browser_args(
+                crate::profile::process_browser_args(),
+                opening.network,
+            ))
+            .data_directory(opening.data_dir.clone())
+            .incognito(true)
+            .devtools(cfg!(debug_assertions))
+            .initialization_script_for_all_frames(preview::GUARD_SCRIPT)
+            .on_navigation(move |url| {
+                let (app, label, token, blocked) = &on_navigation;
+                let allowed = navigation_allowed(url, token);
+                // Logged and reported once per window: a page looping on it floods nothing.
+                if !allowed && !blocked.swap(true, Ordering::SeqCst) {
+                    tracing::info!(window = %label, "a preview tried to leave its own files; stopped");
+                    tell_main(app, label, PreviewState::Blocked);
+                }
+                allowed
+            })
+            .on_new_window(move |url, _features| {
+                let (app, label, blocked) = &on_new_window;
+                if new_window_allowed(&url) {
+                    return NewWindowResponse::Allow;
+                }
+                if !blocked.swap(true, Ordering::SeqCst) {
+                    tracing::info!(window = %label, "a preview tried to open a window; stopped");
+                    tell_main(app, label, PreviewState::Blocked);
+                }
+                NewWindowResponse::Deny
+            })
+            .on_download(move |_webview, event| {
+                let (app, label, blocked) = &on_download;
+                let allowed = download_allowed(&event);
+                if !allowed
+                    && matches!(event, DownloadEvent::Requested { .. })
+                    && !blocked.swap(true, Ordering::SeqCst)
+                {
+                    tracing::info!(window = %label, "a preview tried to download a file; stopped");
+                    tell_main(app, label, PreviewState::Blocked);
+                }
+                allowed
+            })
+            .on_page_load(move |window, payload| {
+                let (app, label, loaded) = &on_load;
+                if payload.event() == PageLoadEvent::Finished && !loaded.swap(true, Ordering::SeqCst)
+                {
+                    // A page with no background of its own is white, as in a browser.
+                    if let Err(e) = window.set_background_color(Some(LIGHT_SURFACE)) {
+                        tracing::debug!(error = %e, "the preview's background could not be set");
+                    }
+                    tell_main(app, label, PreviewState::Loaded);
+                }
+            })
+            .background_color(if opening.dark {
+                DARK_SURFACE
+            } else {
+                LIGHT_SURFACE
+            })
+    }};
+}
+
 /// The preview window, with every lock on, not yet shown.
 fn locked_builder<'a, R: Runtime, M: Manager<R>>(
     manager: &'a M,
     app: &AppHandle<R>,
     opening: &Opening<'_>,
 ) -> WebviewWindowBuilder<'a, R, M> {
-    let label = opening.label.to_string();
-    let blocked = Arc::new(AtomicBool::new(false));
-    let loaded = Arc::new(AtomicBool::new(false));
-    let on_navigation = (
-        app.clone(),
-        label.clone(),
-        opening.token.to_string(),
-        blocked.clone(),
-    );
-    let on_new_window = (app.clone(), label.clone(), blocked.clone());
-    let on_download = (app.clone(), label.clone(), blocked);
-    let on_load = (app.clone(), label, loaded);
-    WebviewWindowBuilder::new(
-        manager,
-        opening.label,
-        WebviewUrl::CustomProtocol(opening.url.clone()),
+    locked!(
+        WebviewWindowBuilder::new(
+            manager,
+            opening.label,
+            WebviewUrl::CustomProtocol(opening.url.clone()),
+        ),
+        app,
+        opening
     )
-    // Its own browser process (Windows), arguments and private profile.
-    .additional_browser_args(&browser_args(
-        crate::profile::process_browser_args(),
-        opening.network,
-    ))
-    .data_directory(opening.data_dir.clone())
-    .incognito(true)
-    .devtools(cfg!(debug_assertions))
-    .initialization_script_for_all_frames(preview::GUARD_SCRIPT)
-    .on_navigation(move |url| {
-        let (app, label, token, blocked) = &on_navigation;
-        let allowed = navigation_allowed(url, token);
-        // Logged and reported once per window: a page looping on it floods nothing.
-        if !allowed && !blocked.swap(true, Ordering::SeqCst) {
-            tracing::info!(window = %label, "a preview tried to leave its own files; stopped");
-            tell_main(app, label, PreviewState::Blocked);
-        }
-        allowed
-    })
-    .on_new_window(move |url, _features| {
-        let (app, label, blocked) = &on_new_window;
-        if new_window_allowed(&url) {
-            return NewWindowResponse::Allow;
-        }
-        if !blocked.swap(true, Ordering::SeqCst) {
-            tracing::info!(window = %label, "a preview tried to open a window; stopped");
-            tell_main(app, label, PreviewState::Blocked);
-        }
-        NewWindowResponse::Deny
-    })
-    .on_download(move |_webview, event| {
-        let (app, label, blocked) = &on_download;
-        let allowed = download_allowed(&event);
-        if !allowed
-            && matches!(event, DownloadEvent::Requested { .. })
-            && !blocked.swap(true, Ordering::SeqCst)
-        {
-            tracing::info!(window = %label, "a preview tried to download a file; stopped");
-            tell_main(app, label, PreviewState::Blocked);
-        }
-        allowed
-    })
-    .on_page_load(move |window, payload| {
-        let (app, label, loaded) = &on_load;
-        if payload.event() == PageLoadEvent::Finished && !loaded.swap(true, Ordering::SeqCst) {
-            // A page with no background of its own is white, as in a browser.
-            if let Err(e) = window.set_background_color(Some(LIGHT_SURFACE)) {
-                tracing::debug!(error = %e, "the preview's background could not be set");
-            }
-            tell_main(app, label, PreviewState::Loaded);
-        }
-    })
     .title(window_title(opening.title, opening.version))
     .theme(Some(if opening.dark {
         Theme::Dark
     } else {
         Theme::Light
     }))
-    .background_color(if opening.dark {
-        DARK_SURFACE
-    } else {
-        LIGHT_SURFACE
-    })
     .decorations(true)
     .resizable(true)
     .min_inner_size(320.0, 240.0)
     // Placed first, then shown (the user asked for it, so it takes the focus).
     .visible(false)
+}
+
+/// The preview as a child webview of another window, with the same locks as
+/// the preview window. The caller adds it (`Window::add_child`).
+pub(crate) fn locked_webview<R: Runtime>(
+    app: &AppHandle<R>,
+    opening: &Opening<'_>,
+) -> tauri::webview::WebviewBuilder<R> {
+    locked!(
+        tauri::webview::WebviewBuilder::new(
+            opening.label,
+            WebviewUrl::CustomProtocol(opening.url.clone()),
+        ),
+        app,
+        opening
+    )
+    .focused(false)
+}
+
+/// The WebView2 permission and crash handlers, on any preview webview.
+#[cfg(windows)]
+pub(crate) fn lock_platform<R: Runtime>(
+    app: &AppHandle<R>,
+    label: &str,
+    webview: &tauri::Webview<R>,
+) -> Result<(), String> {
+    let app = app.clone();
+    let label = label.to_string();
+    webview
+        .with_webview(move |webview| {
+            let stopped = Arc::new(AtomicBool::new(false));
+            let on_failed = Box::new(move || {
+                if !stopped.swap(true, Ordering::SeqCst) {
+                    tracing::warn!(window = %label, "a preview's page stopped");
+                    tell_main(&app, &label, PreviewState::Stopped);
+                }
+            });
+            if let Err(e) = webview2::lock(&webview, on_failed) {
+                tracing::warn!(error = %e, "the preview's permission and crash handlers could not be set");
+            }
+        })
+        .map_err(|e| e.to_string())
 }
 
 fn destroy<R: Runtime>(window: &WebviewWindow<R>) {

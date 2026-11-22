@@ -34,7 +34,8 @@ audit-encryption = ["shodh-rag/sqlcipher"]
 
 [dependencies]
 # image-png: the clipboard plugin decodes PNG bytes for Copy image of a snippet
-tauri = { version = "2.0", features = ["tray-icon", "image-png"] }
+# Spike: child webviews (Window::add_child) need the unstable feature.
+tauri = { version = "2.0", features = ["tray-icon", "image-png", "unstable"] }
 tauri-plugin-opener = "2.2"
 tauri-plugin-fs = "2.0"
 tauri-plugin-dialog = "2.0"
@@ -119,6 +120,8 @@ windows = { version = "0.58", features = [
     # "Stay available for my phone": keeping the computer awake on mains power
     # (phone_link/stay_available.rs).
     "Win32_System_Power",
+    # Spike: hit-testing the main window's child webviews.
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 # A creation file opened without following a final link, and its real path read

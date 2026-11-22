@@ -6,7 +6,7 @@ import { ChipInput, DateTimeField, FIELD_LABEL, FOCUS_RING, INLINE_INPUT, Inline
 import { ReminderField } from './ReminderField';
 import { useTasksStore } from './TasksStore';
 import { useChatSession } from '../ask/ChatSessionContext';
-import { useFocus } from '../focus/FocusContext';
+import { useFocus } from '../focus/focusHost';
 import { taskTarget } from '../focus/targets';
 import { isTempSubtaskId } from './taskStore';
 import { workspaceChoices, workspaceName } from './board';

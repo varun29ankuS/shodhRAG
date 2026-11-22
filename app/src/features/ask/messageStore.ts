@@ -6,7 +6,7 @@
  */
 
 import type { ConversationMessage } from '../../hooks/useConversations';
-import type { AnswerScope } from '../agent/useAgentSession';
+import type { AnswerScope } from '../agent/agentApi';
 import { fromPersisted, initialTranscript, isLive, toCheckpoint, toPersisted } from '../agent/reducer.ts';
 import type { TranscriptState } from '../agent/reducer';
 import { metadataWithThreads, metadataWithoutThreads, threadsFromMetadata } from '../focus/threadStore.ts';

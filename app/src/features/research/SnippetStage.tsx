@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, Loader2 } from 'lucide-react';
-import { notifyDepthLimit, useFocus } from '../focus/FocusContext';
+import { notifyDepthLimit, useFocus } from '../focus/focusHost';
 import type { FocusTarget } from '../focus/focusTypes';
 import { tableTarget } from '../focus/targets';
 import { onResearchChanged, researchApi, toResearchError } from './api';

@@ -4,7 +4,7 @@ import { cn } from '../../../lib/utils';
 import { FocusFrame, useOpenFocus } from '../../focus/FocusFrame';
 import { selectionTarget, svgTarget } from '../../focus/targets';
 import { publishTarget } from '../../agent/navigation';
-import { agentApi, toAgentError } from '../../agent/useAgentSession';
+import { agentApi, toAgentError } from '../../agent/agentApi';
 import { useAnswerBlocks } from './answerContext';
 import { useDiagramHost } from './diagramHost';
 import { describeDiagram, describeNode, parseDiagram } from './diagramSpec';

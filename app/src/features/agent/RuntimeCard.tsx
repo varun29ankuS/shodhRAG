@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { CheckCircle2, Download, Loader2, RotateCcw, TriangleAlert } from 'lucide-react';
 import { cn } from '../../lib/utils';
-import { useRuntimeSetup } from '../setup/RuntimeSetupContext';
+import { useRuntimeSetup } from '../setup/runtimeSetupHost';
 import { checksumRow, runtimeCheckPromise, runtimeVerifiedSentence, unverifiedSentence } from '../setup/verification';
 import { TechnicalDetails } from '../setup/TechnicalDetails';
 import { approxMegabytes } from '../setup/readiness';

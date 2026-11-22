@@ -31,7 +31,7 @@ import { UsedMemoriesChip } from '../memory/UsedMemoriesChip';
 import { linesOfRuns, runIdsOf, turnIdsOf } from '../memory/turnMemories';
 import { useTurnMemories } from '../memory/useTurnMemories';
 import { Transcript } from '../agent/Transcript';
-import { FocusAnchorProvider, useFocus } from '../focus/FocusContext';
+import { FocusAnchorProvider, useFocus } from '../focus/focusHost';
 import type { FocusThread } from '../focus/focusTypes';
 import { sourceTarget } from '../focus/targets';
 import { activeRootThreads, descendantCount, nodeLabel } from '../focus/threadTree';
@@ -40,6 +40,7 @@ import type { SideSummaryRef } from '../focus/summary';
 import { UserText } from './UserText';
 import { useChatSession } from './ChatSessionContext';
 import { useDraft } from './useDraft';
+import { useVoiceInput } from './useVoiceInput';
 import { useSendOptions } from './useSendOptions';
 import { AttachmentChips, FileRefChip, useChatFileScope, useImageAttachments } from './AttachmentChips';
 import type { ConversationFile } from './fileQuestion';
@@ -698,6 +699,11 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
 
   // Kept per conversation outside this view, which unmounts on every view switch.
   const [draft, setDraft] = useDraft(session.activeConversationId);
+  // Dictation into the draft (the composer shows the microphone it is given).
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  const getDraft = useCallback(() => draftRef.current, []);
+  const voice = useVoiceInput(getDraft, setDraft);
   // Text read from images, sent with the next question as the user's own context.
   const attachments = useImageAttachments(session.activeConversationId);
   // The file the next question is about ("Ask about this file"): its search limit.
@@ -1319,6 +1325,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
         blockedAction={blockedAction}
         placeholder={messages.length === 0 ? 'Ask about your files…' : 'Ask a follow-up…'}
         onCycleMode={conversationId ? cycleAgentMode : undefined}
+        voice={voice}
         modelChip={(
           <>
             {conversationId && <ModePicker mode={agentMode} onChange={changeAgentMode} answerRunning={isStreaming} />}

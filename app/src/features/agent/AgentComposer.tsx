@@ -1,7 +1,6 @@
-import React, { forwardRef, useCallback, useImperativeHandle, useLayoutEffect, useRef } from 'react';
+import React, { forwardRef, useImperativeHandle, useLayoutEffect, useRef } from 'react';
 import { ArrowUp, CornerDownRight, Folder, ImagePlus, Mic, MicOff, Square } from 'lucide-react';
 import { cn } from '../../lib/utils';
-import { useVoiceInput } from '../ask/useVoiceInput';
 import { pasteDecision } from '../ask/imageNotice';
 import { IS_MAC_PLATFORM, matchesShortcut, shortcutText, withShortcut } from '../../lib/shortcuts';
 
@@ -72,6 +71,12 @@ interface AgentComposerProps {
    * user's key, never the agent's; Auto is picked in the menu).
    */
   onCycleMode?: () => void;
+  /**
+   * Dictation, run by the caller (Ask runs `useVoiceInput` on its own draft; the floating
+   * chat over the preview has the main window dictate). The microphone shows whenever it is
+   * supported, compact or not; without it there is none.
+   */
+  voice?: { supported: boolean; listening: boolean; toggle: () => void };
 }
 
 /**
@@ -106,20 +111,17 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
     compact = false,
     runningPlaceholder,
     onCycleMode,
+    voice,
   },
   ref,
 ) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const valueRef = useRef(value);
-  valueRef.current = value;
   const inputId = `${id}-input`;
   const blockedId = `${id}-blocked`;
   const maxHeight = compact ? MAX_COMPACT_HEIGHT : MAX_TEXTAREA_HEIGHT;
 
   useImperativeHandle(ref, () => ({ focus: () => textareaRef.current?.focus() }), []);
 
-  const getText = useCallback(() => valueRef.current, []);
-  const voice = useVoiceInput(getText, onChange);
 
   // Grow with content up to a cap, then scroll. Where the engine sizes the
   // field itself (CSS field-sizing) nothing is measured per keystroke;
@@ -229,7 +231,7 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
             <ImagePlus className="w-[17px] h-[17px]" aria-hidden="true" />
           </button>
         )}
-        {!compact && voice.supported && (
+        {voice?.supported && (
           <button
             type="button"
             onClick={voice.toggle}

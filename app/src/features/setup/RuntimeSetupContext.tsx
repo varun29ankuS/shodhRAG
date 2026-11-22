@@ -1,33 +1,12 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { agentApi, toAgentError, useRuntimeProgress } from '../agent/useAgentSession';
-import type { RuntimeInstall, RuntimeProgress, RuntimeStatus } from '../agent/useAgentSession';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { agentApi, toAgentError, useRuntimeProgress } from '../agent/agentApi';
+import type { RuntimeInstall, RuntimeProgress, RuntimeStatus } from '../agent/agentApi';
+import { RuntimeSetupContext } from './runtimeSetupHost';
+import type { RuntimeSetupValue } from './runtimeSetupHost';
 
-interface RuntimeSetupValue {
-  /** Latest status, or null until the first check finishes. */
-  status: RuntimeStatus | null;
-  statusError: string | null;
-  /**
-   * Whether the answer engine is on this computer (null: not known yet). A start
-   * that failed because it is missing sets it false (`setInstalled`).
-   */
-  installed: boolean | null;
-  installing: boolean;
-  progress: RuntimeProgress | null;
-  installError: string | null;
-  /** The last install could not connect. */
-  installOffline: boolean;
-  /** Result of an install that finished in this session. */
-  justInstalled: RuntimeInstall | null;
-  /** When that install finished (ms), so a card shown after it is not covered by it. */
-  installedAt: number | null;
-  dismissInstalled: () => void;
-  /** Download and verify it; resolves whether it is installed afterwards. */
-  install: () => Promise<boolean>;
-  setInstalled: (installed: boolean) => void;
-  refresh: () => Promise<void>;
-}
-
-const RuntimeSetupContext = createContext<RuntimeSetupValue | null>(null);
+// The value's type, context and hook live in ./runtimeSetupHost; importers keep finding the hook here.
+export { useRuntimeSetup } from './runtimeSetupHost';
+export type { RuntimeSetupState, RuntimeSetupValue } from './runtimeSetupHost';
 
 /**
  * One shared view of the answer engine (the pinned agent runtime): first-run
@@ -115,10 +94,4 @@ export function RuntimeSetupProvider({ children }: { children: React.ReactNode }
   );
 
   return <RuntimeSetupContext.Provider value={value}>{children}</RuntimeSetupContext.Provider>;
-}
-
-export function useRuntimeSetup(): RuntimeSetupValue {
-  const context = useContext(RuntimeSetupContext);
-  if (!context) throw new Error('useRuntimeSetup must be used within a RuntimeSetupProvider');
-  return context;
 }

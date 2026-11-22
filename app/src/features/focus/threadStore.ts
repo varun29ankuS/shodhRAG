@@ -27,7 +27,7 @@ import type {
   ThreadAnchor,
   ThreadTurn,
 } from './focusTypes.ts';
-import type { AnswerScope } from '../agent/useAgentSession.ts';
+import type { AnswerScope } from '../agent/agentApi.ts';
 import { answerAsContext } from '../agent/grounding.ts';
 import { readFollowups, stripFollowups } from './followups.ts';
 import { safeTruncate } from './markdownSafe.ts';

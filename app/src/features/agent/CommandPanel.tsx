@@ -10,7 +10,7 @@ import {
   formatTimeLimit,
 } from './commandRun';
 import type { CommandRun } from './commandRun';
-import { agentApi, toAgentError } from './useAgentSession';
+import { agentApi, toAgentError } from './agentApi';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-shodh-ground';

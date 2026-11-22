@@ -4,8 +4,8 @@ import { AlertTriangle, ChevronLeft, ChevronRight, List, Loader2, PenLine, Rotat
 import { cn } from '../../../lib/utils';
 import { focusIsFree } from '../../../lib/focusReturn';
 import { FRAME_ACTION, FocusFrame } from '../../focus/FocusFrame';
-import { useFocus, useFocusAnchor, useFocusDrill } from '../../focus/FocusContext';
-import type { DiagramPlace } from '../../focus/FocusContext';
+import { useFocus, useFocusAnchor, useFocusDrill } from '../../focus/focusHost';
+import type { DiagramPlace } from '../../focus/focusHost';
 import { mermaidTarget } from '../../focus/targets';
 import { useAnswerBlocks } from './answerContext';
 import { diagramLedger, useDiagramRecord } from './diagramLedger';

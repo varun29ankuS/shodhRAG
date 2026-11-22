@@ -15,9 +15,10 @@ import {
   reduceAll,
 } from '../agent/reducer';
 import type { TranscriptAction, TranscriptState } from '../agent/reducer';
-import { toAgentError, useAgentSession } from '../agent/useAgentSession';
-import { useRuntimeSetup } from '../setup/RuntimeSetupContext';
-import type { HistoryTurn } from '../agent/useAgentSession';
+import { toAgentError } from '../agent/agentApi';
+import { useAgentSession } from '../agent/useAgentSession';
+import { useRuntimeSetup } from '../setup/runtimeSetupHost';
+import type { HistoryTurn } from '../agent/agentApi';
 import type { FocusThread } from '../focus/focusTypes';
 import { metadataWithThreads, threadsFromMetadata } from '../focus/threadStore';
 import { summaryPrompt } from '../focus/summary';

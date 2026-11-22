@@ -272,6 +272,10 @@ This task is **not merged**. It runs on branch `spike/preview-child-webviews` fr
 
 ### Task 6: `DockPanel` split, `/dock-view` route, and the mic in a compact composer
 
+**Task 6 revised 2026-11-22: shared transcript through a host interface, user decision (b).** The in-page chat's `Transcript` imported main-only providers (`MessageContentRenderer → FocusFrame → FocusContext → ChatSessionContext`, `RuntimeCard → RuntimeSetupContext → useAgentSession`, which names `AGENT_EVENT`). The dock may load neither, and `useRuntimeSetup` threw without its provider. The user chose to untangle them and keep one transcript for both surfaces. The task is two commits:
+- **6a.** The transcript tree reads focus, the answer engine's setup and code review through host modules (`focus/focusHost.tsx`, `setup/runtimeSetupHost.ts`, `code/codeReviewHost.ts`), which main's providers fill unchanged. The agent API and types move out of `useAgentSession.ts` (now the event stream only) into `agent/agentApi.ts`. `SettingsSection` moves to `memory/navigation.ts`. `AgentComposer` takes dictation as a `voice` prop. `tests/transcriptBoundary.test.ts` pins the boundary, and Ask behaves exactly as before.
+- **6b.** The dock renders the same `Transcript` through `DockPanel`. It provides these hosts from its snapshot and forwards their buttons to main as `DockAction`s. When `fitTranscript` drops older blocks, the dock says so, with a control that opens them in Ask.
+
 **Files:**
 - Create: `app/src/components/shell/DockPanel.tsx`, `app/src/features/dock/DockView.tsx`
 - Modify: `app/src/components/shell/ConversationDock.tsx` (builds a `DockModel` and renders `DockPanel`), `app/src/features/agent/AgentComposer.tsx`, `app/src/main.tsx`

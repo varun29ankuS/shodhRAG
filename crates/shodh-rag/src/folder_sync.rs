@@ -2798,12 +2798,9 @@ mod tests {
             .await
             .expect("baseline");
 
+        // One text for every file: the test embedder has a small fixed vocabulary.
         for i in 0..MAX_ADDED + 5 {
-            std::fs::write(
-                folder.join(format!("note-{i:03}.txt")),
-                format!("note {i}: {PASSAGE}"),
-            )
-            .expect("file");
+            std::fs::write(folder.join(format!("note-{i:03}.txt")), PASSAGE).expect("file");
         }
         let report = sync_folder(&folder_text, "s1", &store, &rag, || false)
             .await

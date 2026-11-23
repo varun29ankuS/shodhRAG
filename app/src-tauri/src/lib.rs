@@ -50,8 +50,8 @@ mod table_model_commands;
 mod task_repeat;
 mod ui_state_commands;
 mod updater;
-mod whats_new;
 mod visual_commands;
+mod whats_new;
 mod workspace_commands;
 
 // Unified chat system modules

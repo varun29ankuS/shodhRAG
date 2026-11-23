@@ -159,6 +159,9 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+# Real time zones (daylight saving gaps and overlaps) for the schedule tests; already in
+# the dependency tree through the app.
+chrono-tz = "0.10"
 # Writes legacy Word and PowerPoint (compound file) fixtures for the .doc and .ppt
 # reader tests (MIT; already in the dependency tree).
 cfb = "0.7"

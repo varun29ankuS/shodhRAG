@@ -12,6 +12,7 @@ pub mod config;
 pub mod connectors;
 pub mod design_check;
 pub mod embeddings;
+pub mod engine;
 pub mod folder_sync;
 pub mod harness;
 pub mod inbox;

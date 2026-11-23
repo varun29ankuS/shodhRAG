@@ -41,6 +41,10 @@ use super::fill::{
 };
 use super::store::{TableStore, REFILL_FAILED};
 use super::{Cell, CellStatus, ColumnKind, TableRow};
+pub use crate::engine::backoff::{BACKOFF_LADDER_MINUTES, MAX_PANICS, STALE_RESET_WAIT_SECS};
+pub use crate::engine::lease::LEASE_MINUTES;
+use crate::engine::lease::{lease_cutoff, LiveRun, PROCESS_TOKEN};
+pub(super) use crate::engine::lease::{process_token, timestamp};
 use crate::research::results::{ResultRecord, ResultService};
 use crate::research::{blocking, ResearchError, ResearchResult};
 
@@ -50,69 +54,9 @@ pub const FILL_ERROR: &str = "fill_error";
 pub const FILL_PANICKED: &str = "fill_panicked";
 /// The error of a job paused because the database stayed locked.
 pub const DATABASE_BUSY: &str = "database_busy";
-/// Runs of one job that may panic before the job fails instead of being resumed again.
-pub const MAX_PANICS: usize = 2;
 /// Papers in a row whose model calls all failed (any failure but quota and auth) before
 /// the job waits for the user.
 pub const MAX_FAILING_PAPERS: usize = 3;
-/// How long a run's heartbeat holds its job against another process. The heartbeat is
-/// refreshed before every paper and every model call, so the longest gap between two
-/// beats is one model call (the HTTP client's timeout is 300 s) plus the local work of a
-/// paper (hashing, retrieval, the grounding model: seconds). Ten minutes is twice the
-/// call timeout: a live run is never taken over, and a dead one is resumed within ten
-/// minutes of its last beat.
-pub const LEASE_MINUTES: i64 = 10;
-/// The waits of the backoff ladder, in minutes: rate limits that say nothing of when they
-/// reset, and an unreachable model. One rung per pause in a row; past the last the job
-/// waits for the user. The ladder tops out at 30 minutes and holds there twice more.
-pub const BACKOFF_LADDER_MINUTES: [i64; 7] = [1, 2, 5, 15, 30, 30, 30];
-/// The wait after a rate limit whose reset time reads as already past (a fast clock).
-pub const STALE_RESET_WAIT_SECS: i64 = 60;
-
-/// This process's claim on the jobs it runs.
-static PROCESS_TOKEN: LazyLock<String> = LazyLock::new(|| uuid::Uuid::new_v4().to_string());
-
-/// This process's run token.
-pub(super) fn process_token() -> String {
-    PROCESS_TOKEN.clone()
-}
-
-/// The jobs this process is running now, by (token, job id).
-static LIVE_RUNS: LazyLock<Mutex<HashSet<(String, String)>>> =
-    LazyLock::new(|| Mutex::new(HashSet::new()));
-
-fn live_runs() -> std::sync::MutexGuard<'static, HashSet<(String, String)>> {
-    LIVE_RUNS.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-/// A run's slot for its job in this process; given back when the run ends, however.
-struct LiveRun {
-    key: (String, String),
-}
-
-impl LiveRun {
-    fn enter(token: &str, job_id: &str) -> Option<Self> {
-        let key = (token.to_string(), job_id.to_string());
-        // The set's lock is let go before a slot exists: a slot dropped under it would
-        // lock it again, and a refused caller must not free the holder's slot.
-        let entered = live_runs().insert(key.clone());
-        if entered {
-            Some(Self { key })
-        } else {
-            None
-        }
-    }
-
-    fn is_live(token: &str, job_id: &str) -> bool {
-        live_runs().contains(&(token.to_string(), job_id.to_string()))
-    }
-}
-
-impl Drop for LiveRun {
-    fn drop(&mut self) {
-        live_runs().remove(&self.key);
-    }
-}
 
 /// Where a fill job stands (`table_fill_job.state`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
@@ -350,16 +294,6 @@ pub(super) enum Claim {
     /// Not claimable; the job as it is (cancelled by the claim itself when a cancel was
     /// pending), or `None` when there is no such job.
     Refused(Option<FillJob>),
-}
-
-/// Fixed-width UTC with milliseconds and `Z`: string order is time order.
-pub(super) fn timestamp(at: DateTime<Utc>) -> String {
-    at.to_rfc3339_opts(SecondsFormat::Millis, true)
-}
-
-/// Heartbeats at or before this instant belong to a run that is gone.
-fn lease_cutoff(now: DateTime<Utc>) -> String {
-    timestamp(now - TimeDelta::minutes(LEASE_MINUTES))
 }
 
 fn bad_column(index: usize, message: String) -> rusqlite::Error {

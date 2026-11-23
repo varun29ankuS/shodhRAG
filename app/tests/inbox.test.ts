@@ -49,6 +49,13 @@ test('items from the backend are parsed; unknown kinds and malformed rows are sk
   assert.deepEqual(parseItems(null), []);
 });
 
+test('automation items are parsed, not skipped as a newer build's kind', () => {
+  const items = parseItems([
+    { id: 'repeat-hold:j1', kind: 'automation', status: 'needs_you', title: 'Submit timesheet stopped repeating' },
+  ]);
+  assert.deepEqual(items.map(i => i.kind), ['automation']);
+});
+
 test('each kind offers its actions; running work offers none', () => {
   assert.deepEqual(actionsFor(item('a', 'approval', 'needs_you')), { primary: 'approve', secondary: 'deny' });
   assert.deepEqual(actionsFor(item('m', 'memory', 'needs_you')), { primary: 'accept', secondary: 'dismiss' });

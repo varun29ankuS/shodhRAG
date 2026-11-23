@@ -670,6 +670,89 @@ const MIGRATIONS: &[(i64, &str)] = &[
         ALTER TABLE inbox_items_rebuilt RENAME TO inbox_items;
         CREATE INDEX inbox_items_status ON inbox_items(status, updated_at);",
     ),
+    (
+        19,
+        // The scheduler engine (`crate::engine`): its jobs (a repeating task's series, and
+        // later folder watches, paper alerts, playbooks, the daily review and system jobs)
+        // and their runs. A job has at most one active run (queued, running or waiting),
+        // which the partial unique index enforces. Deleting a job deletes its runs in the
+        // same transaction (foreign keys are not enforced in this database). The tables
+        // are created only if absent, so the step can be applied again safely. The Inbox
+        // is rebuilt with the kinds the engine and its later uses post: `model` (the
+        // chosen model keeps failing, which version 18 left out and so refused),
+        // `automation`, `whats_new` and `review`.
+        "CREATE TABLE IF NOT EXISTS engine_job (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL CHECK (kind IN ('task_repeat', 'folder_watch', 'paper_alert',
+                'playbook', 'daily_review', 'system')),
+            subject TEXT NOT NULL,
+            title TEXT NOT NULL,
+            schedule_json TEXT NULL,
+            trigger_json TEXT NULL,
+            input_json TEXT NOT NULL DEFAULT '{}',
+            enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+            overlap TEXT NOT NULL DEFAULT 'skip' CHECK (overlap IN ('skip', 'queue_one')),
+            catch_up TEXT NOT NULL DEFAULT 'once' CHECK (catch_up IN ('once', 'skip')),
+            max_attempts INTEGER NOT NULL DEFAULT 3 CHECK (max_attempts BETWEEN 1 AND 5),
+            next_due_at TEXT NULL,
+            hold_reason TEXT NULL CHECK (hold_reason IN
+                ('user', 'failing', 'model_unavailable', 'offline')),
+            failure_streak INTEGER NOT NULL DEFAULT 0 CHECK (failure_streak >= 0),
+            created_by TEXT NOT NULL CHECK (created_by IN ('user', 'agent', 'system')),
+            provenance_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS engine_job_subject ON engine_job(kind, subject);
+        CREATE TABLE IF NOT EXISTS engine_run (
+            id TEXT PRIMARY KEY,
+            job_id TEXT NOT NULL,
+            trigger_kind TEXT NOT NULL CHECK (trigger_kind IN
+                ('schedule', 'catch_up', 'manual', 'event', 'retry')),
+            scheduled_for TEXT NULL,
+            missed INTEGER NOT NULL DEFAULT 0 CHECK (missed >= 0),
+            state TEXT NOT NULL CHECK (state IN ('queued', 'running', 'waiting', 'succeeded',
+                'failed', 'skipped', 'cancelled')),
+            wait_reason TEXT NULL CHECK (wait_reason IN ('approval', 'decision', 'yield',
+                'quota', 'table_job', 'model_unavailable', 'offline', 'backoff')),
+            attempt INTEGER NOT NULL DEFAULT 0 CHECK (attempt >= 0),
+            next_attempt_at TEXT NULL,
+            run_token TEXT NULL,
+            heartbeat_at TEXT NULL,
+            planned_calls INTEGER NOT NULL DEFAULT 0 CHECK (planned_calls >= 0),
+            used_calls INTEGER NOT NULL DEFAULT 0 CHECK (used_calls >= 0),
+            conversation_id TEXT NULL,
+            summary TEXT NULL,
+            error_code TEXT NULL,
+            error_detail TEXT NULL,
+            started_at TEXT NULL,
+            ended_at TEXT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS engine_run_job ON engine_run(job_id, created_at);
+        CREATE UNIQUE INDEX IF NOT EXISTS engine_run_active ON engine_run(job_id)
+            WHERE state IN ('queued', 'running', 'waiting');
+        CREATE TABLE inbox_items_rebuilt (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL CHECK (kind IN ('approval', 'memory', 'reminder', 'indexing',
+                'tables', 'citation_graph', 'export', 'install', 'connector', 'model',
+                'automation', 'whats_new', 'review')),
+            status TEXT NOT NULL CHECK (status IN ('working', 'needs_you', 'done', 'failed')),
+            title TEXT NOT NULL,
+            detail TEXT NULL,
+            link_json TEXT NULL,
+            data_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        INSERT INTO inbox_items_rebuilt(id, kind, status, title, detail, link_json, data_json,
+                                        created_at, updated_at)
+            SELECT id, kind, status, title, detail, link_json, data_json, created_at, updated_at
+            FROM inbox_items;
+        DROP TABLE inbox_items;
+        ALTER TABLE inbox_items_rebuilt RENAME TO inbox_items;
+        CREATE INDEX inbox_items_status ON inbox_items(status, updated_at);",
+    ),
 ];
 
 fn latest_schema_version() -> i64 {
@@ -2292,6 +2375,176 @@ mod tests {
             )
             .unwrap();
         assert_eq!(index, 1);
+    }
+
+    #[test]
+    fn the_inbox_is_rebuilt_for_engine_items_with_its_rows() {
+        let (dir, log) = temp_log();
+        drop(log);
+        // The Inbox as version 18 left it, with one item of every kind it allowed.
+        const KINDS_18: [&str; 9] = [
+            "approval",
+            "memory",
+            "reminder",
+            "indexing",
+            "tables",
+            "citation_graph",
+            "export",
+            "install",
+            "connector",
+        ];
+        raw(&dir)
+            .execute_batch(
+                "DROP TABLE inbox_items;
+                 CREATE TABLE inbox_items (
+                    id TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL CHECK (kind IN ('approval', 'memory', 'reminder',
+                        'indexing', 'tables', 'citation_graph', 'export', 'install',
+                        'connector')),
+                    status TEXT NOT NULL CHECK (status IN ('working', 'needs_you', 'done', 'failed')),
+                    title TEXT NOT NULL,
+                    detail TEXT NULL,
+                    link_json TEXT NULL,
+                    data_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                 );
+                 CREATE INDEX inbox_items_status ON inbox_items(status, updated_at);
+                 DELETE FROM schema_version WHERE version >= 19;",
+            )
+            .unwrap();
+        let mut before = Vec::new();
+        for (i, kind) in KINDS_18.iter().enumerate() {
+            let row = (
+                format!("{kind}:{i}"),
+                kind.to_string(),
+                if i % 2 == 0 { "done" } else { "needs_you" }.to_string(),
+                format!("Item {i}"),
+                (i % 3 != 0).then(|| format!("detail {i}")),
+                (i % 2 == 0).then(|| format!("{{\"view\":\"v{i}\"}}")),
+                format!("{{\"n\":{i}}}"),
+                format!("2026-11-0{}T00:00:00.000Z", i % 9 + 1),
+                format!("2026-11-1{}T00:00:00.000Z", i % 9),
+            );
+            raw(&dir)
+                .execute(
+                    "INSERT INTO inbox_items VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    rusqlite::params![
+                        row.0, row.1, row.2, row.3, row.4, row.5, row.6, row.7, row.8
+                    ],
+                )
+                .unwrap();
+            before.push(row);
+        }
+        assert!(
+            raw(&dir)
+                .execute(
+                    "INSERT INTO inbox_items VALUES ('model:x', 'model', 'failed', 't', NULL,
+                     NULL, '{}', 'c', 'u')",
+                    [],
+                )
+                .is_err(),
+            "version 18 refused model items"
+        );
+        let shared = open_shared_connection(&dir.path().join("shodh.db"), None).unwrap();
+        let conn = shared.read().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, kind, status, title, detail, link_json, data_json, created_at,
+                        updated_at FROM inbox_items ORDER BY id",
+            )
+            .unwrap();
+        type Row18 = (
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            String,
+            String,
+            String,
+        );
+        let after: Vec<Row18> = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                    r.get(8)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        drop(stmt);
+        drop(conn);
+        before.sort();
+        assert_eq!(after, before, "every Inbox row is kept, field for field");
+        for kind in ["model", "automation", "whats_new", "review"] {
+            raw(&dir)
+                .execute(
+                    "INSERT INTO inbox_items VALUES (?1, ?2, 'needs_you', 't', NULL, NULL, '{}',
+                     'c', 'u')",
+                    rusqlite::params![format!("{kind}:new"), kind],
+                )
+                .unwrap();
+        }
+        assert!(raw(&dir)
+            .execute(
+                "INSERT INTO inbox_items VALUES ('x:1', 'feed', 'done', 't', NULL, NULL, '{}',
+                 'c', 'u')",
+                [],
+            )
+            .is_err());
+        let index: i64 = raw(&dir)
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = 'inbox_items_status'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(index, 1);
+    }
+
+    #[test]
+    fn the_index_refuses_a_second_active_run() {
+        let (dir, log) = temp_log();
+        drop(log);
+        let conn = raw(&dir);
+        conn.execute(
+            "INSERT INTO engine_job (id, kind, subject, title, created_by, created_at, updated_at)
+             VALUES ('j1', 'task_repeat', 't1', 'Submit timesheet', 'user', 'c', 'u')",
+            [],
+        )
+        .unwrap();
+        let run = |id: &str, state: &str| {
+            conn.execute(
+                "INSERT INTO engine_run (id, job_id, trigger_kind, state, created_at)
+                 VALUES (?1, 'j1', 'schedule', ?2, 'c')",
+                rusqlite::params![id, state],
+            )
+        };
+        run("r1", "succeeded").unwrap();
+        run("r2", "waiting").unwrap();
+        for active in ["queued", "running", "waiting"] {
+            assert!(run(&format!("r-{active}"), active).is_err(), "{active}");
+        }
+        run("r3", "succeeded").unwrap();
+        run("r4", "skipped").unwrap();
+        assert!(conn
+            .execute(
+                "INSERT INTO engine_job (id, kind, subject, title, created_by, created_at,
+                                         updated_at)
+                 VALUES ('j2', 'cron', 't', 't', 'user', 'c', 'u')",
+                [],
+            )
+            .is_err());
     }
 
     #[test]

@@ -16,7 +16,9 @@ export type InboxKind =
   | 'install'
   | 'connector'
   /** The user's chosen model keeps failing; Open goes to Settings → Model. */
-  | 'model';
+  | 'model'
+  /** Scheduled work that needs the user, e.g. a repeating task that stopped after failing. */
+  | 'automation';
 
 export interface InboxLink {
   /** A view id (`ask`, `library`, `tasks`, `settings`, ...). */
@@ -38,7 +40,7 @@ export interface InboxItem {
 }
 
 const STATUSES: readonly InboxStatus[] = ['working', 'needs_you', 'done', 'failed'];
-const KINDS: readonly InboxKind[] = ['approval', 'memory', 'reminder', 'indexing', 'tables', 'citation_graph', 'export', 'install', 'connector', 'model'];
+const KINDS: readonly InboxKind[] = ['approval', 'memory', 'reminder', 'indexing', 'tables', 'citation_graph', 'export', 'install', 'connector', 'model', 'automation'];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);

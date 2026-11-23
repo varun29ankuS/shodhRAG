@@ -21,8 +21,14 @@ import {
   sectionState,
   unseenIds,
   watchLine,
+  alertLine,
+  blockedCopy,
+  paperMeta,
+  pdfOf,
+  LOCAL_ONLY_COPY,
 } from '../src/features/whatsNew/model.ts';
-import type { FeedItem } from '../src/features/whatsNew/types.ts';
+import { CONSENT_TEMPLATE, cleanWords, consentLine, wordsFromChips } from '../src/features/whatsNew/consent.ts';
+import type { AlertView, FeedItem } from '../src/features/whatsNew/types.ts';
 
 const read = (path: string) => readFileSync(new URL(`../src/${path}`, import.meta.url), 'utf8');
 
@@ -62,8 +68,8 @@ test('loading is never shown as empty', () => {
   assert.equal(sectionState({ loaded: true, error: null, items: 2 }), 'list');
 });
 
-test('the empty copy says where new files come from', () => {
-  assert.equal(EMPTY_COPY, 'Nothing new yet. New files in your Library folders show up here.');
+test('the empty copy is the spec copy', () => {
+  assert.equal(EMPTY_COPY, 'Nothing new yet. New files in your Library folders show up here. You can also turn on alerts for new papers on a topic.');
 });
 
 test('buckets follow local days and a Monday week', () => {
@@ -190,6 +196,114 @@ test('resuming a folder from the Inbox turns its watch on again', () => {
   const inbox = read('features/inbox/InboxButton.tsx');
   assert.match(inbox, /item\.data\.resume === 'folder_watch'/);
   assert.match(inbox, /whatsNewApi\.setFolderWatch\(sourceId, true\)/);
+});
+
+// Paper alerts (PR 3b).
+
+function paper(id: string, foundAt: string, data: Record<string, unknown> = {}): FeedItem {
+  return {
+    id,
+    kind: 'paper',
+    sourceRef: `doi:10.1/${id}`,
+    jobId: 'alert-1',
+    title: `Paper ${id}`,
+    detail: null,
+    foundAt,
+    postedRunId: null,
+    seenAt: null,
+    dismissedAt: null,
+    link: null,
+    data: { year: 2026, sources: ['arXiv', 'OpenAlex'], words: 'linear attention', ...data },
+  };
+}
+
+function alert(state: AlertView['state'], extra: Partial<AlertView> = {}): AlertView {
+  return {
+    id: 'a1',
+    words: 'linear attention',
+    consentText: consentLine('linear attention'),
+    state,
+    lastCheckedAt: null,
+    lastSummary: null,
+    nextCheckAt: null,
+    failedApis: [],
+    retryAt: null,
+    blockedReason: null,
+    ...extra,
+  };
+}
+
+test('the consent line names all three APIs and the exact words', () => {
+  assert.equal(
+    consentLine('  linear attention KV cache '),
+    'Shodh sends these words: linear attention KV cache to arXiv, OpenAlex and Semantic Scholar to look for new papers. Your files, your library and who you are stay on this computer.',
+  );
+  assert.match(CONSENT_TEMPLATE, /\{words\}/);
+  assert.equal(cleanWords('  a   b '), 'a b');
+});
+
+test('ticking chips fills the words and the consent line shows them', () => {
+  const words = wordsFromChips(['linear attention', 'kv cache']);
+  assert.equal(words, 'linear attention kv cache');
+  assert.equal(consentLine(words), CONSENT_TEMPLATE.replace('{words}', 'linear attention kv cache'));
+  assert.equal(wordsFromChips([]), '');
+});
+
+test('papers are rows of their own, never grouped', () => {
+  const items = [paper('p1', at(23, 9)), paper('p2', at(23, 9)), paper('p3', at(23, 9)), paper('p4', at(23, 9)), file('a.pdf', at(23, 8))];
+  const rows = rowsOf(items, NOW)[0].rows;
+  assert.deepEqual(rows.map(r => r.kind), ['paper', 'paper', 'paper', 'paper', 'file']);
+  assert.equal(rows[0].meta, '2026 · arXiv, OpenAlex · alert: linear attention');
+  assert.equal(paperMeta(paper('p', at(23, 9), { year: null, sources: [] })), 'alert: linear attention');
+});
+
+test('only an https PDF the API reported can be added to the library', () => {
+  assert.equal(pdfOf(paper('p', at(23, 9), { pdfUrl: 'https://arxiv.org/pdf/2312.06635' })), 'https://arxiv.org/pdf/2312.06635');
+  assert.equal(pdfOf(paper('p', at(23, 9), { pdfUrl: 'http://example.com/x.pdf' })), null);
+  assert.equal(pdfOf(paper('p', at(23, 9))), null);
+});
+
+test('alert lines for every state', () => {
+  assert.deepEqual(alertLine(alert('checking')), { word: 'Checking', fact: 'Checking now…', fix: null });
+  const retry = alertLine(alert('waiting_retry', { failedApis: ['Semantic Scholar'], retryAt: new Date(2026, 10, 23, 11, 40).toISOString() }));
+  assert.deepEqual(retry, { word: 'Retrying', fact: "Semantic Scholar didn't answer; trying again at 11:40", fix: null });
+  assert.equal(alertLine(alert('offline')).fact, "No internet connection; Shodh checks again when it's back");
+  assert.equal(alertLine(alert('active', { nextCheckAt: new Date(2026, 10, 30, 9, 0).toISOString() })).fact, 'Next check Mon 30 Nov, 09:00');
+  assert.deepEqual(alertLine(alert('off')), { word: 'Off', fact: 'Nothing is sent for it', fix: 'turn_on' });
+  assert.deepEqual(alertLine(alert('held')), { word: 'Stopped', fact: 'Stopped after failing 3 weeks in a row', fix: 'resume' });
+  assert.deepEqual(alertLine(alert('blocked', { blockedReason: 'Local-only mode is on, so nothing may leave this computer.' })), { word: 'Paused', fact: LOCAL_ONLY_COPY, fix: 'privacy' });
+});
+
+test('local-only and web access off read differently, and nothing blocked reads as nothing', () => {
+  assert.equal(blockedCopy('Local-only mode is on, so nothing may leave this computer.'), LOCAL_ONLY_COPY);
+  assert.equal(blockedCopy('Web access for the agent is turned off.'), 'Paper alerts are paused: web access is off, so nothing leaves this computer.');
+  assert.equal(blockedCopy(null), null);
+  assert.equal(LOCAL_ONLY_COPY, 'Paper alerts are paused: Local-only mode is on, so nothing leaves this computer.');
+});
+
+const alertForm = read('features/whatsNew/PaperAlertForm.tsx');
+
+test('the form shows the consent line before Turn on, and only the section creates alerts', () => {
+  assert.match(alertForm, /consentLine\(clean\)/);
+  assert.doesNotMatch(alertForm, /createAlert\(/, 'the form only hands the words back');
+  assert.match(section, /whatsNewApi\.createAlert\(words\)/);
+  assert.match(alertForm, /Suggested from your library/);
+  assert.match(alertForm, /suggestions && suggestions\.length > 0/, 'no chips without suggestions');
+  assert.doesNotMatch(alertForm, /flex-wrap/);
+  assert.doesNotMatch(alertForm, /dangerouslySetInnerHTML|ReactMarkdown/);
+});
+
+test('resuming a paper alert from the Inbox turns it on again', () => {
+  const inbox = read('features/inbox/InboxButton.tsx');
+  assert.match(inbox, /item\.data\.resume === 'paper_alert'/);
+  assert.match(inbox, /whatsNewApi\.updateAlert\(jobId, \{ enabled: true \}\)/);
+});
+
+test('the alert commands are invoked by their literal names', () => {
+  const api = read('features/whatsNew/api.ts');
+  for (const command of ['paper_alert_create', 'paper_alert_update', 'paper_alert_delete', 'paper_alert_suggestions', 'whats_new_add_to_library']) {
+    assert.match(api, new RegExp(`invoke<[^>]+>\\('${command}'`), command);
+  }
 });
 
 test('the commands are invoked by their literal names', () => {

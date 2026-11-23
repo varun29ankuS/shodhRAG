@@ -71,6 +71,7 @@ These settle the open questions at the end of this plan. Where they differ from 
 
 **What the library already has, and what is used.** Nothing here makes a model call or a network request, and the result is deterministic:
 - titles of library papers: `citation_scans` identities, else the file names of indexed PDFs with the extension and any arXiv id dropped;
+  - **ruled (coordinator):** a file name that is an id or junk gives no phrase. That covers arXiv ids (`2301.12345v2`), DOIs, `paper_final(1)`, `download`, hashes and pure numbers. A chip must read like a topic a person would type, and the fixture library holds such names as negatives;
 - method concepts of the paper graph, with how many library papers use each (only once the graph is built and results are accepted).
 
 **Interfaces:**

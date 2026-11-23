@@ -549,6 +549,144 @@ struct Saved {
     sha256: String,
 }
 
+/// A file saved by [`download_into`].
+pub(crate) struct Downloaded {
+    pub(crate) path: PathBuf,
+    pub(crate) final_url: url::Url,
+    pub(crate) mime: String,
+    pub(crate) bytes: u64,
+    pub(crate) sha256: String,
+}
+
+/// Downloads `url` (a document or image of an allowed type, its first bytes matching
+/// the type, at most `MAX_DOWNLOAD_BYTES`) into the folder `make_folder` gives (made
+/// only once the download is known to be allowed), named `file_name` or as the server
+/// names it, never over an existing file.
+pub(crate) async fn download_into(
+    client: &SafeClient,
+    url: &url::Url,
+    file_name: Option<&str>,
+    make_folder: impl FnOnce() -> Result<PathBuf, ToolError>,
+) -> Result<Downloaded, ToolError> {
+    let fetched = client
+        .get(url.as_str(), vec![])
+        .await
+        .map_err(|e| match e {
+            WebError::Blocked { .. } | WebError::Credentials | WebError::UnsupportedScheme(_) => {
+                ToolError::Forbidden(e.to_string())
+            }
+            other => ToolError::Unavailable(other.to_string()),
+        })?;
+    let final_url = fetched.final_url.clone();
+    if !(200..300).contains(&fetched.status) {
+        return Err(ToolError::Unavailable(format!(
+            "{final_url} answered with status {}.",
+            fetched.status
+        )));
+    }
+    if let Some(length) = fetched
+        .header("content-length")
+        .and_then(|l| l.trim().parse::<u64>().ok())
+    {
+        if length > MAX_DOWNLOAD_BYTES {
+            return Err(ToolError::Unavailable(format!(
+                "The file is {} MB; downloads are limited to {} MB.",
+                length / (1024 * 1024),
+                MAX_DOWNLOAD_BYTES / (1024 * 1024)
+            )));
+        }
+    }
+    let mime = fetched
+        .header("content-type")
+        .unwrap_or("")
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    let suggested = file_name
+        .map(str::to_string)
+        .or_else(|| {
+            fetched
+                .header("content-disposition")
+                .and_then(content_disposition_name)
+        })
+        .or_else(|| url_file_name(&final_url))
+        .unwrap_or_else(|| "download".to_string());
+    let (stem, name_ext) = split_name(&sanitize_name(&suggested, "download"));
+    let ext = decide_extension(&mime, name_ext.as_deref()).ok_or_else(|| {
+        ToolError::Forbidden(format!(
+            "{final_url} is {}, which is not a downloadable document or image type.",
+            if mime.is_empty() {
+                "of unknown type"
+            } else {
+                &mime
+            }
+        ))
+    })?;
+    if !is_allowed_extension(ext) {
+        return Err(ToolError::Forbidden(format!(
+            "{ext} files are not downloaded."
+        )));
+    }
+
+    let folder = make_folder()?;
+    let part_path = folder.join(format!(".{stem}.{}.part", uuid::Uuid::new_v4().simple()));
+    let mut part = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&part_path)
+        .map_err(|e| {
+            ToolError::Unavailable(format!("Could not write in {}: {e}", folder.display()))
+        })?;
+    let mut guard = PartGuard(Some(part_path.clone()));
+    let mut hasher = Sha256::new();
+    let mut written: u64 = 0;
+    let mut head: Vec<u8> = Vec::with_capacity(16 * 1024);
+    let mut body = fetched.body;
+    while let Some(chunk) = body.next().await {
+        let chunk = chunk.map_err(|e| ToolError::Unavailable(e.to_string()))?;
+        written += chunk.len() as u64;
+        if written > MAX_DOWNLOAD_BYTES {
+            return Err(ToolError::Unavailable(format!(
+                "The file is larger than {} MB; the download was stopped.",
+                MAX_DOWNLOAD_BYTES / (1024 * 1024)
+            )));
+        }
+        if head.len() < 16 * 1024 {
+            let take = (16 * 1024 - head.len()).min(chunk.len());
+            head.extend_from_slice(&chunk[..take]);
+        }
+        hasher.update(&chunk);
+        part.write_all(&chunk)
+            .map_err(|e| ToolError::Unavailable(format!("Writing the download failed: {e}")))?;
+    }
+    part.sync_all()
+        .map_err(|e| ToolError::Unavailable(format!("Writing the download failed: {e}")))?;
+    drop(part);
+    if written == 0 {
+        return Err(ToolError::Unavailable(
+            "The server sent an empty file.".to_string(),
+        ));
+    }
+    if !magic_matches(ext, &head) {
+        return Err(ToolError::Forbidden(format!(
+            "The content does not look like a .{ext} file (its first bytes do not match); it was \
+                 not saved."
+        )));
+    }
+    let saved_path = publish_part(&part_path, &folder, &stem, ext)
+        .map_err(|e| ToolError::Unavailable(format!("Saving the download failed: {e}")))?;
+    guard.0 = None;
+    Ok(Downloaded {
+        path: saved_path,
+        final_url,
+        mime,
+        bytes: written,
+        sha256: hex_digest(hasher.finalize().as_slice()),
+    })
+}
+
 pub struct DownloadFileTool {
     host: Arc<AgentHost>,
 }
@@ -642,118 +780,16 @@ impl HostTool for DownloadFileTool {
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         self.check_web()?;
         let (url, plan) = self.plan(&args).await?;
-        let fetched = self
-            .client()
-            .get(url.as_str(), vec![])
-            .await
-            .map_err(|e| match e {
-                WebError::Blocked { .. }
-                | WebError::Credentials
-                | WebError::UnsupportedScheme(_) => ToolError::Forbidden(e.to_string()),
-                other => ToolError::Unavailable(other.to_string()),
-            })?;
-        let final_url = fetched.final_url.clone();
-        if !(200..300).contains(&fetched.status) {
-            return Err(ToolError::Unavailable(format!(
-                "{final_url} answered with status {}.",
-                fetched.status
-            )));
-        }
-        if let Some(length) = fetched
-            .header("content-length")
-            .and_then(|l| l.trim().parse::<u64>().ok())
-        {
-            if length > MAX_DOWNLOAD_BYTES {
-                return Err(ToolError::Unavailable(format!(
-                    "The file is {} MB; downloads are limited to {} MB.",
-                    length / (1024 * 1024),
-                    MAX_DOWNLOAD_BYTES / (1024 * 1024)
-                )));
-            }
-        }
-        let mime = fetched
-            .header("content-type")
-            .unwrap_or("")
-            .split(';')
-            .next()
-            .unwrap_or("")
-            .trim()
-            .to_ascii_lowercase();
-        let suggested = str_arg(&args, "file_name")
-            .map(str::to_string)
-            .or_else(|| {
-                fetched
-                    .header("content-disposition")
-                    .and_then(content_disposition_name)
-            })
-            .or_else(|| url_file_name(&final_url))
-            .unwrap_or_else(|| "download".to_string());
-        let (stem, name_ext) = split_name(&sanitize_name(&suggested, "download"));
-        let ext = decide_extension(&mime, name_ext.as_deref()).ok_or_else(|| {
-            ToolError::Forbidden(format!(
-                "{final_url} is {}, which is not a downloadable document or image type.",
-                if mime.is_empty() {
-                    "of unknown type"
-                } else {
-                    &mime
-                }
-            ))
-        })?;
-        if !is_allowed_extension(ext) {
-            return Err(ToolError::Forbidden(format!(
-                "{ext} files are not downloaded."
-            )));
-        }
-
-        let folder = create_planned(&plan)?;
-        let part_path = folder.join(format!(".{stem}.{}.part", uuid::Uuid::new_v4().simple()));
-        let mut part = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&part_path)
-            .map_err(|e| {
-                ToolError::Unavailable(format!("Could not write in {}: {e}", folder.display()))
-            })?;
-        let mut guard = PartGuard(Some(part_path.clone()));
-        let mut hasher = Sha256::new();
-        let mut written: u64 = 0;
-        let mut head: Vec<u8> = Vec::with_capacity(16 * 1024);
-        let mut body = fetched.body;
-        while let Some(chunk) = body.next().await {
-            let chunk = chunk.map_err(|e| ToolError::Unavailable(e.to_string()))?;
-            written += chunk.len() as u64;
-            if written > MAX_DOWNLOAD_BYTES {
-                return Err(ToolError::Unavailable(format!(
-                    "The file is larger than {} MB; the download was stopped.",
-                    MAX_DOWNLOAD_BYTES / (1024 * 1024)
-                )));
-            }
-            if head.len() < 16 * 1024 {
-                let take = (16 * 1024 - head.len()).min(chunk.len());
-                head.extend_from_slice(&chunk[..take]);
-            }
-            hasher.update(&chunk);
-            part.write_all(&chunk)
-                .map_err(|e| ToolError::Unavailable(format!("Writing the download failed: {e}")))?;
-        }
-        part.sync_all()
-            .map_err(|e| ToolError::Unavailable(format!("Writing the download failed: {e}")))?;
-        drop(part);
-        if written == 0 {
-            return Err(ToolError::Unavailable(
-                "The server sent an empty file.".to_string(),
-            ));
-        }
-        if !magic_matches(ext, &head) {
-            return Err(ToolError::Forbidden(format!(
-                "The content does not look like a .{ext} file (its first bytes do not match); it was \
-                 not saved."
-            )));
-        }
-        let saved_path = publish_part(&part_path, &folder, &stem, ext)
-            .map_err(|e| ToolError::Unavailable(format!("Saving the download failed: {e}")))?;
-        guard.0 = None;
-        let sha256 = hex_digest(hasher.finalize().as_slice());
+        let Downloaded {
+            path: saved_path,
+            final_url,
+            mime,
+            bytes: written,
+            sha256,
+        } = download_into(&self.client(), &url, str_arg(&args, "file_name"), || {
+            create_planned(&plan)
+        })
+        .await?;
         let shown = saved_path.display().to_string();
         let saved = Saved {
             path: shown.clone(),

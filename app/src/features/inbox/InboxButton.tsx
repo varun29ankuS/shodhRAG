@@ -260,6 +260,13 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
   const choose = (item: InboxItem, choice: InboxChoice) => {
     const jobId = str(item.data.jobId);
     const taskId = str(item.data.taskId);
+    if (choice === 'resume' && item.data.resume === 'paper_alert') {
+      if (!jobId) return;
+      void run(item, async () => {
+        await whatsNewApi.updateAlert(jobId, { enabled: true });
+      }, 'The alert was not resumed');
+      return;
+    }
     if (choice === 'resume' && item.data.resume === 'folder_watch') {
       const sourceId = str(item.data.sourceId);
       if (!sourceId) return;

@@ -269,7 +269,8 @@ mod tests {
         include_str!("../harness/fixtures/papers/linear-attention/openalex.json");
     const SEMANTIC: &str =
         include_str!("../harness/fixtures/papers/linear-attention/semantic-scholar.json");
-    const WORDS: &str = "linear attention KV cache";
+    /// The query the fixtures were recorded for.
+    const WORDS: &str = "linear attention delta rule";
 
     fn now() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 11, 23, 9, 0, 0).unwrap()
@@ -348,11 +349,11 @@ mod tests {
         }
         let openalex = urls[&PaperApi::OpenAlex].as_str();
         assert!(openalex.starts_with(
-            "https://api.openalex.org/works?search=linear+attention+KV+cache&filter=from_publication_date%3A2026-11-09&per-page=25&select="
+            "https://api.openalex.org/works?search=linear+attention+delta+rule&filter=from_publication_date%3A2026-11-09&per-page=25&select="
         ), "{openalex}");
         let semantic = urls[&PaperApi::SemanticScholar].as_str();
         assert!(semantic.starts_with(
-            "https://api.semanticscholar.org/graph/v1/paper/search?query=linear+attention+kv+cache&publicationDateOrYear=2026-11-09%3A&limit=25&fields="
+            "https://api.semanticscholar.org/graph/v1/paper/search?query=linear+attention+delta+rule&publicationDateOrYear=2026-11-09%3A&limit=25&fields="
         ), "{semantic}");
     }
 

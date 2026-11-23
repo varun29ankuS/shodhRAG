@@ -24,6 +24,8 @@ pub fn spacing(api: PaperApi) -> Duration {
 #[derive(Debug, Default)]
 pub struct ApiPacer {
     last: Mutex<HashMap<PaperApi, Instant>>,
+    /// Asks back to back (tests over in-process HTTP).
+    unspaced: bool,
 }
 
 impl ApiPacer {
@@ -33,8 +35,19 @@ impl ApiPacer {
         PACER.get_or_init(ApiPacer::default)
     }
 
+    /// A pacer that never waits: for tests that answer in process.
+    pub fn without_spacing() -> Self {
+        Self {
+            last: Mutex::new(HashMap::new()),
+            unspaced: true,
+        }
+    }
+
     /// Waits until `api` may be asked again, then records the request as made now.
     pub async fn wait_turn(&self, api: PaperApi) {
+        if self.unspaced {
+            return;
+        }
         let mut last = self.last.lock().await;
         if let Some(at) = last.get(&api) {
             tokio::time::sleep_until(*at + spacing(api)).await;

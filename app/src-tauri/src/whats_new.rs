@@ -149,6 +149,10 @@ pub struct FolderWatchView {
 pub struct WhatsNewView {
     pub items: Vec<FeedItem>,
     pub folders: Vec<FolderWatchView>,
+    /// The paper alerts ([`crate::paper_alerts`]).
+    pub alerts: Vec<crate::paper_alerts::AlertView>,
+    /// Why paper alerts send nothing now (Local-only mode, web access off), if so.
+    pub blocked_reason: Option<String>,
 }
 
 struct Folders {
@@ -349,6 +353,23 @@ impl WhatsNew {
             None => self.create_job(source_id, folder)?,
         };
         let name = folder_name(folder);
+        // Papers saved from What's new ("Add to library") are already listed as papers.
+        let saved: std::collections::HashSet<String> = self
+            .folders
+            .feed
+            .papers()
+            .map_err(|e| e.to_string())?
+            .iter()
+            .filter_map(|p| p.data.get("addedPath").and_then(Value::as_str))
+            .map(|p| normalize_source_path(Path::new(p)))
+            .collect();
+        let added: Vec<&String> = added
+            .iter()
+            .filter(|p| !saved.contains(&normalize_source_path(Path::new(p.as_str()))))
+            .collect();
+        if added.is_empty() {
+            return Ok(true);
+        }
         let last = added.len() - 1;
         let rows: Vec<NewFeedItem> = added
             .iter()
@@ -627,11 +648,14 @@ pub(crate) fn watched_folders(state: &FolderSyncState) -> Vec<(String, String)> 
 #[tauri::command]
 pub async fn whats_new_list(app: AppHandle) -> Result<WhatsNewView, String> {
     let whats_new = crate::engine_commands::whats_new_for_command(&app).await?;
+    let alerts = crate::engine_commands::paper_alerts_for_command(&app).await?;
     let sources = watched_folders(&app.state::<FolderSyncState>());
     tokio::task::spawn_blocking(move || {
         Ok(WhatsNewView {
             items: whats_new.items()?,
             folders: whats_new.folders(&sources)?,
+            alerts: alerts.list()?,
+            blocked_reason: alerts.blocked(),
         })
     })
     .await
@@ -678,7 +702,7 @@ pub(crate) mod testing {
     use super::*;
 
     /// A sink that tells nothing.
-    struct QuietSink;
+    pub struct QuietSink;
 
     #[async_trait]
     impl WhatsNewSink for QuietSink {

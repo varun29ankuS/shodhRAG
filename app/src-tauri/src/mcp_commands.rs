@@ -147,7 +147,8 @@ pub fn tool_group(name: &str) -> &'static str {
         | "set_folder_watch" => "Library and files",
         "web_search" | "fetch_url" | "search_papers" => "Web",
         "query_results" | "paper_graph" | "get_paper" | "find_papers" | "show_figure"
-        | "get_equation" | "list_snippets" | "create_snippet" | "show_paper" | "show_snippet" => {
+        | "get_equation" | "list_snippets" | "create_snippet" | "show_paper" | "show_snippet"
+        | "create_paper_alert" | "update_paper_alert" | "delete_paper_alert" => {
             "Papers and research"
         }
         "create_task" | "create_event" | "list_tasks" | "list_events" | "update_task"

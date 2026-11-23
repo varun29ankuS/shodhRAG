@@ -154,6 +154,6 @@ test('due dates parse as local dates and times', () => {
 });
 
 test('the delete toast says it stops repeating only for the latest copy', () => {
-  assert.equal(deleteToastText('Submit timesheet', true), 'Deleted “Submit timesheet”. It won’t repeat.');
-  assert.equal(deleteToastText('Submit timesheet', false), 'Deleted “Submit timesheet”');
+  assert.equal(deleteToastText('Submit timesheet', true), 'Submit timesheet. It won’t repeat.');
+  assert.equal(deleteToastText('Submit timesheet', false), 'Submit timesheet');
 });

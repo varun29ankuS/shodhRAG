@@ -255,7 +255,7 @@ export function historyRow(run: RepeatRun): HistoryRow {
 /** History shows at most this many rows until "Show all" is pressed. */
 export const HISTORY_SHOWN = 5;
 
-/** The undo toast of a deleted task: deleting the latest copy also stops its repeat. */
+/** The undo toast's line under "Task deleted": deleting the latest copy also stops its repeat. */
 export function deleteToastText(title: string, stopsRepeat: boolean): string {
-  return stopsRepeat ? `Deleted “${title}”. It won’t repeat.` : `Deleted “${title}”`;
+  return stopsRepeat ? `${title}. It won’t repeat.` : title;
 }

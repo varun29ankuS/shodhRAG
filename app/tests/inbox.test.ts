@@ -56,6 +56,15 @@ test('automation items are parsed, not skipped as a newer build kind', () => {
   assert.deepEqual(items.map(i => i.kind), ['automation']);
 });
 
+test('a repeating task question offers its three answers and no dismiss; a hold offers Resume', () => {
+  const question = { ...item('repeat:j1', 'reminder', 'needs_you'), data: { taskId: 't1', jobId: 'j1', choices: ['make', 'skip', 'mark_done'] } };
+  assert.deepEqual(actionsFor(question), { primary: null, secondary: null, choices: ['make', 'skip', 'mark_done'] });
+  const hold = { ...item('repeat-hold:j1', 'automation', 'needs_you'), data: { taskId: 't1', jobId: 'j1', fix: 'resume' } };
+  assert.deepEqual(actionsFor(hold), { primary: null, secondary: null, choices: ['resume'] });
+  // A plain reminder keeps Dismiss.
+  assert.deepEqual(actionsFor(item('reminder:t1', 'reminder', 'needs_you')), { primary: null, secondary: 'dismiss' });
+});
+
 test('each kind offers its actions; running work offers none', () => {
   assert.deepEqual(actionsFor(item('a', 'approval', 'needs_you')), { primary: 'approve', secondary: 'deny' });
   assert.deepEqual(actionsFor(item('m', 'memory', 'needs_you')), { primary: 'accept', secondary: 'dismiss' });

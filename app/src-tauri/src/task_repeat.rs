@@ -586,7 +586,7 @@ impl JobHandler for Core {
                 data: json!({
                     "taskId": job.subject,
                     "jobId": job.id,
-                    "action": "repeat_resume",
+                    "fix": "resume",
                 }),
             })
             .await;

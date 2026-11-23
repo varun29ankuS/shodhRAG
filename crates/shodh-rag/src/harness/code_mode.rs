@@ -545,6 +545,22 @@ pub fn inventory_matches(tools: &[String], host: &[String]) -> bool {
 /// exactly [`READ_TOOLS`] plus the host tools, and no `run_command`, neither
 /// registered nor offered.
 pub fn inventory_matches_in(tools: &[String], host: &[String], reads_only: bool) -> bool {
+    inventory_fits(tools, host, &[], reads_only)
+}
+
+/// [`inventory_matches_in`] for a session whose host tools are split by how
+/// omp loads them. omp's state lists only the tools in the model's context
+/// at the start, so every `host` tool (loaded at the start) must be offered,
+/// while a `deferred` tool (loaded when the model looks for it) may be
+/// offered or not. Nothing else may be offered, and no tool that runs
+/// programs ([`OMP_EXECUTION_TOOLS`]) may be offered or registered under
+/// either list. `run_command` must be in `host`: a deferred one fails this.
+pub fn inventory_fits(
+    tools: &[String],
+    host: &[String],
+    deferred: &[String],
+    reads_only: bool,
+) -> bool {
     let run_command = super::run_command::RUN_COMMAND;
     let registered = host.iter().any(|name| name == run_command);
     let offered = tools.iter().any(|name| name == run_command);
@@ -554,9 +570,11 @@ pub fn inventory_matches_in(tools: &[String], host: &[String], reads_only: bool)
         registered && offered
     };
     if !commands_fit
+        || deferred.iter().any(|name| name == run_command)
         || tools
             .iter()
             .chain(host)
+            .chain(deferred)
             .any(|name| OMP_EXECUTION_TOOLS.contains(&name.as_str()))
     {
         return false;
@@ -564,14 +582,22 @@ pub fn inventory_matches_in(tools: &[String], host: &[String], reads_only: bool)
     let mut have: Vec<&str> = tools.iter().map(String::as_str).collect();
     have.sort_unstable();
     have.dedup();
+    if have.len() != tools.len() {
+        return false;
+    }
     let mut want: Vec<&str> = omp_tools(reads_only)
         .iter()
         .copied()
         .chain(host.iter().map(String::as_str))
+        .chain(
+            have.iter()
+                .copied()
+                .filter(|name| deferred.iter().any(|d| d == name)),
+        )
         .collect();
     want.sort_unstable();
     want.dedup();
-    have.len() == tools.len() && have == want
+    have == want
 }
 
 /// Environment variable naming a Code session's host tools to the guard

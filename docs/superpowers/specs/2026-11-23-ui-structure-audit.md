@@ -162,11 +162,25 @@ The user's request was an explicit make. Under the 2026-11-21 artifacts rule, th
    - a result area with its own empty, working, done and failed states;
    - a failed state with a short line plus "Switch model". A model that can't serve the review is never offered:
      the panel picks the first one that can, or says none can, before sending.
-10. **Making things from Ask:**
-    - every non-Creator mode's prompt states that it cannot build apps, pages or games;
-    - an explicit make request gets a one-click "Build in Creator" card that resends the request in Creator
-      (turning on Code mode first, as #189 does);
-    - the assistant never says something is in Artifacts unless a tool saved it.
+10. **Asking for an artifact makes one, in any mode** (user, 2026-11-23: "not everyone would go to creator
+    mode to make artifacts ... the intelligence should be smart enough"). The user never has to pick a mode.
+    - **Every mode gets `make_artifact`:**
+      - it saves one self-contained thing (an HTML page or small app in one file, an SVG, a chart, a table, a
+        document) to Artifacts;
+      - it opens the page embedded, with the chat floating over it, as #198 does;
+      - it runs without asking. It writes only to the app's own artifact store, never the user's folders, and
+        the page runs in the locked preview with no access to the app, files or network;
+      - asking for changes ("make the button blue") updates the same artifact as a new version, not a new one.
+    - **Builds that need more go to Creator, launched by the assistant.** Multiple files, packages or commands
+      call for Creator. The assistant posts one card: "This needs Creator: it makes a folder and runs commands.
+      Build it?" One click turns on Code mode if needed (as #189 does) and sends the same request in Creator.
+      There's no mode menu to find.
+    - **The prompt and the tool decide, not the user's wording.** "Build/make/create me a page, app, game,
+      chart, diagram or document" is a make request. An explanation that happens to contain code is not.
+      This keeps the 2026-11-21 rule: only asked-for makes become artifacts.
+    - **No false claims.** The assistant says something is in Artifacts only after `make_artifact` (or
+      Creator's `finish_creation`) returned it. The prompt states this, and a test checks that an answer
+      with no such tool result is never told it made an artifact.
 
 
 Each rule gets a test:

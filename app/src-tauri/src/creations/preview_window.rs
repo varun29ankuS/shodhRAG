@@ -123,6 +123,29 @@ pub struct Shown {
 
 static SHOWN: Mutex<Option<Shown>> = Mutex::new(None);
 
+/// The previews whose page has finished loading and not started loading again since,
+/// so a pane that asks again (opened anew on the same page) or learns its label after
+/// the page loaded is told so ([`has_loaded`]).
+static LOADED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Whether the page of the preview `label` has finished loading (and not started again).
+pub fn has_loaded(label: &str) -> bool {
+    LOADED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .any(|l| l == label)
+}
+
+/// The page of `label` finished loading (`true`) or started loading again.
+fn note_loaded(label: &str, loaded: bool) {
+    let mut list = LOADED.lock().unwrap_or_else(|e| e.into_inner());
+    list.retain(|l| l != label);
+    if loaded {
+        list.push(label.to_string());
+    }
+}
+
 /// Where the user last left the window, while it is open.
 static BOUNDS: Mutex<Option<Bounds>> = Mutex::new(None);
 
@@ -399,14 +422,20 @@ macro_rules! locked {
             })
             .on_page_load(move |webview, payload| {
                 let (app, label, loaded) = &on_load;
-                if payload.event() == PageLoadEvent::Finished
-                    && !loaded.swap(true, Ordering::SeqCst)
-                {
-                    // A page with no background of its own is white, as in a browser.
-                    if let Err(e) = webview.set_background_color(Some(LIGHT_SURFACE)) {
-                        tracing::debug!(error = %e, "the preview's background could not be set");
+                match payload.event() {
+                    PageLoadEvent::Started => note_loaded(label, false),
+                    PageLoadEvent::Finished => {
+                        // A page with no background of its own is white, as in a browser.
+                        if !loaded.swap(true, Ordering::SeqCst) {
+                            if let Err(e) = webview.set_background_color(Some(LIGHT_SURFACE)) {
+                                tracing::debug!(error = %e, "the preview's background could not be set");
+                            }
+                        }
+                        // Every load, not only the first: a reload the pane asked for, or
+                        // the live reload while it builds, is reported loaded again.
+                        note_loaded(label, true);
+                        tell_main(app, label, place, PreviewState::Loaded);
                     }
-                    tell_main(app, label, place, PreviewState::Loaded);
                 }
             })
             .background_color(if opening.dark {
@@ -636,6 +665,7 @@ pub fn close<R: Runtime>(app: &AppHandle<R>, label: Option<&str>) {
             continue;
         }
         preview::PREVIEWS.end(label);
+        note_loaded(label, false);
         if let Some(window) = preview_window(app, label) {
             destroy(&window);
         } else if super::preview_embed::closed(app, label) {
@@ -656,6 +686,7 @@ fn on_preview_destroyed<R: Runtime>(app: &AppHandle<R>, label: &str) {
         }
     }
     preview::PREVIEWS.end(label);
+    note_loaded(label, false);
     tell_main(app, label, Place::Window, PreviewState::Closed);
 }
 
@@ -803,6 +834,28 @@ mod tests {
 
     fn url(text: &str) -> Url {
         Url::parse(text).unwrap_or_else(|e| panic!("{text}: {e}"))
+    }
+
+    /// The pane may learn its label after the page loaded (a page kept from
+    /// an earlier visit, or a fast first load): Rust still knows it loaded.
+    #[test]
+    fn a_page_counts_as_loaded_until_it_loads_again_or_closes() {
+        let (a, b) = ("preview-loaded-test-a", "preview-loaded-test-b");
+        assert!(!has_loaded(a));
+        note_loaded(a, true);
+        note_loaded(b, true);
+        assert!(has_loaded(a) && has_loaded(b));
+        // A reload starts: it is loading again, until it finishes.
+        note_loaded(a, false);
+        assert!(!has_loaded(a));
+        assert!(has_loaded(b));
+        note_loaded(a, true);
+        note_loaded(a, true);
+        assert!(has_loaded(a));
+        // Closed: forgotten.
+        note_loaded(a, false);
+        note_loaded(b, false);
+        assert!(!has_loaded(a) && !has_loaded(b));
     }
 
     #[test]

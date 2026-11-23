@@ -19,7 +19,7 @@
 //!   permission request (microphone, camera and the rest) is denied: voice
 //!   runs in `main`, which holds the microphone ([`deny_permissions`]).
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use serde_json::Value;
@@ -62,6 +62,10 @@ static SNAPSHOT: Mutex<Option<Value>> = Mutex::new(None);
 /// Whether the dock should be up: the embedded preview is shown.
 static UP: AtomicBool = AtomicBool::new(false);
 
+/// The width (logical pixels) of a pane docked at the main window's right,
+/// which the dock keeps left of; f64 bits.
+static RIGHT_INSET: AtomicU64 = AtomicU64::new(0);
+
 /// Where the dock is up now (`None`: hidden or not made).
 static APPLIED: Mutex<Option<CssRect>> = Mutex::new(None);
 
@@ -92,6 +96,39 @@ pub fn dock_bounds(panel: (f64, f64), window: (f64, f64), edge: f64) -> CssRect 
         width,
         height,
     }
+}
+
+/// The chat's box beside a pane docked at the window's right: as
+/// [`dock_bounds`] in the part of the window left of the pane's
+/// `right_inset` (a width that is not a positive number counts as none).
+pub fn dock_bounds_beside(
+    panel: (f64, f64),
+    window: (f64, f64),
+    edge: f64,
+    right_inset: f64,
+) -> CssRect {
+    let inset = if right_inset.is_finite() && right_inset > 0.0 {
+        right_inset
+    } else {
+        0.0
+    };
+    dock_bounds(panel, ((window.0 - inset).max(0.0), window.1), edge)
+}
+
+/// A pane docked at the main window's right is now `width` logical pixels
+/// wide (0: none): the dock moves left of it when it is next placed.
+pub fn set_right_inset(width: f64) {
+    let width = if width.is_finite() && width > 0.0 {
+        width
+    } else {
+        0.0
+    };
+    RIGHT_INSET.store(width.to_bits(), Ordering::SeqCst);
+}
+
+/// The width of the pane docked at the right now (logical pixels; 0: none).
+pub fn right_inset() -> f64 {
+    f64::from_bits(RIGHT_INSET.load(Ordering::SeqCst))
 }
 
 /// Whether a relay from `caller` may go on: only from the `expected`
@@ -165,10 +202,11 @@ fn bounds_now<R: Runtime>(app: &AppHandle<R>) -> Result<CssRect, String> {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .unwrap_or(FIRST_SIZE);
-    Ok(dock_bounds(
+    Ok(dock_bounds_beside(
         (panel.0 * zoom, panel.1 * zoom),
         (size.width, size.height),
         DOCK_EDGE * zoom,
+        right_inset(),
     ))
 }
 
@@ -237,7 +275,14 @@ pub fn relay_snapshot<R: Runtime>(
     caller: &str,
     snapshot: Value,
 ) -> Result<(), String> {
-    relay_allowed(caller, MAIN_WINDOW, json_size(&snapshot))?;
+    if let Err(e) = relay_allowed(caller, MAIN_WINDOW, json_size(&snapshot)) {
+        // Logged: a refused snapshot leaves the chat on the one before.
+        tracing::warn!(error = %e, "a snapshot for the floating chat was refused");
+        return Err(e);
+    }
+    // Kept and sent under one lock: the replay when the dock page reports in
+    // ([`resized`]) can never send an older snapshot after this one.
+    let mut latest = SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner());
     let sent = app.emit_to(
         EventTarget::Webview {
             label: DOCK_WEBVIEW.to_string(),
@@ -245,7 +290,7 @@ pub fn relay_snapshot<R: Runtime>(
         DOCK_SNAPSHOT_EVENT,
         &snapshot,
     );
-    *SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner()) = Some(snapshot);
+    *latest = Some(snapshot);
     sent.map_err(|e| e.to_string())
 }
 
@@ -281,16 +326,19 @@ pub fn resized<R: Runtime>(
     }
     *PANEL.lock().unwrap_or_else(|e| e.into_inner()) = Some((width, height));
     SIZED.store(true, Ordering::SeqCst);
-    let snapshot = SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    if let Some(snapshot) = snapshot {
-        app.emit_to(
-            EventTarget::Webview {
-                label: DOCK_WEBVIEW.to_string(),
-            },
-            DOCK_SNAPSHOT_EVENT,
-            snapshot,
-        )
-        .map_err(|e| e.to_string())?;
+    {
+        // Under the lock main's newer snapshot takes ([`relay_snapshot`]).
+        let latest = SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(snapshot) = latest.as_ref() {
+            app.emit_to(
+                EventTarget::Webview {
+                    label: DOCK_WEBVIEW.to_string(),
+                },
+                DOCK_SNAPSHOT_EVENT,
+                snapshot,
+            )
+            .map_err(|e| e.to_string())?;
+        }
     }
     if UP.load(Ordering::SeqCst) {
         show(app)?;
@@ -348,6 +396,26 @@ mod tests {
             width,
             height,
         }
+    }
+
+    #[test]
+    fn the_dock_keeps_left_of_a_pane_docked_at_the_right() {
+        // The design check docked at the right, 560 wide: the chat sits left of it,
+        // over the page, as the pane's own corner box says (lib/previewPlacement).
+        assert_eq!(
+            dock_bounds_beside((380., 470.), (1400., 900.), 16., 560.),
+            rect(444., 414., 380., 470.)
+        );
+        // No pane, or a width that is not one: the window's corner.
+        for none in [0.0, -10.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(
+                dock_bounds_beside((380., 470.), (1400., 900.), 16., none),
+                dock_bounds((380., 470.), (1400., 900.), 16.)
+            );
+        }
+        // A pane wider than the window leaves the chat no room: nothing to show.
+        let squeezed = dock_bounds_beside((380., 470.), (1400., 900.), 16., 5000.);
+        assert_eq!((squeezed.x, squeezed.width), (0.0, 0.0));
     }
 
     #[test]

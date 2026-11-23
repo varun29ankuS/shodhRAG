@@ -159,6 +159,48 @@ impl DesignCheckTool {
     }
 }
 
+/// Where the user sees a check: a project's findings open in the code pane
+/// (over Ask); a creation's check stays on the creation's page in Artifacts,
+/// where its live page is the thing on screen and the check is the badge in
+/// its header, which opens the findings beside the page. The pane never
+/// covers the page being built, and the check never moves the user from it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Shown {
+    pub view: &'static str,
+    pub target: NavigationTarget,
+    pub label: String,
+}
+
+pub fn shown_for(check: &StoredDesignCheck) -> Shown {
+    match &check.creation_id {
+        Some(id) => Shown {
+            view: "artifacts",
+            target: NavigationTarget::Artifact {
+                artifact_id: id.clone(),
+                version: None,
+                pane: Some("preview".to_string()),
+            },
+            label: check.target.label.clone(),
+        },
+        None => Shown {
+            view: "ask",
+            target: NavigationTarget::DesignCheck {
+                check_id: check.id.clone(),
+            },
+            label: format!("the design check of {}", check.target.label),
+        },
+    }
+}
+
+/// Where the findings are, as the model is told.
+fn where_shown(check: &StoredDesignCheck) -> &'static str {
+    if check.creation_id.is_some() {
+        "on the creation's page in Artifacts (a badge in its header; the findings open beside the page)"
+    } else {
+        "in the code pane"
+    }
+}
+
 /// A code fence `text` cannot close: one backtick longer than its longest
 /// run of backticks, three at least (the pane's `fenceFor`).
 pub fn fence_for(text: &str) -> String {
@@ -187,9 +229,10 @@ pub const DATA_NOTE: &str = "Everything inside the fenced block below is quoted 
 pub fn findings_text(check: &StoredDesignCheck) -> String {
     let report = &check.report;
     let mut text = format!(
-        "The design check in the code pane: {SHOWN_TO_USER} Shodh read {} UI file(s) with {} \
+        "The design check {}: {SHOWN_TO_USER} Shodh read {} UI file(s) with {} \
          deterministic rules (no model): {} finding(s), {} error(s), {} warning(s), {} to \
          consider.\n",
+        where_shown(check),
         report.files_checked,
         report.rules,
         report.total(),
@@ -205,7 +248,8 @@ pub fn findings_text(check: &StoredDesignCheck) -> String {
         .saturating_sub(report.findings.len().min(MAX_LISTED));
     if unlisted > 0 {
         text.push_str(&format!(
-            "{unlisted} more finding(s) are in the code pane.\n"
+            "{unlisted} more finding(s) are {}.\n",
+            where_shown(check)
         ));
     }
     if report.partial {
@@ -256,8 +300,8 @@ impl HostTool for DesignCheckTool {
         "Checking the design[ of {path}]"
     }
     fn description(&self) -> &'static str {
-        "Run Shodh's design check on UI files and show the findings to the user in the code \
-         pane: a file or folder of this project (path, relative to the code folder; \".\" for all \
+        "Run Shodh's design check on UI files and show the findings to the user (in the code \
+         pane; for a creation, as a badge on its page in Artifacts, which stays on screen): a file or folder of this project (path, relative to the code folder; \".\" for all \
          of it), or a creation (artifact_id from list_artifacts, optionally with a path inside \
          it; in Creator mode, this conversation's creation by default), or, with changes, the \
          project's UI files changed since this conversation's branch started. It reads HTML, CSS, SCSS, \
@@ -291,14 +335,13 @@ impl HostTool for DesignCheckTool {
             .await
             .map_err(ToolError::Failed)?;
         self.effects.design_check_done(&check);
+        let shown = shown_for(&check);
         emit_shown(
             ctx,
-            "ask",
+            shown.view,
             None,
-            Some(NavigationTarget::DesignCheck {
-                check_id: check.id.clone(),
-            }),
-            Some(&format!("the design check of {}", check.target.label)),
+            Some(shown.target),
+            Some(&shown.label),
         );
         let report = &check.report;
         Ok(ToolOutput {
@@ -423,6 +466,65 @@ mod tests {
         properties.sort();
         assert_eq!(properties, vec!["artifact_id", "changes", "path"]);
         assert_eq!(schema["additionalProperties"], false);
+    }
+
+    /// A Creator build runs design_check before finish_creation: its check
+    /// keeps the user on the creation's page (Artifacts, the preview pane),
+    /// where the result is the header's badge; it never opens the code pane
+    /// over the page or moves the user to Ask. A project's check still opens
+    /// the pane.
+    #[test]
+    fn a_creation_check_keeps_the_user_on_its_page() {
+        use crate::design_check_commands::{check_subject, stored};
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("index.html"),
+            "<!doctype html><img src=\"a.png\"><p style=\"font-size:10px\">x</p>\n",
+        )
+        .unwrap();
+        let creation = Subject {
+            root: dir.path().to_path_buf(),
+            scope: Scope::Path(".".into()),
+            workspace_id: None,
+            creation_id: Some("cr_0123456789abcdef0123456789abcdef".into()),
+            label: "Pomodoro timer".into(),
+        };
+        let (target, report) = check_subject(&creation).unwrap();
+        let check = stored(&creation, target, report, Some("conv".into()), true, false);
+        let shown = shown_for(&check);
+        assert_eq!(shown.view, "artifacts");
+        assert_eq!(
+            shown.target,
+            NavigationTarget::Artifact {
+                artifact_id: "cr_0123456789abcdef0123456789abcdef".into(),
+                version: None,
+                pane: Some("preview".into()),
+            }
+        );
+        let text = findings_text(&check);
+        assert!(
+            text.contains("on the creation's page in Artifacts"),
+            "{text}"
+        );
+        assert!(!text.contains("code pane"), "{text}");
+
+        let project = Subject {
+            creation_id: None,
+            workspace_id: Some("ws".into()),
+            label: "the whole project".into(),
+            ..creation
+        };
+        let (target, report) = check_subject(&project).unwrap();
+        let check = stored(&project, target, report, None, true, false);
+        let shown = shown_for(&check);
+        assert_eq!(shown.view, "ask");
+        assert_eq!(
+            shown.target,
+            NavigationTarget::DesignCheck {
+                check_id: check.id.clone()
+            }
+        );
+        assert!(findings_text(&check).contains("in the code pane"));
     }
 
     /// M1: what the check quotes from files reaches the model fenced, after a

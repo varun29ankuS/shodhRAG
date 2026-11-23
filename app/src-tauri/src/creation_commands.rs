@@ -301,6 +301,10 @@ pub struct PreviewInfo {
     pub network: bool,
     /// The page the preview opens.
     pub page: &'static str,
+    /// Its page finished loading already: a preview kept from before, or a
+    /// first load faster than this answer. Its `loaded` report may have gone
+    /// out before the pane knew the label, so the pane reads it here.
+    pub loaded: bool,
 }
 
 /// Show a preview in its own window and bring it to the front. The same
@@ -417,6 +421,7 @@ pub(crate) async fn show_preview(
             };
         if kept {
             return Ok(PreviewInfo {
+                loaded: preview_window::has_loaded(&shown.label),
                 label: shown.label,
                 network,
                 page: "index.html",
@@ -457,6 +462,7 @@ pub(crate) async fn show_preview(
         return Err(e.into());
     }
     Ok(PreviewInfo {
+        loaded: preview_window::has_loaded(&label),
         label,
         network,
         page: "index.html",

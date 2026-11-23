@@ -9,6 +9,7 @@ import { languageOf } from './diffModel';
 import type { LineSelection } from './diffModel';
 import { linesAtOffsets, piecesAsChanges, reviewedSelection, withOutput } from './reviewModel';
 import type { CheckRun, ReviewSubject, StoredReview } from './reviewModel';
+import { opensPaneForAssistant } from './designModel';
 import type { StoredDesignCheck } from './designModel';
 import { CodeReviewContext, isTextEntry } from './codeReviewHost';
 import type { CodeReviewValue, ReviewSource } from './codeReviewHost';
@@ -81,11 +82,14 @@ export function CodeReviewProvider({ children }: { children: React.ReactNode }) 
       .catch(e => notify.error('The review could not be opened', { description: String(e) }));
   });
 
-  // A design check the assistant ran (`design_check`): the pane opens on its findings.
+  // A design check the assistant ran (`design_check`): the pane opens on a project's findings.
+  // A creation's check stays its page's badge (Artifacts), so it never covers the page.
   useNavigationTarget('design_check', target => {
     designApi
       .get(target.checkId)
-      .then(found => openDesign(found))
+      .then(found => {
+        if (opensPaneForAssistant(found)) openDesign(found);
+      })
       .catch(e => notify.error('The design check could not be opened', { description: String(e) }));
   });
 

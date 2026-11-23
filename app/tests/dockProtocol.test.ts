@@ -239,3 +239,35 @@ test('a malformed snapshot is not read', () => {
     assert.equal(parseDockSnapshot(bad), null, JSON.stringify(bad)?.slice(0, 80));
   }
 });
+
+test('a finished answer always fits the relay, so the chat never stays on a run that ended', () => {
+  // A long answer, its sources, its reasoning and its checks: everything the relay used to send
+  // whole. A snapshot over the relay's limit was refused, and the floating chat kept the last
+  // one it got, still "Working…" with its clock running, after the answer had finished.
+  const base = longTranscript(4);
+  const passages = Array.from({ length: 60 }, (_, n) => ({ n: n + 1, file: `f${n}.pdf`, path: `/docs/f${n}.pdf`, page: null, heading: null, score: 1, text: 'p'.repeat(6000) }));
+  const done: TranscriptState = {
+    ...base,
+    status: 'completed',
+    durationMs: 229_000,
+    blocks: [...base.blocks, { kind: 'text', id: 'final', text: 'z'.repeat(300_000) }],
+    passages,
+    reasoning: { segments: [{ at: 0, text: 'r'.repeat(32_000) }], truncated: false },
+  } as TranscriptState;
+  assert.ok(new TextEncoder().encode(JSON.stringify(done)).length > MAX_SNAPSHOT_BYTES, 'the fixture is larger than the relay takes');
+  const snapshot = snapshotOf(input([message('user', 'build it'), message('assistant', 'done', done)]));
+  const bytes = new TextEncoder().encode(JSON.stringify(snapshot)).length;
+  assert.ok(bytes <= MAX_SNAPSHOT_BYTES, `${bytes} bytes`);
+  // The run's end reaches the chat: its status, duration and model, read as one.
+  const parsed = parseDockSnapshot(JSON.parse(JSON.stringify(snapshot)));
+  assert.ok(parsed?.transcript);
+  assert.equal(parsed.transcript.status, 'completed');
+  assert.equal(parsed.transcript.durationMs, 229_000);
+  assert.equal(snapshot.trimmed, true);
+  // The same holds while it runs, at any budget the snapshot leaves.
+  for (const budget of [MAX_SNAPSHOT_BYTES / 2, 20_000, 4_000]) {
+    const fitted = fitTranscript({ ...done, status: 'running' }, budget);
+    assert.ok(new TextEncoder().encode(JSON.stringify(fitted)).length <= budget, String(budget));
+    assert.equal(fitted.status, 'running');
+  }
+});

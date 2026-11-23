@@ -14,6 +14,7 @@ import {
   createTypingTracker,
   dropHeld,
   flush,
+  followsBuildOpen,
   goThere,
   heldNavigationText,
   holdsDraft,
@@ -207,4 +208,23 @@ test('typing in the floating chat over the preview counts as typing for the quie
   tracker.noteRemote(7000);
   tracker.reset();
   assert.equal(tracker.isTyping(null, 7100), false);
+});
+
+test("a page Creator builds opens by itself only for a user watching its conversation", () => {
+  // On Ask, in the conversation that builds it, not typing: the page opens in Artifacts.
+  assert.equal(followsBuildOpen({ view: 'ask', watchingConversation: true, typing: false }), true);
+  // Already in Artifacts: it opens there.
+  assert.equal(followsBuildOpen({ view: 'artifacts', watchingConversation: false, typing: false }), true);
+  // Typing anywhere, on another view, or on Ask in another conversation: held as the
+  // non-modal chip ("Shodh has … to show you in Artifacts · Go there"), nothing moves.
+  assert.equal(followsBuildOpen({ view: 'ask', watchingConversation: true, typing: true }), false);
+  assert.equal(followsBuildOpen({ view: 'artifacts', watchingConversation: true, typing: true }), false);
+  assert.equal(followsBuildOpen({ view: 'library', watchingConversation: true, typing: false }), false);
+  assert.equal(followsBuildOpen({ view: 'tasks', watchingConversation: true, typing: false }), false);
+  assert.equal(followsBuildOpen({ view: 'ask', watchingConversation: false, typing: false }), false);
+  assert.equal(followsBuildOpen({ view: null, watchingConversation: true, typing: false }), false);
+  // Held, it is the gate's chip: Go there follows it once.
+  const held = offerNavigation(initialGate<Nav>(), { nav: library, count: 1 }, !followsBuildOpen({ view: 'library', watchingConversation: true, typing: false }));
+  assert.equal(held.follow, null);
+  assert.deepEqual(goThere(held.state).follow, library);
 });

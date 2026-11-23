@@ -215,6 +215,28 @@ export function offerNavigation<N>(state: GateState<N>, move: Counted<N>, typing
   return { state: { held: null }, follow: move.nav, appeared: false };
 }
 
+/** What decides whether the page Creator builds opens by itself ({@link followsBuildOpen}). */
+export interface BuildOpenState {
+  /** The view on screen (null: not known yet). */
+  view: string | null;
+  /** The conversation on screen is the one building the page. */
+  watchingConversation: boolean;
+  /** The user is typing ({@link TypingTracker.isTyping}). */
+  typing: boolean;
+}
+
+/**
+ * Whether the page Creator builds opens by itself in Artifacts: only for a user watching it
+ * being made, on Ask in the conversation that builds it or already in Artifacts, and not
+ * typing. Anyone else gets the gate's chip ("Shodh has … to show you in Artifacts · Go there"),
+ * which is non-modal and moves nothing until clicked.
+ */
+export function followsBuildOpen(state: BuildOpenState): boolean {
+  if (state.typing) return false;
+  if (state.view === 'artifacts') return true;
+  return state.view === 'ask' && state.watchingConversation;
+}
+
 /** The user clicked "Go there": follow the held move, once. */
 export function goThere<N>(state: GateState<N>): GateResult<N> {
   return { state: { held: null }, follow: state.held?.nav ?? null, appeared: false };

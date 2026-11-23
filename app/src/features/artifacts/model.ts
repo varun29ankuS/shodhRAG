@@ -64,6 +64,8 @@ export interface PreviewInfo {
   label: string;
   network: boolean;
   page: string;
+  /** Its page already finished loading (a preview kept from before, or a fast first load). */
+  loaded: boolean;
 }
 
 /** The Artifacts pane's place, as the embedded preview needs it (`preview_embed.rs`). */
@@ -72,6 +74,12 @@ export interface PreviewPlacement {
   rect: { x: number; y: number; width: number; height: number } | null;
   /** Something of the app's own (a dialog, menu or toast) is above the pane. */
   covered: boolean;
+  /**
+   * The width (CSS pixels) of a pane docked at the window's right (the design check, the code
+   * review): the floating chat sits left of it, over the page, never over the pane. None when
+   * left out (a hidden page has no chat over it).
+   */
+  rightInset?: number;
 }
 
 /** The panes of a creation's page, in order. */
@@ -181,6 +189,61 @@ export const PREVIEW_END_TEXT: Record<PreviewEnd, string> = {
 export function previewShowingText(version: number | null, place: PreviewPlace = 'window'): string {
   const what = version === null ? 'Now' : `Version ${version}`;
   return place === 'embedded' ? `${what} · live` : `${what} · in its own window`;
+}
+
+/** How far the page itself got, as the pane shows it. */
+export type PreviewLoad = 'opening' | 'loaded' | 'blocked' | 'stopped';
+
+/** The page's state after Rust's report `state` (a close is handled by the pane itself). */
+export function previewLoadAfter(prev: PreviewLoad, state: Exclude<PreviewState, 'closed'>): PreviewLoad {
+  if (state === 'stopped') return 'stopped';
+  if (state === 'blocked') return prev === 'stopped' ? prev : 'blocked';
+  return prev === 'opening' ? 'loaded' : prev;
+}
+
+/**
+ * The page's state when the pane learns its label: `loaded` is Rust's word that this page
+ * loaded already (a page kept from an earlier visit, or one that finished first), and `early`
+ * are the reports for that label that arrived before the label was known.
+ */
+export function previewLoadAtEmbed(loaded: boolean, early: readonly PreviewState[]): PreviewLoad {
+  let load: PreviewLoad = loaded ? 'loaded' : 'opening';
+  for (const state of early) {
+    if (state !== 'closed') load = previewLoadAfter(load, state);
+  }
+  return load;
+}
+
+/** What the pane's status line reads from. */
+export interface PreviewLineInput {
+  error: string | null;
+  end: PreviewEnd | null;
+  load: PreviewLoad;
+  /** What of the app's own is over the page, hiding it (an embedded page only). */
+  hiddenBy: string | null;
+  version: number | null;
+  poppedOut: boolean;
+}
+
+/**
+ * The pane's status line: why the page is not there (it could not open, it closed, it
+ * stopped, something hides it), or that it is opening, or where it shows.
+ */
+export function previewStateLine(input: PreviewLineInput): string {
+  if (input.error) return 'Could not open';
+  if (input.end) return PREVIEW_END_TEXT[input.end];
+  if (input.load === 'stopped') return 'Stopped';
+  if (!input.poppedOut && input.hiddenBy) return `Hidden while ${input.hiddenBy} is open`;
+  if (input.load === 'opening') return 'Opening';
+  return previewShowingText(input.version, input.poppedOut ? 'window' : 'embedded');
+}
+
+/** The page a creation's preview opens: `index.html` at the top of its folder. */
+export const ENTRY_PAGE = 'index.html';
+
+/** Whether a creation's files have the page its preview shows. */
+export function hasEntryPage(files: readonly FileEntry[] | null): boolean {
+  return (files ?? []).some(f => f.path === ENTRY_PAGE);
 }
 
 /** What Artifacts opens on for a request (the assistant's, or a Creator build starting). */

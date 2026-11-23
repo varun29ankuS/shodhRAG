@@ -20,12 +20,16 @@ import {
   fileRows,
   filterCreations,
   finishCard,
+  hasEntryPage,
   isArtifactPane,
   parsePreviewEvent,
   parsePreviewShown,
   previewEndFor,
+  previewLoadAfter,
+  previewLoadAtEmbed,
   previewNetworkText,
   previewShowingText,
+  previewStateLine,
   selectionFor,
   previousVersion,
   progressLine,
@@ -393,4 +397,68 @@ test('the preview says exactly what the internet switch does, on each system', (
   for (const file of ['../src-tauri/src/creations/preview.rs', '../src-tauri/src/creations/preview_window.rs', '../src/features/artifacts/model.ts']) {
     assert.doesNotMatch(read(file), /WebRTC (and DNS look-ahead )?(is|are) off/, file);
   }
+});
+
+test('the pane says the page is live once it loaded, even when the load came first or long ago', () => {
+  // A page kept from before (the pane opened again on the same preview): Rust says it loaded.
+  assert.equal(previewLoadAtEmbed(true, []), 'loaded');
+  // A fresh page that finished before the embed answered: its early report counts.
+  assert.equal(previewLoadAtEmbed(false, ['loaded']), 'loaded');
+  assert.equal(previewLoadAtEmbed(false, []), 'opening');
+  // Blocked stays blocked (it is shown with the page), a stop wins.
+  assert.equal(previewLoadAtEmbed(true, ['blocked']), 'blocked');
+  assert.equal(previewLoadAtEmbed(false, ['blocked', 'loaded']), 'blocked');
+  assert.equal(previewLoadAtEmbed(true, ['stopped']), 'stopped');
+  assert.equal(previewLoadAfter('opening', 'loaded'), 'loaded');
+  assert.equal(previewLoadAfter('blocked', 'loaded'), 'blocked');
+  assert.equal(previewLoadAfter('loaded', 'blocked'), 'blocked');
+  assert.equal(previewLoadAfter('loaded', 'stopped'), 'stopped');
+  // A reload that loads again: live again.
+  assert.equal(previewLoadAfter('opening', 'loaded'), 'loaded');
+});
+
+test('the status line says why the page is not on screen, never Opening over a shown page', () => {
+  const base = { error: null, end: null, load: 'loaded' as const, hiddenBy: null, version: null, poppedOut: false };
+  assert.equal(previewStateLine(base), 'Now · live');
+  assert.equal(previewStateLine({ ...base, version: 2 }), 'Version 2 · live');
+  assert.equal(previewStateLine({ ...base, hiddenBy: 'Design check' }), 'Hidden while Design check is open');
+  // Hidden says so even before the first load is reported.
+  assert.equal(previewStateLine({ ...base, load: 'opening', hiddenBy: 'a menu' }), 'Hidden while a menu is open');
+  assert.equal(previewStateLine({ ...base, load: 'opening' }), 'Opening');
+  assert.equal(previewStateLine({ ...base, load: 'stopped' }), 'Stopped');
+  assert.equal(previewStateLine({ ...base, end: 'closed' }), PREVIEW_END_TEXT.closed);
+  assert.equal(previewStateLine({ ...base, error: 'boom' }), 'Could not open');
+  // Popped out, nothing in this window hides it.
+  assert.equal(previewStateLine({ ...base, poppedOut: true, hiddenBy: 'a menu' }), 'Now · in its own window');
+});
+
+test('the page opens itself once the folder has its entry page', () => {
+  assert.equal(hasEntryPage(null), false);
+  assert.equal(hasEntryPage([]), false);
+  assert.equal(hasEntryPage([{ path: 'style.css', size: 1 }, { path: 'src/index.html', size: 1 }]), false);
+  assert.equal(hasEntryPage([{ path: 'style.css', size: 1 }, { path: 'index.html', size: 12 }]), true);
+  // The session checks the folder after each finished building step and offers the page once.
+  const session = read('../src/features/ask/ChatSessionContext.tsx');
+  assert.match(session, /hasEntryPage\(files\)/);
+  assert.match(session, /event\.type === 'step_finished'/);
+  assert.match(session, /whenWatching: true/);
+  // Rust says whether the page loaded already, so a pane opened again is not stuck on Opening.
+  const rust = read('../src-tauri/src/creation_commands.rs');
+  assert.match(rust, /loaded: preview_window::has_loaded\(&/);
+});
+
+test('the page is the main thing on screen: one header row, the page fills the rest', () => {
+  const page = read('../src/features/artifacts/ArtifactPage.tsx');
+  const embedded = read('../src/features/artifacts/EmbeddedPreview.tsx');
+  // The header never wraps; its title gives way first.
+  assert.match(page, /<header className="[^"]*flex-nowrap[^"]*"/);
+  assert.doesNotMatch(page, /<header className="[^"]*flex-wrap/);
+  // What was built and chosen is folded away under the header, not stacked above the page.
+  assert.match(page, /<details\b/);
+  // The preview's box takes the height that is left, not a fixed share of the window.
+  assert.match(embedded, /ref=\{boxRef\}[\s\S]*?className="[^"]*flex-1 min-h-0/);
+  assert.doesNotMatch(embedded, /h-\[min\(72vh/);
+  // What hides the page is said, by name.
+  assert.match(embedded, /previewStateLine\(\{/);
+  assert.match(embedded, /coveringOverlay\(/);
 });

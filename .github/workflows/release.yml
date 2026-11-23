@@ -1314,6 +1314,11 @@ jobs:
           # A separate profile (SHODH_DATA_DIR), which alone may run the
           # embedded-preview probe (launch_probe.rs, the next steps).
           data_dir="$tester_home/probe-profile"
+          # Past first-run setup only (ui_state_commands.rs), as a user who builds with
+          # Creator is: its dialog would cover the page the probe's second part checks.
+          # Everything else (WebKit, the index, the engine) still starts for the first time.
+          mkdir -p "$data_dir/ui_state"
+          printf '%s' '{"status":"skipped","step":"welcome"}' > "$data_dir/ui_state/first_run.json"
           log="$data_dir/logs/shodh.log"
           # Crash reports go to the logged-in user's folders whatever HOME the
           # app had: these are the ones from before the launch.
@@ -1434,16 +1439,33 @@ jobs:
           }
           overlap=$(at_point overlap); outside=$(at_point outside); page=$(at_point preview); main=$(at_point main)
           summary="Pixels: overlap=$overlap outside=$outside preview=$page main=$main"
-          wait_line 'Launch probe: (PASS|FAIL)' 30
+          # The second part: a Creator finish with a design check, through the app's own frontend.
+          wait_line 'Launch probe: creator screen points' 120
+          shot="$EVIDENCE/creator-finish.bmp"
+          screencapture -x -t bmp "$shot"
+          touch "$PROBE_DATA/launch-probe-captured-creator"
+          offset=$(le "$shot" 10 4); width=$(le "$shot" 18 4); height=$(le "$shot" 22 4); bpp=$(le "$shot" 28 2)
+          if [ "$height" -gt 2147483647 ]; then height=$(( 4294967296 - height )); top_down=1; else top_down=0; fi
+          row_bytes=$(( (width * bpp / 8 + 3) / 4 * 4 ))
+          points=$(grep -o 'Launch probe: creator screen points.*' "$APP_LOG" | head -n 1)
+          creator_page=$(at_point preview); creator_pane=$(at_point pane)
+          creator_summary="Pixels after the Creator finish: preview=$creator_page pane=$creator_pane"
+          wait_line 'Launch probe: (PASS|FAIL)' 60
           probe_lines
           echo "$summary"
-          { echo '### Embedded preview'; echo; probe_lines | sed 's/^/- /'; echo "- $summary"; } >> "$GITHUB_STEP_SUMMARY"
+          echo "$creator_summary"
+          { echo '### Embedded preview'; echo; probe_lines | sed 's/^/- /'; echo "- $summary"; echo "- $creator_summary"; } >> "$GITHUB_STEP_SUMMARY"
           if grep -q 'Launch probe: FAIL' "$APP_LOG"; then echo "::error::$(grep 'Launch probe: FAIL' "$APP_LOG" | head -n 1)"; exit 1; fi
           grep -q 'Launch probe: preview embedded label=preview-[0-9a-f]* shown=true' "$APP_LOG" || { echo "::error::The preview was not shown embedded"; exit 1; }
           grep -q 'Launch probe: preview hidden=true chat hidden=true' "$APP_LOG" || { echo "::error::The preview or the chat stayed up after the pane went"; exit 1; }
           case "$overlap $outside $page $main" in
             other*' red'*' red'*' other'*) ;;
             *) echo "::error::$summary (expected: the chat over the page, the page beside the chat and alone, the app above)"; exit 1 ;;
+          esac
+          grep -q 'Launch probe: creator finish shown=true docked=true' "$APP_LOG" || { echo "::error::After a Creator finish with a design check the page was not shown, or its findings covered it"; exit 1; }
+          case "$creator_page $creator_pane" in
+            red*' other'*) ;;
+            *) echo "::error::$creator_summary (expected: the page shown, the findings beside it)"; exit 1 ;;
           esac
 
       # 15 s after ready covers the delayed startup work: the background
@@ -1582,6 +1604,10 @@ jobs:
           # A separate profile, which alone may run the probe.
           $data = Join-Path $env:RUNNER_TEMP 'probe-profile'
           New-Item -ItemType Directory -Force $data | Out-Null
+          # Past first-run setup (ui_state_commands.rs), as a user who builds with Creator is:
+          # its dialog would cover the page the probe's second part checks.
+          New-Item -ItemType Directory -Force (Join-Path $data 'ui_state') | Out-Null
+          Set-Content -Encoding ascii -Path (Join-Path $data 'ui_state\first_run.json') -Value '{"status":"skipped","step":"welcome"}'
           $log = Join-Path $data 'logs\shodh.log'
           $env:SHODH_DATA_DIR = $data
           $env:SHODH_LAUNCH_PROBE = 'embedded-preview'
@@ -1635,13 +1661,27 @@ jobs:
             $page = & $colour 'preview'
             $main = & $colour 'main'
             $summary = "Pixels: overlap=$overlap outside=$outside preview=$page main=$main"
-            Wait-Line 'Launch probe: (PASS|FAIL)' 30
+            # The second part: a Creator finish with a design check, through the app's own
+            # frontend. The page must still show, and beside it the findings once opened.
+            Wait-Line 'Launch probe: creator screen points' 120
+            $points = (Select-String -Path $log -Pattern 'Launch probe: creator screen points' | Select-Object -First 1).Line
+            if ($points) {
+              $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+              $bitmap.Save((Join-Path $evidence 'creator-finish.png'), [System.Drawing.Imaging.ImageFormat]::Png)
+            }
+            New-Item -ItemType File -Force (Join-Path $data 'launch-probe-captured-creator') | Out-Null
+            $creatorPage = & $colour 'preview'
+            $creatorPane = & $colour 'pane'
+            $creatorSummary = "Pixels after the Creator finish: preview=$creatorPage pane=$creatorPane"
+            Wait-Line 'Launch probe: (PASS|FAIL)' 60
             $lines = @(Select-String -Path $log -Pattern 'Launch probe:' | ForEach-Object { $_.Line })
             $lines | ForEach-Object { Write-Host $_ }
             Write-Host $summary
+            Write-Host $creatorSummary
             '### Embedded preview' | Add-Content $env:GITHUB_STEP_SUMMARY
             $lines | ForEach-Object { "- $_" } | Add-Content $env:GITHUB_STEP_SUMMARY
             "- $summary" | Add-Content $env:GITHUB_STEP_SUMMARY
+            "- $creatorSummary" | Add-Content $env:GITHUB_STEP_SUMMARY
             $failed = $lines | Where-Object { $_ -match 'Launch probe: FAIL' } | Select-Object -First 1
             if ($failed) { throw $failed }
             if (-not ($lines | Where-Object { $_ -match 'Launch probe: preview embedded label=preview-[0-9a-f]+ shown=true' })) { throw 'The preview was not shown embedded' }
@@ -1649,6 +1689,10 @@ jobs:
             if (-not ($lines | Where-Object { $_ -match 'Launch probe: preview hidden=true chat hidden=true' })) { throw 'The preview or the chat stayed up after the pane went' }
             if (-not ($overlap -like 'other*' -and $outside -like 'red*' -and $page -like 'red*' -and $main -like 'other*')) {
               throw "$summary (expected: the chat over the page, the page beside the chat and alone, the app above)"
+            }
+            if (-not ($lines | Where-Object { $_ -match 'Launch probe: creator finish shown=true docked=true' })) { throw 'After a Creator finish with a design check the page was not shown, or its findings covered it' }
+            if (-not ($creatorPage -like 'red*' -and $creatorPane -like 'other*')) {
+              throw "$creatorSummary (expected: the page shown, the findings beside it)"
             }
           } finally {
             if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force }

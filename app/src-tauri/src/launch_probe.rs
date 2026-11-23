@@ -24,7 +24,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use tauri::{AppHandle, Listener, LogicalPosition, LogicalSize, Manager};
+use shodh_rag::harness::events::NavigationTarget;
+use tauri::{AppHandle, Emitter, Listener, LogicalPosition, LogicalSize, Manager};
 
 use crate::creations::preview_embed::{self, CssRect, Placement, Visibility};
 use crate::creations::preview_window::{Place, PREVIEW_EVENT};
@@ -211,6 +212,7 @@ async fn run(app: &AppHandle) -> Result<(), String> {
         Placement {
             rect: Some(PANE),
             covered: false,
+            right_inset: 0.0,
         },
     )?;
     let (current, visibility) = preview_embed::current();
@@ -274,6 +276,7 @@ async fn run(app: &AppHandle) -> Result<(), String> {
         Placement {
             rect: None,
             covered: true,
+            right_inset: 0.0,
         },
     )?;
     let hidden = matches!(preview_embed::current().1, Visibility::Hidden);
@@ -282,6 +285,201 @@ async fn run(app: &AppHandle) -> Result<(), String> {
     if !hidden || !dock_hidden {
         return Err("a layer stayed up after the pane went".to_string());
     }
+
+    creator_finish(app, &window, &data_dir, &creation).await
+}
+
+/// The event main's frontend acts on for the probe (`features/launch/LaunchProbeHost`).
+/// Only Rust can send it: no webview may emit events.
+pub const LAUNCH_PROBE_EVENT: &str = "launch-probe";
+/// The file the launch job writes once it has its screenshot of the Creator finish.
+pub const CREATOR_CAPTURED_FILE: &str = "launch-probe-captured-creator";
+
+/// How long the page must stay shown after the Creator finish's moves, in
+/// tenths of a second: the old design_check pane opened within milliseconds.
+const STAYS_SHOWN_TENTHS: u32 = 30;
+
+/// A `navigated` event as the assistant's run sends it (`AgentEvent::Navigated`).
+fn navigated(
+    view: &str,
+    target: &NavigationTarget,
+    label: &str,
+) -> Result<serde_json::Value, String> {
+    Ok(serde_json::json!({
+        "view": view,
+        "focus": null,
+        "target": serde_json::to_value(target).map_err(|e| e.to_string())?,
+        "label": label,
+    }))
+}
+
+/// The embedded page now: its rectangle while shown.
+fn shown_now(label: &str) -> Option<CssRect> {
+    match preview_embed::current() {
+        (Some(current), Visibility::Shown(rect)) if current == label => Some(rect),
+        _ => None,
+    }
+}
+
+/// The probe's second part, through main's own frontend: a Creator build's
+/// moves as the assistant makes them (the page opens in Artifacts once its
+/// folder has index.html; then design_check, as Creator runs it before
+/// finish_creation), then the user opening the check's findings. The page
+/// must stay shown throughout: the check is the header's badge, and its
+/// findings dock beside the page, which narrows, never covered (where
+/// PR #198's page stayed hidden after every Creator build).
+async fn creator_finish(
+    app: &AppHandle,
+    window: &tauri::Window,
+    data_dir: &Path,
+    creation: &crate::creations::Creation,
+) -> Result<(), String> {
+    use crate::design_check_commands::{keep_and_announce, run_detached, Scope, Subject};
+    let label = preview_embed::current()
+        .0
+        .ok_or("no embedded preview to show again")?;
+    let subject = Subject {
+        root: PathBuf::from(&creation.folder),
+        scope: Scope::Path(".".into()),
+        workspace_id: None,
+        creation_id: Some(creation.id.clone()),
+        label: creation.title.clone(),
+    };
+    let check = run_detached(subject, Some(creation.conversation_id.clone()), true).await?;
+    keep_and_announce(app, &check);
+    let shown = crate::agent_tools::design_check::shown_for(&check);
+    let open = NavigationTarget::Artifact {
+        artifact_id: creation.id.clone(),
+        version: None,
+        pane: None,
+    };
+    let to_main = || tauri::EventTarget::Webview {
+        label: crate::background::MAIN_WINDOW.to_string(),
+    };
+    app.emit_to(
+        to_main(),
+        LAUNCH_PROBE_EVENT,
+        serde_json::json!({
+            "kind": "follow",
+            "navigations": [
+                navigated("artifacts", &open, &creation.title)?,
+                navigated(shown.view, &shown.target, &shown.label)?,
+            ],
+        }),
+    )
+    .map_err(|e| format!("the Creator finish could not reach main: {e}"))?;
+
+    // Main shows the page in Artifacts, then keeps it shown: nothing covers it.
+    wait_for("the page in Artifacts after the Creator finish", 30, || {
+        shown_now(&label).is_some()
+    })
+    .await?;
+    for _ in 0..STAYS_SHOWN_TENTHS {
+        if shown_now(&label).is_none() {
+            return Err(
+                "the page hid after the design check: something of the app's covers it".to_string(),
+            );
+        }
+        if crate::dock_layer::right_inset() > 0.0 {
+            return Err("the assistant's design check of a creation opened a pane".to_string());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let page = shown_now(&label).ok_or("the page hid after the design check")?;
+    let at_page = (page.x + 20.0, page.y + 20.0);
+    let hits = hit_test(
+        app,
+        window,
+        &label,
+        Points {
+            overlap: at_page,
+            outside: at_page,
+            preview: at_page,
+            main: at_page,
+        },
+    )
+    .await?;
+    tracing::info!(
+        "Launch probe: creator finish page at {page:?} hit-test={}",
+        hits[0]
+    );
+    if hits[0] != "preview" {
+        return Err(format!(
+            "after the Creator finish the page is not on top at {at_page:?}: {}",
+            hits[0]
+        ));
+    }
+
+    // The user opens the findings from the badge: they dock beside the page.
+    app.emit_to(
+        to_main(),
+        LAUNCH_PROBE_EVENT,
+        serde_json::json!({ "kind": "openDesign", "checkId": check.id }),
+    )
+    .map_err(|e| format!("the findings could not be opened: {e}"))?;
+    wait_for("the findings docked beside the page", 30, || {
+        crate::dock_layer::right_inset() > 0.0 && shown_now(&label).is_some()
+    })
+    .await?;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let page = shown_now(&label).ok_or("the page hid when the findings opened beside it")?;
+    let inset = crate::dock_layer::right_inset();
+    let scale = window.scale_factor().map_err(|e| e.to_string())?;
+    let width = window
+        .inner_size()
+        .map_err(|e| e.to_string())?
+        .to_logical::<f64>(scale)
+        .width;
+    if page.x + page.width > width - inset + 1.0 {
+        return Err(format!(
+            "the page {page:?} runs under the findings pane ({inset} wide)"
+        ));
+    }
+    let at_page = (page.x + 20.0, page.y + 20.0);
+    let at_pane = (width - inset / 2.0, page.y + 20.0);
+    let hits = hit_test(
+        app,
+        window,
+        &label,
+        Points {
+            overlap: at_page,
+            outside: at_pane,
+            preview: at_page,
+            main: at_pane,
+        },
+    )
+    .await?;
+    tracing::info!(
+        "Launch probe: creator design docked page at {page:?} pane={inset} hit-test page={} pane={}",
+        hits[0],
+        hits[1]
+    );
+    if hits[0] != "preview" || hits[1] != "main" {
+        return Err(format!(
+            "with the findings open: page={} pane={}, expected preview and main",
+            hits[0], hits[1]
+        ));
+    }
+    let inner = window.inner_position().map_err(|e| e.to_string())?;
+    let screen = |p: (f64, f64)| {
+        (
+            inner.x + (p.0 * scale).round() as i32,
+            inner.y + (p.1 * scale).round() as i32,
+        )
+    };
+    tracing::info!(
+        "Launch probe: creator screen points preview={:?} pane={:?}",
+        screen(at_page),
+        screen(at_pane)
+    );
+    let captured: PathBuf = data_dir.join(CREATOR_CAPTURED_FILE);
+    wait_for(
+        "the launch job's screenshot of the Creator finish",
+        90,
+        || captured.exists(),
+    )
+    .await?;
+    tracing::info!("Launch probe: creator finish shown=true docked=true");
     Ok(())
 }
 

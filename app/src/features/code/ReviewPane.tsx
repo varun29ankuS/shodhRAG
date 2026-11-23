@@ -24,6 +24,7 @@ import { notify } from '../../lib/notify';
 import { ariaKeyShortcuts, IS_MAC_PLATFORM } from '../../lib/shortcuts';
 import { Kbd } from '../../components/ui/Kbd';
 import { useTheme } from '../../contexts/ThemeContext';
+import { useDockedWidth } from '../../lib/sidePane';
 import { useChatSession } from '../ask/ChatSessionContext';
 import { useDefaultAgentMode } from '../../hooks/useDefaultAgentMode';
 import { resolveAgentMode } from '../agent/agentModes';
@@ -285,6 +286,8 @@ export function ReviewPane() {
   const [designBusy, setDesignBusy] = useState(false);
   // A newer check of the same files exists: this one's fixes may no longer fit.
   const [designStale, setDesignStale] = useState(false);
+  // Docked at the right: the shell narrows the views beside it, so it covers none of them.
+  useDockedWidth(pane?.paneRef, design ? `design:${design.id}` : subject ? 'review' : null);
   const conversation = session.activeConversation;
   const conversationMode = conversation?.mode ?? 'research';
   const agentMode = conversation ? resolveAgentMode(conversation.agentMode, conversation.messages.length > 0, defaultMode) : null;
@@ -504,7 +507,7 @@ export function ReviewPane() {
             else pane.close();
           }
         }}
-        className="fixed top-0 right-0 bottom-0 z-40 flex flex-col w-[min(680px,100vw)] border-l border-shodh-border bg-shodh-ground shadow-2xl"
+        className="fixed top-0 right-0 bottom-0 z-40 flex flex-col w-[min(560px,45vw)] min-w-[320px] border-l border-shodh-border bg-shodh-ground"
       >
         <header className="flex items-center gap-2 px-4 h-12 shrink-0 border-b border-shodh-border-subtle">
           <Palette className="w-4 h-4 text-shodh-text-secondary" aria-hidden="true" />
@@ -643,7 +646,7 @@ export function ReviewPane() {
           else pane.close();
         }
       }}
-      className="fixed top-0 right-0 bottom-0 z-40 flex flex-col w-[min(680px,100vw)] border-l border-shodh-border bg-shodh-ground shadow-2xl"
+      className="fixed top-0 right-0 bottom-0 z-40 flex flex-col w-[min(560px,45vw)] min-w-[320px] border-l border-shodh-border bg-shodh-ground"
     >
       <header className="flex items-center gap-2 px-4 h-12 shrink-0 border-b border-shodh-border-subtle">
         <ScanEye className="w-4 h-4 text-shodh-text-secondary" aria-hidden="true" />

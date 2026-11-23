@@ -297,7 +297,19 @@ export function fitTranscript(transcript: TranscriptState, budget: number): Tran
     }
     fitted = { ...fitted, blocks, steps: keptSteps };
   }
-  return fitted;
+  if (jsonBytes(fitted) <= budget) return fitted;
+  // Still too large: what the floating chat can open in Ask instead (the sources, the
+  // reasoning, the grounding checks and the plan) goes, then the newest text is cut to its end.
+  fitted = { ...fitted, passages: [], groundings: [], plan: null, reasoning: null };
+  const room = Math.max(0, Math.floor(budget / 2) - jsonBytes({ ...fitted, blocks: [] }));
+  fitted = {
+    ...fitted,
+    blocks: fitted.blocks.map(block => (block.kind === 'text' && block.text.length > room ? { ...block, text: `…${block.text.slice(block.text.length - room)}` } : block)),
+  };
+  if (jsonBytes(fitted) <= budget) return fitted;
+  // Never larger than the relay takes: the run's state alone (its status line), so the chat
+  // always learns that the run went on or ended.
+  return { ...fitted, blocks: [], steps: {} };
 }
 
 /** Room left for the transcript in a snapshot, after the other fields and some headroom. */

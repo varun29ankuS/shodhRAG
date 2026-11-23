@@ -47,12 +47,16 @@ pub struct CssRect {
 }
 
 /// What the main webview reports about the pane: its rectangle (`None`: not
-/// on screen) and whether something of main's own is above it.
+/// on screen), whether something of main's own is above it, and the width of
+/// a pane docked at the window's right (the design check, the code review),
+/// which the floating chat sits left of (CSS pixels; none when left out).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Placement {
     pub rect: Option<CssRect>,
     pub covered: bool,
+    #[serde(default)]
+    pub right_inset: f64,
 }
 
 /// Whether the embedded page is up, and where.
@@ -311,6 +315,8 @@ pub fn place<R: Runtime>(
         .map_err(|e| e.to_string())?
         .to_logical::<f64>(scale);
     let zoom = crate::app_settings::main_zoom();
+    // The floating chat keeps left of a pane docked at the right.
+    crate::dock_layer::set_right_inset(placement.right_inset * zoom);
     let rect = placement
         .rect
         .map(|rect| to_logical(rect, zoom))
@@ -322,6 +328,7 @@ pub fn place<R: Runtime>(
             Placement {
                 rect,
                 covered: placement.covered,
+                right_inset: placement.right_inset,
             },
         );
         (state.label().map(str::to_string), visibility)
@@ -450,6 +457,7 @@ mod tests {
         Placement {
             rect: Some(at),
             covered: false,
+            right_inset: 0.0,
         }
     }
 
@@ -465,7 +473,8 @@ mod tests {
                 "preview-a",
                 Placement {
                     rect: Some(at),
-                    covered: true
+                    covered: true,
+                    right_inset: 0.0,
                 }
             ),
             Visibility::Hidden
@@ -476,7 +485,8 @@ mod tests {
                 "preview-a",
                 Placement {
                     rect: None,
-                    covered: false
+                    covered: false,
+                    right_inset: 0.0,
                 }
             ),
             Visibility::Hidden
@@ -522,7 +532,8 @@ mod tests {
                 "preview-old",
                 Placement {
                     rect: None,
-                    covered: true
+                    covered: true,
+                    right_inset: 0.0,
                 }
             ),
             Visibility::Shown(at)
@@ -549,9 +560,18 @@ mod tests {
             hidden,
             Placement {
                 rect: None,
-                covered: true
+                covered: true,
+                right_inset: 0.0,
             }
         );
+        // A pane docked at the right: its width travels with the report.
+        let docked: Placement = serde_json::from_value(serde_json::json!({
+            "rect": { "x": 1, "y": 2, "width": 3, "height": 4 },
+            "covered": false,
+            "rightInset": 560
+        }))
+        .expect("a placement beside a docked pane");
+        assert_eq!(docked.right_inset, 560.0);
     }
 
     /// Once the main window holds a child webview, Tauri no longer counts it

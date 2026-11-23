@@ -77,6 +77,7 @@ import Sidebar from './components/shell/Sidebar';
 import { ConversationDock } from './components/shell/ConversationDock';
 import { DockBridge } from './features/dock/useDockBridge';
 import { useDockLayerActive } from './features/dock/layerState';
+import { useSidePaneWidth } from './lib/sidePane';
 import { MODEL_CHANGED_EVENT } from './features/modelPicker/modelApi';
 import { normalizeViewTab, VIEW_TAB_LABELS } from './lib/viewTabs';
 import { agentItemKey, revealAgentItem } from './lib/agentHighlight';
@@ -94,6 +95,7 @@ import { FocusProvider } from './features/focus/FocusContext';
 import { SystemStatusProvider } from './features/status/SystemStatusContext';
 import { CodeReviewProvider } from './features/code/CodeReviewContext';
 import { ReviewPane } from './features/code/ReviewPane';
+import { LaunchProbeHost } from './features/launch/LaunchProbeHost';
 import { VisualNavigator } from './features/visuals/VisualNavigator';
 import { SnippetHost } from './features/research/SnippetHost';
 import { ReminderAlerts } from './features/tasks/ReminderAlerts';
@@ -177,6 +179,8 @@ function AppSplitView() {
   const { collapsed, toggleSidebar } = useSidebar();
   // The floating chat over the embedded Artifacts preview is up (features/dock).
   const dockLayerActive = useDockLayerActive();
+  // The pane docked at the right, if one is open (lib/sidePane): its width is kept clear.
+  const sidePaneWidth = useSidePaneWidth();
   const { config: searchConfig, updateConfig: updateSearchConfig, resetConfig: resetSearchConfig } = useSearchConfig();
 
   // Conversations and the active chat session
@@ -1546,7 +1550,7 @@ function AppSplitView() {
   return (
     <div
       className="h-screen flex transition-colors duration-200"
-      style={{ backgroundColor: colors.bg, color: colors.text }}
+      style={{ backgroundColor: colors.bg, color: colors.text, paddingRight: sidePaneWidth }}
     >
       <a
         href="#main-content"
@@ -2043,6 +2047,7 @@ function AppSplitViewRoot() {
               <VisualNavigator />
               <SnippetHost />
               <ReviewPane />
+              <LaunchProbeHost />
             </CodeReviewProvider>
           </FocusProvider>
         </SystemStatusProvider>

@@ -40,6 +40,7 @@ import { countOf } from '../../lib/plural';
 import { RecallSection } from '../recall/RecallSection';
 import { RecallViewer } from '../recall/RecallViewer';
 import { isReceipt } from '../recall/recallModel';
+import { WhatsNewSection } from '../whatsNew/WhatsNewSection';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-ground';
@@ -150,6 +151,12 @@ export function LibraryView({
       // A receipt opens the session at that turn; without one, the section is shown.
       if (isReceipt(target.item)) setRecallReceipt(target.item);
       else revealAgentItem(agentItemKey('library-section', 'recall'), { missed: 'Shodh pointed at the coding sessions, which the Library does not show now.' });
+    } else if (target.section === 'whats_new') {
+      setGraphPages([]);
+      // A row (or a folder's switch) is highlighted; without one, the section is shown.
+      revealAgentItem(target.item ? agentItemKey('whats-new', target.item) : agentItemKey('library-section', 'whats_new'), {
+        missed: "Shodh pointed at What's new, which the Library does not show now.",
+      });
     }
   });
 
@@ -240,6 +247,8 @@ export function LibraryView({
         <CpuSearchNotice />
 
         {unlistedCard}
+
+        {hasLibrary && <WhatsNewSection />}
 
         {!hasLibrary ? (
           <EmptyLibrary onAddFolder={onAddFolder} />

@@ -39,7 +39,7 @@ import {
   settingsSectionOf,
   tabItems,
 } from './model';
-import type { InboxChoice, InboxItem, InboxTab, PrimaryAction, RequestGate } from './model';
+import type { InboxChoice, InboxItem, InboxTab, PanelNav, PrimaryAction, RequestGate } from './model';
 import { repeatDecide, repeatGet, repeatSet } from '../tasks/repeatApi';
 
 const FOCUS_RING =
@@ -47,6 +47,8 @@ const FOCUS_RING =
 // Labels never wrap: a row of actions stays one line (UI audit rule 7).
 const ACTION =
   'h-7 px-2 shrink-0 whitespace-nowrap inline-flex items-center gap-1 rounded-md text-caption font-medium transition-colors duration-micro disabled:opacity-50';
+
+const CLOSED_PANEL: PanelNav = { open: false, tab: 'attention' };
 
 const PRIMARY_LABEL: Record<PrimaryAction, string> = { approve: 'Approve', accept: 'Accept', install: 'Install' };
 
@@ -73,7 +75,7 @@ function targetElement(target: EventTarget | null): Element | null {
  * dismisses, U undoes the last dismissal.
  */
 export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps) {
-  const [{ open, tab }, nav] = useReducer(panelNav, { open: false, tab: 'attention' });
+  const [{ open, tab }, nav] = useReducer(panelNav, CLOSED_PANEL);
   const [items, setItems] = useState<InboxItem[]>([]);
   const [retrying, setRetrying] = useState(false);
   const gateRef = useRef<RequestGate>(requestGate());

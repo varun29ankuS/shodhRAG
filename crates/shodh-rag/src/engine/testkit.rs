@@ -32,13 +32,13 @@ impl ManualClock {
     }
 
     pub fn set(&self, now: DateTime<Utc>) {
-        *self.now.lock().unwrap() = now;
+        *self.now.lock().unwrap_or_else(|e| e.into_inner()) = now;
     }
 }
 
 impl Clock for ManualClock {
     fn now(&self) -> DateTime<Utc> {
-        *self.now.lock().unwrap()
+        *self.now.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -64,19 +64,22 @@ impl Recording {
     }
 
     pub fn script(&self, answers: Vec<Handled>) {
-        self.script.lock().unwrap().extend(answers);
+        self.script
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .extend(answers);
     }
 
     pub fn calls(&self) -> Vec<Run> {
-        self.calls.lock().unwrap().clone()
+        self.calls.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     pub fn folded(&self) -> usize {
-        *self.folded.lock().unwrap()
+        *self.folded.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     pub fn held(&self) -> usize {
-        *self.held.lock().unwrap()
+        *self.held.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -87,7 +90,10 @@ impl JobHandler for Recording {
     }
 
     async fn run(&self, _job: &Job, run: &Run) -> Handled {
-        self.calls.lock().unwrap().push(run.clone());
+        self.calls
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(run.clone());
         self.script
             .lock()
             .unwrap()
@@ -99,10 +105,10 @@ impl JobHandler for Recording {
     }
 
     async fn folded(&self, _job: &Job, _run: &Run) {
-        *self.folded.lock().unwrap() += 1;
+        *self.folded.lock().unwrap_or_else(|e| e.into_inner()) += 1;
     }
 
     async fn held(&self, _job: &Job, _run: &Run) {
-        *self.held.lock().unwrap() += 1;
+        *self.held.lock().unwrap_or_else(|e| e.into_inner()) += 1;
     }
 }

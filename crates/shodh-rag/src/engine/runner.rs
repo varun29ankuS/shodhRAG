@@ -6,7 +6,8 @@
 //! ([`plan::sleep_for`]), and [`Engine::event`] when something a job waits on happens.
 //! Nothing here knows the app; schedules are planned in the computer's time zone.
 
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use chrono::{DateTime, Local, TimeDelta, Utc};
 
@@ -80,6 +81,15 @@ pub struct Engine {
     store: Arc<EngineStore>,
     clock: Arc<dyn Clock>,
     token: String,
+    /// Jobs with an event not yet served: it came while a run of the job was going, and
+    /// that run serves it when it ends (so a completion is never lost to a run in flight).
+    pending: Mutex<HashSet<String>>,
+    /// Jobs a run of this engine is doing the work of now.
+    running: Mutex<HashSet<String>>,
+}
+
+fn locked(set: &Mutex<HashSet<String>>) -> MutexGuard<'_, HashSet<String>> {
+    set.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 impl std::fmt::Debug for Engine {
@@ -110,6 +120,8 @@ impl Engine {
             store,
             clock: Arc::new(SystemClock),
             token: process_token(),
+            pending: Mutex::new(HashSet::new()),
+            running: Mutex::new(HashSet::new()),
         }
     }
 
@@ -119,6 +131,8 @@ impl Engine {
             store,
             clock,
             token: token.to_string(),
+            pending: Mutex::new(HashSet::new()),
+            running: Mutex::new(HashSet::new()),
         }
     }
 
@@ -311,6 +325,32 @@ impl Engine {
         run_id: &str,
         wake: bool,
     ) -> EngineResult<Option<Run>> {
+        locked(&self.running).insert(job_id.to_string());
+        let result = self.execute_once(handler, job_id, run_id, wake).await;
+        locked(&self.running).remove(job_id);
+        let mut result = result?;
+        // An event that came while the run went (its marker is set before it looks for a
+        // run in flight, and this looks after the run is no longer in flight).
+        while self.take_pending(job_id) {
+            match self.serve_event(handler, job_id).await? {
+                Some(run) => result = Some(run),
+                None => break,
+            }
+        }
+        Ok(result)
+    }
+
+    fn take_pending(&self, job_id: &str) -> bool {
+        locked(&self.pending).remove(job_id)
+    }
+
+    async fn execute_once(
+        &self,
+        handler: &Arc<dyn JobHandler>,
+        job_id: &str,
+        run_id: &str,
+        wake: bool,
+    ) -> EngineResult<Option<Run>> {
         let Some(_slot) = LiveRun::enter(&self.token, run_id) else {
             return Ok(None);
         };
@@ -475,15 +515,47 @@ impl Engine {
         job_id: &str,
     ) -> EngineResult<Option<Run>> {
         let id = job_id.to_string();
+        let job = blocking(&self.store, move |s| s.job(&id)).await?;
+        if job.is_none_or(|j| !j.enabled || j.hold_reason.is_some()) {
+            // A job on hold runs again when it is resumed, which looks at the state anew.
+            return Ok(None);
+        }
+        locked(&self.pending).insert(job_id.to_string());
+        if locked(&self.running).contains(job_id) {
+            // The run in flight serves it when it ends.
+            return Ok(None);
+        }
+        let mut result = None;
+        while self.take_pending(job_id) {
+            match self.serve_event(handler, job_id).await? {
+                Some(run) => result = Some(run),
+                None => break,
+            }
+        }
+        Ok(result)
+    }
+
+    /// Serves one event of a job: its waiting decision is taken up again, or a run is
+    /// started for it. While another run of the job is active (waiting on the ladder, or in
+    /// another process), the event stays pending for that run.
+    async fn serve_event(
+        &self,
+        handler: &Arc<dyn JobHandler>,
+        job_id: &str,
+    ) -> EngineResult<Option<Run>> {
+        let id = job_id.to_string();
         let active = blocking(&self.store, move |s| s.active_run(&id)).await?;
         match active {
             Some(run)
                 if run.state == RunState::Waiting
                     && run.wait_reason == Some(WaitReason::Decision) =>
             {
-                self.execute(handler, job_id, &run.id, true).await
+                self.execute_once(handler, job_id, &run.id, true).await
             }
-            Some(_) => Ok(None),
+            Some(_) => {
+                locked(&self.pending).insert(job_id.to_string());
+                Ok(None)
+            }
             None => {
                 let new = NewRun {
                     id: new_run_id(),
@@ -496,7 +568,7 @@ impl Engine {
                 };
                 let now = self.clock.now();
                 match blocking(&self.store, move |s| s.insert_run(&new, now)).await? {
-                    Ok(run) => self.execute(handler, job_id, &run.id, false).await,
+                    Ok(run) => self.execute_once(handler, job_id, &run.id, false).await,
                     Err(_) => Ok(None),
                 }
             }
@@ -878,6 +950,98 @@ mod tests {
         e.recording.script(vec![Handled::Nothing]);
         assert!(e.engine.event(&e.handler, "j").await.unwrap().is_none());
         assert_eq!(e.store.runs("j", 10).unwrap().len(), 2);
+    }
+
+    /// A handler that holds its first run until released.
+    struct Gated {
+        entered: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+        calls: Mutex<Vec<Run>>,
+        script: Mutex<std::collections::VecDeque<Handled>>,
+    }
+
+    #[async_trait::async_trait]
+    impl JobHandler for Gated {
+        fn kind(&self) -> JobKind {
+            JobKind::TaskRepeat
+        }
+        async fn run(&self, _job: &Job, run: &Run) -> Handled {
+            let first = {
+                let mut calls = self.calls.lock().unwrap_or_else(|e| e.into_inner());
+                calls.push(run.clone());
+                calls.len() == 1
+            };
+            if first {
+                self.entered.notify_one();
+                self.release.notified().await;
+            }
+            let next = self
+                .script
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .pop_front();
+            next.unwrap_or(Handled::Succeeded {
+                summary: "Done".to_string(),
+                scheduled_for: None,
+            })
+        }
+        async fn folded(&self, _job: &Job, _run: &Run) {}
+        async fn held(&self, _job: &Job, _run: &Run) {}
+    }
+
+    #[tokio::test]
+    async fn an_event_during_a_run_that_then_asks_is_not_lost() {
+        let e = env(local(2026, 11, 20, 10, 0));
+        add_job(&e, "j", Some(daily_at(9)), Overlap::Skip, CatchUp::Once);
+        e.clock.set(local(2026, 11, 21, 9, 1));
+        let gated = Arc::new(Gated {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+            calls: Mutex::new(Vec::new()),
+            script: Mutex::new([decision()].into_iter().collect()),
+        });
+        let handler: Arc<dyn JobHandler> = gated.clone();
+        let engine = Arc::new(Engine::with_clock(
+            e.store.clone(),
+            e.clock.clone(),
+            "engine-g",
+        ));
+        let ticking = {
+            let (engine, handler) = (engine.clone(), handler.clone());
+            tokio::spawn(async move { engine.tick(&handler).await })
+        };
+        // The scheduled run is reading the task list when the latest copy is completed.
+        gated.entered.notified().await;
+        assert!(engine.event(&handler, "j").await.unwrap().is_none());
+        gated.release.notify_one();
+        ticking.await.unwrap().unwrap();
+        // The run asked about a task that is done by now: the completion takes the
+        // question up at once instead of leaving it stale.
+        let calls = gated.calls.lock().unwrap_or_else(|e| e.into_inner()).len();
+        assert_eq!(calls, 2);
+        assert!(e.store.active_run("j").unwrap().is_none());
+        let runs = e.store.runs("j", 10).unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].state, RunState::Succeeded);
+    }
+
+    #[tokio::test]
+    async fn an_event_of_a_held_job_waits_for_resume() {
+        let e = env(local(2026, 11, 20, 10, 0));
+        add_job(&e, "j", Some(daily_at(9)), Overlap::Skip, CatchUp::Once);
+        e.store
+            .update_job(
+                "j",
+                &JobPatch {
+                    hold_reason: Some(Some(HoldReason::Failing)),
+                    ..JobPatch::default()
+                },
+                e.clock.now(),
+            )
+            .unwrap();
+        assert!(e.engine.event(&e.handler, "j").await.unwrap().is_none());
+        assert!(e.recording.calls().is_empty());
+        assert!(e.store.runs("j", 10).unwrap().is_empty());
     }
 
     #[tokio::test]

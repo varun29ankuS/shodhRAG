@@ -30,6 +30,9 @@ use crate::calendar_store::{CalendarStore, TodoItem};
 use crate::reminders::{DueReminder, LaunchPart, REMINDER_FIRED_EVENT};
 use crate::task_repeat::{RepeatSink, Repeats, REPEAT_CHANGED_EVENT};
 
+/// The least wait after a tick that failed (the database could not be read or written).
+const TICK_ERROR_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// The engine's state, managed by Tauri.
 #[derive(Clone)]
 pub struct EngineState {
@@ -163,6 +166,9 @@ pub fn spawn(app: AppHandle) {
             }
             if let Err(e) = repeats.tick().await {
                 tracing::warn!(error = %e, "repeating tasks could not be planned");
+                // A database that keeps failing is not tried again in a tight loop, however
+                // often tasks change meanwhile.
+                tokio::time::sleep(TICK_ERROR_WAIT).await;
             }
         }
     });

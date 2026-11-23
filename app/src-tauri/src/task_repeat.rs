@@ -182,6 +182,44 @@ pub fn previous_label(schedule: &Schedule, earlier: DateTime<Utc>, later: DateTi
     }
 }
 
+/// The due time of the copy for `occurrence`: the schedule's own wall-clock time on that
+/// date, even when that time does not exist there (a daylight-saving gap rings at the
+/// gap's end, as every reminder does). Writing the resolved time (03:00 for a 02:30 on the
+/// spring-forward night) would read back as the user moving the series to 03:00.
+pub fn nominal_due<Tz: chrono::TimeZone>(
+    schedule: &Schedule,
+    tz: &Tz,
+    occurrence: DateTime<Utc>,
+) -> NaiveDateTime {
+    let local = occurrence.with_timezone(tz).naive_local();
+    match schedule.time_of_day() {
+        Some(time) => local.date().and_time(time),
+        None => local,
+    }
+}
+
+/// The schedule after the latest copy's due time became `due` (`all_day`: a date only),
+/// or `None` when that is the schedule's own time (as every copy the series makes is).
+pub fn moved_schedule(schedule: &Schedule, due: NaiveDateTime, all_day: bool) -> Option<Schedule> {
+    let time = if all_day { NaiveTime::MIN } else { due.time() };
+    let moved = schedule.clone().at_time(time);
+    (&moved != schedule).then_some(moved)
+}
+
+/// The kinds of schedule a task can repeat on (days, not hours; once is no repeat).
+pub fn task_schedule(schedule: &Schedule) -> Result<(), String> {
+    match schedule {
+        Schedule::Daily { .. }
+        | Schedule::Weekdays { .. }
+        | Schedule::Weekly { .. }
+        | Schedule::Monthly { .. } => Ok(()),
+        Schedule::Once { .. } | Schedule::EveryHours { .. } => Err(
+            "A task repeats every day, every weekday, every week on chosen days or every month."
+                .to_string(),
+        ),
+    }
+}
+
 /// The user's answer to a series' question.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -382,12 +420,35 @@ impl Core {
             .next_after(&Local, after.max(self.engine.now()))
             .ok_or_else(|| "The repeat has no next date.".to_string())?;
         let id = copy_id(&job.id, &local_key(&Local, target));
-        let new = snapshot.new_task(target.with_timezone(&Local).naive_local());
+        let new = snapshot.new_task(nominal_due(&schedule, &Local, target));
         let subtasks = snapshot.subtasks.clone();
+        // A copy made after `latest` that the series did not record yet (a crash between
+        // the copy and the record) is the next copy, whatever the time is now.
+        let prefix = copy_id(&job.id, "");
+        let floor = copy_id(&job.id, &local_key(&Local, after));
+        let latest_id = latest.id.clone();
         let (task, inserted) = self
-            .update(move |d| d.insert_task_if_absent(&id, new, &subtasks))
+            .update(move |d| {
+                let made = d
+                    .tasks
+                    .iter()
+                    .filter(|t| t.id.starts_with(&prefix) && t.id > floor && t.id != latest_id)
+                    .max_by(|a, b| a.id.cmp(&b.id))
+                    .cloned();
+                match made {
+                    Some(existing) => Ok((existing, false)),
+                    None => d.insert_task_if_absent(&id, new, &subtasks),
+                }
+            })
             .await
             .map_err(|e| e.to_string())?;
+        let target = if inserted {
+            target
+        } else {
+            due_of(&task)
+                .and_then(|(due, _)| local_instant(due))
+                .unwrap_or(target)
+        };
         self.store()
             .update_job(
                 &job.id,
@@ -726,9 +787,7 @@ impl Repeats {
                 changed = true;
             }
             if let (Some(schedule), Some((due, all_day))) = (&job.schedule, due_of(task)) {
-                let time = if all_day { NaiveTime::MIN } else { due.time() };
-                let moved = schedule.clone().at_time(time);
-                if &moved != schedule {
+                if let Some(moved) = moved_schedule(schedule, due, all_day) {
                     patch.schedule = Some(moved);
                     changed = true;
                 }
@@ -865,6 +924,7 @@ impl Repeats {
         let (due, all_day) = due_of(&task).ok_or_else(|| {
             "Set a due date first: each copy is due on the next date of the repeat.".to_string()
         })?;
+        task_schedule(&schedule)?;
         let time = if all_day { NaiveTime::MIN } else { due.time() };
         let schedule = schedule.normalized().at_time(time);
         schedule.validate().map_err(|e| e.to_string())?;
@@ -884,6 +944,20 @@ impl Repeats {
                     )
                     .map_err(|e| e.to_string())?;
                 self.core.sink.resolve(&hold_item_id(&job.id)).await;
+                // A latest copy done while the series could not run (on hold, or while the
+                // task list could not be read) makes its next copy now.
+                let latest_done = data
+                    .tasks
+                    .iter()
+                    .find(|t| t.id == job.subject)
+                    .is_some_and(is_done);
+                if latest_done {
+                    self.core
+                        .engine
+                        .event(&self.handler, &job.id)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                }
             }
             None => {
                 let snapshot = Snapshot::of(&task, &task.id)
@@ -1189,13 +1263,13 @@ pub(crate) mod testing {
 
     impl TestClock {
         pub fn set(&self, now: DateTime<Utc>) {
-            *self.0.lock().unwrap() = now;
+            *self.0.lock().unwrap_or_else(|e| e.into_inner()) = now;
         }
     }
 
     impl Clock for TestClock {
         fn now(&self) -> DateTime<Utc> {
-            *self.0.lock().unwrap()
+            *self.0.lock().unwrap_or_else(|e| e.into_inner())
         }
     }
 
@@ -1236,7 +1310,7 @@ mod tests {
 
     impl Clock for TestClock {
         fn now(&self) -> DateTime<Utc> {
-            *self.0.lock().unwrap()
+            *self.0.lock().unwrap_or_else(|e| e.into_inner())
         }
     }
 
@@ -1260,10 +1334,14 @@ mod tests {
     #[async_trait]
     impl RepeatSink for Sink {
         async fn calendar_changed(&self, task: &TodoItem) {
-            self.0.lock().unwrap().saved.push(task.id.clone());
+            self.0
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .saved
+                .push(task.id.clone());
         }
         async fn post(&self, item: NewInboxItem) {
-            let mut r = self.0.lock().unwrap();
+            let mut r = self.0.lock().unwrap_or_else(|e| e.into_inner());
             r.ops.push(InboxOp::Post(item.id.clone()));
             r.posted.push(item);
         }
@@ -1275,7 +1353,11 @@ mod tests {
                 .push(InboxOp::Resolve(id.to_string()));
         }
         fn ring(&self, alert: &DueReminder) {
-            self.0.lock().unwrap().rung.push(alert.clone());
+            self.0
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .rung
+                .push(alert.clone());
         }
         fn changed(&self) {}
     }
@@ -1283,7 +1365,7 @@ mod tests {
     impl Sink {
         /// The Inbox as the posts and removals left it: the ids still there.
         fn open_items(&self) -> Vec<String> {
-            let r = self.0.lock().unwrap();
+            let r = self.0.lock().unwrap_or_else(|e| e.into_inner());
             let mut open: Vec<String> = Vec::new();
             for op in &r.ops {
                 match op {
@@ -1299,11 +1381,11 @@ mod tests {
         }
 
         fn rung(&self) -> usize {
-            self.0.lock().unwrap().rung.len()
+            self.0.lock().unwrap_or_else(|e| e.into_inner()).rung.len()
         }
 
         fn clear(&self) {
-            let mut r = self.0.lock().unwrap();
+            let mut r = self.0.lock().unwrap_or_else(|e| e.into_inner());
             r.posted.clear();
             r.ops.clear();
             r.rung.clear();
@@ -1347,7 +1429,7 @@ mod tests {
 
     impl Env {
         fn at(&self, now: DateTime<Utc>) {
-            *self.clock.0.lock().unwrap() = now;
+            *self.clock.0.lock().unwrap_or_else(|e| e.into_inner()) = now;
         }
 
         fn add(&self, title: &str, due: &str) -> TodoItem {
@@ -1495,7 +1577,7 @@ mod tests {
         assert_eq!(e.tasks().len(), 1, "no copy");
         let job = e.job();
         assert_eq!(e.sink.open_items(), vec![decision_item_id(&job.id)]);
-        let posted = e.sink.0.lock().unwrap().posted[0].clone();
+        let posted = e.sink.0.lock().unwrap_or_else(|e| e.into_inner()).posted[0].clone();
         assert_eq!(posted.kind, InboxKind::Reminder);
         assert_eq!(posted.data["taskId"], json!(task.id));
         assert_eq!(
@@ -1587,7 +1669,15 @@ mod tests {
         let runs = e.runs();
         assert_eq!(runs.len(), 2, "the turn-on record and the one question");
         assert_eq!(runs[0].missed, 2);
-        let last = e.sink.0.lock().unwrap().posted.last().unwrap().clone();
+        let last = e
+            .sink
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .posted
+            .last()
+            .unwrap()
+            .clone();
         assert_eq!(
             last.detail.as_deref(),
             Some("Due again 3 times since Mon 23 Nov, but that one isn't done.")
@@ -2004,5 +2094,169 @@ mod tests {
         assert!(json.get("copyTaskId").is_some());
         assert!(json.get("scheduledFor").is_some());
         assert!(json.get("runToken").is_none());
+    }
+
+    #[test]
+    fn a_dst_gap_never_moves_the_series_time() {
+        use chrono::TimeZone;
+        use chrono_tz::America::New_York;
+        let at = |h, m| NaiveTime::from_hms_opt(h, m, 0).unwrap();
+        let day = |d, h, m| {
+            chrono::NaiveDate::from_ymd_opt(2027, 3, d)
+                .unwrap()
+                .and_time(at(h, m))
+        };
+        let schedule = Schedule::Daily { at: at(2, 30) };
+        // New York springs forward on Sunday 14 March 2027: 02:30 does not exist and the
+        // occurrence is 03:00 EDT (07:00 UTC).
+        let target = schedule
+            .next_after(
+                &New_York,
+                Utc.with_ymd_and_hms(2027, 3, 13, 12, 0, 0).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(target, Utc.with_ymd_and_hms(2027, 3, 14, 7, 0, 0).unwrap());
+        // The copy keeps the series' own time, so saving it changes nothing.
+        let due = nominal_due(&schedule, &New_York, target);
+        assert_eq!(due, day(14, 2, 30));
+        assert_eq!(moved_schedule(&schedule, due, false), None);
+        let resolved = target.with_timezone(&New_York).naive_local();
+        assert_eq!(resolved, day(14, 3, 0));
+        assert!(
+            moved_schedule(&schedule, resolved, false).is_some(),
+            "the resolved time would have read as the user moving the series"
+        );
+        // The day after, the series is still at 02:30.
+        let after = resolve_local(&New_York, due).unwrap();
+        let next = schedule.next_after(&New_York, after).unwrap();
+        assert_eq!(nominal_due(&schedule, &New_York, next), day(15, 2, 30));
+        // A user moving a copy to 04:00 moves the series.
+        assert_eq!(
+            moved_schedule(&schedule, day(15, 4, 0), false),
+            Some(Schedule::Daily { at: at(4, 0) })
+        );
+        assert_eq!(
+            moved_schedule(&schedule, day(15, 4, 0), true),
+            Some(Schedule::Daily { at: at(0, 0) }),
+            "a date-only copy repeats at the start of the day"
+        );
+    }
+
+    #[tokio::test]
+    async fn moving_the_latest_copy_to_another_time_moves_the_series() {
+        let (e, task) = weekly_series().await;
+        e.at(local(2026, 11, 23, 12, 0));
+        e.complete(&task.id).await;
+        // The copy the series made reads back as its own time: nothing moves.
+        let job = e.job();
+        assert_eq!(job.schedule, Some(weekly_mon()));
+        let patch = TaskPatch {
+            due_date: Some(Some("2026-11-30T18:00".into())),
+            ..TaskPatch::default()
+        };
+        let (_, moved, _) = e
+            .calendar
+            .update(|d| d.patch_task(&job.subject, &patch))
+            .unwrap();
+        e.repeats
+            .calendar_changed(&CalendarChange::TaskSaved(moved))
+            .await;
+        assert_eq!(
+            e.job().schedule,
+            Some(Schedule::Weekly {
+                days: vec![shodh_rag::engine::schedule::WeekDay::Mon],
+                at: NaiveTime::from_hms_opt(18, 0, 0).unwrap(),
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_makes_the_copy_missed_while_held() {
+        let (e, task) = weekly_series().await;
+        let job = e.job();
+        e.store
+            .update_job(
+                &job.id,
+                &JobPatch {
+                    hold_reason: Some(Some(HoldReason::Failing)),
+                    ..JobPatch::default()
+                },
+                local(2026, 11, 23, 11, 0),
+            )
+            .unwrap();
+        e.at(local(2026, 11, 23, 12, 0));
+        e.complete(&task.id).await;
+        assert_eq!(e.tasks().len(), 1, "a series on hold makes nothing");
+        // Resumed on Wednesday: the copy is made, due at the next upcoming Monday.
+        e.at(local(2026, 11, 25, 9, 0));
+        let view = e
+            .repeats
+            .set(&task.id, weekly_mon(), CreatedBy::User)
+            .await
+            .unwrap();
+        assert_eq!(view.state, "active");
+        assert_eq!(e.tasks().len(), 2);
+        assert_eq!(
+            e.task(&e.job().subject).due_date.as_deref(),
+            Some("2026-11-30T17:00")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_copy_made_before_a_crash_is_adopted_even_after_its_date() {
+        let (e, task) = weekly_series().await;
+        e.at(local(2026, 11, 23, 12, 0));
+        let patch = TaskPatch {
+            status: Some("completed".into()),
+            ..TaskPatch::default()
+        };
+        e.calendar
+            .update(|d| d.patch_task(&task.id, &patch))
+            .unwrap();
+        let job = e.job();
+        // The copy was saved, then Shodh stopped before the series recorded it.
+        let snapshot = Snapshot::from_job(&job).unwrap();
+        let id = copy_id(&job.id, "202611301700");
+        let new = snapshot.new_task(
+            chrono::NaiveDate::from_ymd_opt(2026, 11, 30)
+                .unwrap()
+                .and_hms_opt(17, 0, 0)
+                .unwrap(),
+        );
+        e.calendar
+            .update(|d| d.insert_task_if_absent(&id, new, &[]))
+            .unwrap();
+        // Shodh opens again after that Monday: the copy is taken up, not made again.
+        e.at(local(2026, 12, 2, 10, 0));
+        e.repeats.launch().await;
+        assert_eq!(e.tasks().len(), 2, "no second copy");
+        assert_eq!(e.job().subject, id);
+    }
+
+    #[tokio::test]
+    async fn tasks_repeat_on_days_not_hours_or_once() {
+        let e = env(local(2026, 11, 23, 10, 0));
+        let task = e.add("Stretch", "2026-11-23T17:00");
+        let hourly = Schedule::EveryHours {
+            hours: 2,
+            from: local(2026, 11, 23, 10, 0),
+        };
+        assert!(e
+            .repeats
+            .set(&task.id, hourly, CreatedBy::User)
+            .await
+            .is_err());
+        let once = Schedule::Once {
+            at: chrono::NaiveDate::from_ymd_opt(2026, 11, 30)
+                .unwrap()
+                .and_hms_opt(17, 0, 0)
+                .unwrap(),
+        };
+        assert!(e
+            .repeats
+            .set(&task.id, once, CreatedBy::User)
+            .await
+            .is_err());
+        assert!(e.store.jobs(JobKind::TaskRepeat).unwrap().is_empty());
     }
 }

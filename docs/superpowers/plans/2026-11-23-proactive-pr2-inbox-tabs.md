@@ -157,7 +157,10 @@ export const AUTOMATION_YIELD_ID = 'automation:yield'; // D4: the item PR 4 post
     - `[approval needs_you, memory needs_you, model failed, export done, tables failed, indexing working]` gives `tabCounts` `{attention:3, info:3}`;
     - `attentionCount` = 3;
     - `tabItems(list,'info')` keeps the input order.
-  - **Existing test `the bell counts only what waits on the user`:** change only the call, `waitingCount(…)` to `attentionCount(…)`. Its list and its expected value `2` stay byte-identical: the failed `tables` item is still not counted.
+  - **Existing tests: exactly three edits, and no expected value changes.**
+    1. The import line: `waitingCount` becomes `attentionCount`.
+    2. `the bell counts only what waits on the user` (line 98): `waitingCount(…)` becomes `attentionCount(…)`. Its list and its expected `2` stay byte-identical, because the failed `tables` item is still not counted.
+    3. `the scan reader offer installs while it waits…` (line 85): `waitingCount([offer])` becomes `attentionCount([offer])`. The expected value stays `1`, because a `needs_you` install is Attention.
   - `count labels cap without changing width`:
     - `countLabel(0, 99) === '0'`;
     - `countLabel(99, 99) === '99'`;
@@ -221,7 +224,7 @@ export const AUTOMATION_YIELD_ID = 'automation:yield'; // D4: the item PR 4 post
 - **Footer:** the key hint moves from the header to a footer line, `J/K move · A approve · D deny or dismiss · U undo`, so the title row holds only the title and the pop-up.
 
 - [ ] **Step 1: Write the failing source checks** in `inbox.test.ts`, reading `features/inbox/InboxButton.tsx`:
-  - `the panel has two tabs and opens on attention`: matches `role="tablist"`, `role="tab"` and `role="tabpanel"`. Matches `setTab('attention')` in both the bell's open path and the `OPEN_INBOX_EVENT` handler (two occurrences).
+  - `the panel has two tabs and opens on attention`: matches `role="tablist"`, `role="tab"` and `role="tabpanel"`. Matches `setTab('attention')` at least once. The tab resets on every open, from the bell or `OPEN_INBOX_EVENT`; one effect keyed on `open` is the expected shape.
   - `the badge counts attention`: matches `attentionCount(` and not `waitingCount`; the aria-label contains `need your attention`.
   - `the inbox action row never wraps`: no `flex-wrap` in the file; every `className={cn(ACTION` button's `ACTION` constant contains `whitespace-nowrap`.
   - `the why popover neither closes nor drives the inbox`: `insideOtherDialog` appears at least twice; `label="Why is this here?"` is present.
@@ -246,7 +249,7 @@ The new order, left to right:
 The Inbox panel and the Instructions pop-up both anchor `right-0` to their own trigger, so neither changes.
 
 - [ ] **Step 1: Write the failing test** `the inbox is the last control of the top bar`.
-  - Read `App-SplitView.tsx`.
+  - Read `App-SplitView.tsx`. `<InboxButton`, `<ChatActionsMenu` and `librarySourcesChip(searched)` each occur exactly once there (checked on `403cefcf`). The test first asserts that uniqueness, so `indexOf` checks the right elements.
   - Assert `src.indexOf('<InboxButton') > src.indexOf('librarySourcesChip(searched)')`.
   - Assert `src.indexOf('librarySourcesChip(searched)') > src.indexOf('<ChatActionsMenu')`.
   - Between `<InboxButton` and the closing `</div>` of that group, no other element tag appears: the slice up to the first `</div>` after the closing `/>` contains no `<` other than that `</div>`.

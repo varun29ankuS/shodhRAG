@@ -350,6 +350,26 @@ The Inbox panel and the Instructions pop-up both anchor `right-0` to their own t
 - **D8. The key hint moves from the header to a footer**, so the title row holds the title and the pop-up only. The keys don't change.
 - **D9. The panel always opens on Attention**, even when Attention is empty and Info is not. The badge counts Attention, so a click on the badge shows what it counted. Info is one obvious click away (**Show Info (N)**).
 
+## Rulings (2026-11-23)
+
+These settle the open questions below and override the plan above where they differ.
+
+- **Q1:** The three one-off connector failures go to **Info**.
+  - Rust marks them with `data.oneOff = true`, set by `inbox_commands::one_off`.
+  - The marked items: Slack and Telegram "answer failed", a rejected GitHub push and a GitHub rate limit.
+  - `tabOf` treats a failed `connector` item as Attention unless it carries `oneOff`.
+- **Q2:** A first index that failed outright goes to **Attention**. `enhanced_rag_commands::finished_item` sets `data.failure = "index"`.
+- **Q3:** **Info shows no count.**
+  - Only Attention has one, and the badge shows the same Attention count.
+  - The empty-Attention link reads **Show Info**, with no number.
+  - `tabCounts` is dropped from the model.
+- **Q4:** Past the memory cap, the Attention count reads "50+", so it is never lower than what waits.
+  - `inbox_list` reads 51 suggestions and keeps 50.
+  - When more were waiting, each kept item carries `data.capped = true`.
+  - `attentionLabel` then shows `${n}+`.
+- **Q5:** No "Clear finished" button.
+- **Q6:** No launch probe in this PR. The coordinator checks the bell's x and the one-line answer row over CDP on the PR's build.
+
 ## Open questions for the user
 
 - **Q1.** Should the three one-off connector failures move to Info? These are "A Slack answer failed", a rejected GitHub push and a GitHub rate limit. Doing it right means a small Rust change: a `data.stops: true` flag on the notices that do stop something.

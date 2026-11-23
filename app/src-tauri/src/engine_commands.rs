@@ -425,9 +425,17 @@ mod tests {
         let folders = recording(JobKind::FolderWatch);
         let handlers: Vec<Arc<dyn JobHandler>> = vec![repeats.clone(), folders.clone()];
         assert!(tick_all(&engine, &handlers).await.is_empty());
-        assert_eq!(*repeats.ran.lock().unwrap(), ["repeat"], "09:00 was due");
+        assert_eq!(
+            *repeats.ran.lock().unwrap_or_else(|e| e.into_inner()),
+            ["repeat"],
+            "09:00 was due"
+        );
         assert!(
-            folders.ran.lock().unwrap().is_empty(),
+            folders
+                .ran
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_empty(),
             "07:00 comes first tomorrow"
         );
         let next = next_wake_all(&engine, &[JobKind::TaskRepeat, JobKind::FolderWatch]).unwrap();

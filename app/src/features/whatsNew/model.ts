@@ -100,14 +100,16 @@ function sourceOf(item: FeedItem): string {
   return typeof item.data.sourceId === 'string' ? item.data.sourceId : item.jobId;
 }
 
-function moreOf(item: FeedItem): number {
-  return typeof item.data.more === 'number' && item.data.more > 0 ? item.data.more : 0;
+/** The local day of a time, `yyyy-mm-dd` (as the backend keys a folder's extra count). */
+export function localDayKey(foundAt: string): string {
+  const at = new Date(foundAt);
+  const mm = String(at.getMonth() + 1).padStart(2, '0');
+  const dd = String(at.getDate()).padStart(2, '0');
+  return `${at.getFullYear()}-${mm}-${dd}`;
 }
 
-function localDayKey(foundAt: string): string {
-  const at = new Date(foundAt);
-  return `${at.getFullYear()}-${at.getMonth()}-${at.getDate()}`;
-}
+/** Files a folder found beyond its listed ones on a day (`FolderWatchView.moreByDay`). */
+export type MoreOf = (sourceId: string, day: string) => number;
 
 /**
  * The rows of `items` (newest first, as listed), bucketed. Within a bucket, the files
@@ -115,7 +117,7 @@ function localDayKey(foundAt: string): string {
  * past that (or with files beyond the sync's cap) they are one row, placed where its
  * newest file was.
  */
-export function rowsOf(items: readonly FeedItem[], now: Date): { bucket: Bucket; rows: Row[] }[] {
+export function rowsOf(items: readonly FeedItem[], now: Date, moreOf: MoreOf = () => 0): { bucket: Bucket; rows: Row[] }[] {
   const groups = new Map<string, FeedItem[]>();
   for (const item of items) {
     const key = `${sourceOf(item)}|${localDayKey(item.foundAt)}`;
@@ -133,7 +135,7 @@ export function rowsOf(items: readonly FeedItem[], now: Date): { bucket: Bucket;
   for (const item of items) {
     const key = `${sourceOf(item)}|${localDayKey(item.foundAt)}`;
     const group = groups.get(key) ?? [item];
-    const more = group.reduce((sum, i) => sum + moreOf(i), 0);
+    const more = Math.max(0, moreOf(sourceOf(item), localDayKey(item.foundAt)));
     const bucket = bucketOf(item.foundAt, now);
     if (group.length > GROUP_AFTER || more > 0) {
       if (placed.has(key)) continue;
@@ -179,6 +181,18 @@ export function firstRows<T extends { rows: readonly Row[] }>(buckets: readonly 
     out.push({ ...bucket, rows });
   }
   return out;
+}
+
+/** The rows on screen: every file row, and a folder's busy day only once expanded. */
+export function renderedIds(buckets: readonly { rows: readonly Row[] }[], expanded: ReadonlySet<string>): string[] {
+  const ids: string[] = [];
+  for (const bucket of buckets) {
+    for (const row of bucket.rows) {
+      if (row.kind === 'file_group' && !expanded.has(row.key)) continue;
+      for (const item of row.items) ids.push(item.id);
+    }
+  }
+  return ids;
 }
 
 /** The ids of rows not seen yet. */

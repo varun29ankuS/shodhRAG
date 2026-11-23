@@ -23,7 +23,7 @@ export interface FeedItem {
   seenAt: string | null;
   dismissedAt: string | null;
   link: unknown;
-  /** `{ sourceId, path, folder, more? }` for a file. */
+  /** `{ sourceId, path, folder }` for a file. */
   data: Record<string, unknown>;
 }
 
@@ -34,6 +34,8 @@ export interface FolderWatchView {
   on: boolean;
   /** Stopped after failing again and again; Resume turns it on again. */
   held: boolean;
+  /** Files found beyond the listed ones, by local day (`yyyy-mm-dd`). */
+  moreByDay: Record<string, number>;
 }
 
 export interface WhatsNewView {

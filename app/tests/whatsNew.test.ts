@@ -21,6 +21,8 @@ import {
   sectionState,
   unseenIds,
   watchLine,
+  localDayKey,
+  renderedIds,
 } from '../src/features/whatsNew/model.ts';
 import type { FeedItem } from '../src/features/whatsNew/types.ts';
 
@@ -33,10 +35,9 @@ function at(day: number, hour: number, minute = 0): string {
   return new Date(2026, 10, day, hour, minute).toISOString();
 }
 
-function file(id: string, foundAt: string, opts: { source?: string; folder?: string; seen?: boolean; more?: number } = {}): FeedItem {
+function file(id: string, foundAt: string, opts: { source?: string; folder?: string; seen?: boolean } = {}): FeedItem {
   const folder = opts.folder ?? 'Research Papers';
   const data: Record<string, unknown> = { sourceId: opts.source ?? 's1', path: `C:/library/${folder}/${id}`, folder };
-  if (opts.more) data.more = opts.more;
   return {
     id,
     kind: 'file',
@@ -114,10 +115,24 @@ test('more than three files of one folder in a day are one group row', () => {
 });
 
 test('files beyond the sync cap are counted in their group', () => {
-  const rows = rowsOf([file('a.pdf', at(23, 9), { more: 36 }), file('b.pdf', at(23, 9))], NOW)[0].rows;
+  const day = localDayKey(at(23, 9));
+  const moreOf = (sourceId: string, d: string) => (sourceId === 's1' && d === day ? 36 : 0);
+  const rows = rowsOf([file('a.pdf', at(23, 9)), file('b.pdf', at(23, 9))], NOW, moreOf)[0].rows;
   assert.equal(rows.length, 1);
   assert.equal(rows[0].title, '38 new files in Research Papers');
   assert.equal(rows[0].more, 36);
+});
+
+test('only rows on screen count as seen: a busy day once expanded', () => {
+  const busy = Array.from({ length: GROUP_AFTER + 1 }, (_, i) => file(`d${i}.csv`, at(23, 9, 10 - i), { folder: 'Datasets', source: 's2' }));
+  const items = [file('kv.pdf', at(23, 10)), ...busy, file('old.pdf', at(20, 9), { source: 's9', folder: 'Old' })];
+  const buckets = rowsOf(items, NOW);
+  const group = buckets[0].rows.find(r => r.kind === 'file_group');
+  assert.ok(group);
+  const shown = firstRows(buckets, 2);
+  assert.deepEqual(renderedIds(shown, new Set()), ['kv.pdf'], 'a collapsed day and rows past the list are not seen');
+  assert.deepEqual(renderedIds(shown, new Set([group.key])), ['kv.pdf', ...busy.map(b => b.id)]);
+  assert.equal(localDayKey(new Date(2026, 0, 5, 9).toISOString()), '2026-01-05');
 });
 
 test('a row is new until it is seen', () => {

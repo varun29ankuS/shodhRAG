@@ -228,6 +228,20 @@ pub fn work_item(
     }
 }
 
+/// `data` key of a failure that ended by itself (one answer failed, one push was
+/// rejected, a rate limit that lifts on its own): nothing the user owns stays stopped,
+/// so the Inbox shows it under Info, not Attention (`features/inbox/model.ts` `tabOf`).
+pub const ONE_OFF_KEY: &str = "oneOff";
+
+/// Marks `item` as a one-off failure ([`ONE_OFF_KEY`]), keeping the rest of its data.
+pub fn one_off(mut item: NewInboxItem) -> NewInboxItem {
+    if !item.data.is_object() {
+        item.data = json!({});
+    }
+    item.data[ONE_OFF_KEY] = json!(true);
+    item
+}
+
 /// Inbox id of an approval.
 pub fn approval_id(session_id: &str, step_id: &str) -> String {
     format!("{}{step_id}", approval_prefix(session_id))
@@ -319,13 +333,35 @@ fn memory_item(view: &ProposalView) -> InboxItem {
     }
 }
 
+/// `data` key on every memory item when more suggestions are pending than the Inbox
+/// lists: the Attention count then reads "50+" (`features/inbox/model.ts`), never a
+/// number lower than what waits.
+pub const MEMORY_CAPPED_KEY: &str = "capped";
+
+/// The first `max` memory items; when there were more, each kept one is marked
+/// [`MEMORY_CAPPED_KEY`].
+fn cap_memory_items(mut items: Vec<InboxItem>, max: usize) -> Vec<InboxItem> {
+    if items.len() <= max {
+        return items;
+    }
+    items.truncate(max);
+    for item in &mut items {
+        if !item.data.is_object() {
+            item.data = json!({});
+        }
+        item.data[MEMORY_CAPPED_KEY] = json!(true);
+    }
+    items
+}
+
 async fn pending_memory_items(learn: &LearnState) -> Vec<InboxItem> {
     // Learning off or its store unavailable: no suggestions to show, not an error.
     let Ok(learner) = learn.learner().await else {
         return Vec::new();
     };
-    match learner.list(&[ProposalStatus::Pending], MAX_MEMORY_ITEMS) {
-        Ok(views) => views.iter().map(memory_item).collect(),
+    // One more than shown, to know whether more are pending than the Inbox lists.
+    match learner.list(&[ProposalStatus::Pending], MAX_MEMORY_ITEMS + 1) {
+        Ok(views) => cap_memory_items(views.iter().map(memory_item).collect(), MAX_MEMORY_ITEMS),
         Err(e) => {
             tracing::warn!(target: "shodh::inbox", error = %e, "memory suggestions not read");
             Vec::new()
@@ -494,6 +530,55 @@ mod tests {
             settled_reminders(&items, &calendar),
             ["reminder:done", "reminder:deleted"]
         );
+    }
+
+    #[test]
+    fn memory_items_past_the_cap_are_cut_and_marked_capped() {
+        let memory = |n: usize| InboxItem {
+            id: format!("memory:p{n}"),
+            kind: InboxKind::Memory,
+            status: InboxStatus::NeedsYou,
+            title: format!("Remember: {n}"),
+            detail: None,
+            link: None,
+            data: json!({ "suggestionId": format!("p{n}") }),
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let at_cap: Vec<InboxItem> = (0..MAX_MEMORY_ITEMS).map(memory).collect();
+        let kept = cap_memory_items(at_cap.clone(), MAX_MEMORY_ITEMS);
+        assert_eq!(
+            kept, at_cap,
+            "exactly at the cap: nothing cut, nothing marked"
+        );
+
+        let over: Vec<InboxItem> = (0..=MAX_MEMORY_ITEMS).map(memory).collect();
+        let kept = cap_memory_items(over, MAX_MEMORY_ITEMS);
+        assert_eq!(kept.len(), MAX_MEMORY_ITEMS);
+        assert_eq!(kept[0].id, "memory:p0", "the first ones are kept");
+        assert!(kept.iter().all(
+            |i| i.data[MEMORY_CAPPED_KEY] == json!(true) && i.data["suggestionId"].is_string()
+        ));
+    }
+
+    #[test]
+    fn a_one_off_mark_keeps_the_items_data() {
+        let item = NewInboxItem {
+            id: "slack:model:T1".into(),
+            kind: InboxKind::Connector,
+            status: InboxStatus::Failed,
+            title: "A Slack answer failed".into(),
+            detail: None,
+            link: None,
+            data: json!({ "connector": "slack" }),
+        };
+        let marked = one_off(item.clone());
+        assert_eq!(marked.data, json!({ "connector": "slack", "oneOff": true }));
+        let bare = one_off(NewInboxItem {
+            data: serde_json::Value::Null,
+            ..item
+        });
+        assert_eq!(bare.data, json!({ "oneOff": true }));
     }
 
     #[test]

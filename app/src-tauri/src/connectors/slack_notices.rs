@@ -33,6 +33,7 @@ use shodh_rag::inbox::{InboxKind, InboxLink, InboxStatus, NewInboxItem};
 use tauri::{AppHandle, Manager};
 
 use super::slack::{emit_status, SlackState, SlackStatus};
+use crate::inbox_commands::one_off;
 use crate::notifications::{self, Category, Notice, WorkDone, WorkKind};
 
 /// How long the connection may be down before the user is told.
@@ -536,7 +537,8 @@ pub fn delivery(team_id: &str, team: &str, notice: &SlackNotice) -> Delivery {
         SlackNotice::ModelFailed => {
             let id = format!("slack:model:{team_id}");
             Delivery {
-                item: item(
+                // One answer failed and the asker was told: nothing stays stopped.
+                item: one_off(item(
                     id.clone(),
                     InboxStatus::Failed,
                     "A Slack answer failed".to_string(),
@@ -544,7 +546,7 @@ pub fn delivery(team_id: &str, team: &str, notice: &SlackNotice) -> Delivery {
                         "The model set in Settings → Model could not answer a question from {team}. The person who asked was told."
                     ),
                     SlackTab::Overview,
-                ),
+                )),
                 alert: Alert::Problem {
                     source: id,
                     notice: Notice {
@@ -994,5 +996,31 @@ mod tests {
         assert!(
             matches!(model.alert, Alert::Problem { ref source, .. } if source == "slack:model:T1")
         );
+    }
+
+    #[test]
+    fn only_a_failed_answer_is_a_one_off_failure() {
+        let one_off = delivery("T1", "Acme", &SlackNotice::ModelFailed);
+        assert_eq!(one_off.item.status, InboxStatus::Failed);
+        assert_eq!(one_off.item.data["oneOff"], true);
+        // These stay stopped until the user acts: Attention, never marked one-off.
+        for notice in [
+            SlackNotice::ConnectionLost,
+            SlackNotice::ConnectionStopped,
+            SlackNotice::MissingScopes(vec!["channels:history".into()]),
+            SlackNotice::ChannelStopped {
+                id: "C1".into(),
+                name: "deals".into(),
+                stop: ChannelStop::Error,
+            },
+            SlackNotice::CapReached {
+                day: at(0).date_naive(),
+                cap: 20,
+            },
+        ] {
+            let d = delivery("T1", "Acme", &notice);
+            assert_eq!(d.item.status, InboxStatus::Failed, "{notice:?}");
+            assert!(d.item.data.get("oneOff").is_none(), "{notice:?}");
+        }
     }
 }

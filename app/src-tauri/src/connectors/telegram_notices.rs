@@ -19,6 +19,7 @@ use shodh_rag::inbox::{InboxKind, InboxLink, InboxStatus, NewInboxItem};
 use tauri::{AppHandle, Manager};
 
 use super::slack_notices::{Alert, Delivery, DOWN_NOTICE_AFTER};
+use crate::inbox_commands::one_off;
 use crate::notifications::{self, Category, Notice};
 
 /// The tabs of the Telegram page an item can open (`features/connectors/navigation.ts`).
@@ -235,13 +236,14 @@ pub fn delivery(bot: &str, notice: &TelegramNotice) -> Delivery {
         TelegramNotice::ModelFailed => {
             let id = "telegram:model".to_string();
             Delivery {
-                item: item(
+                // One answer failed and the asker was told: nothing stays stopped.
+                item: one_off(item(
                     id.clone(),
                     InboxStatus::Failed,
                     "A Telegram answer failed".into(),
                     "The model set in Settings → Model could not answer a message in Telegram. The person who asked was told.".into(),
                     TelegramTab::Overview,
-                ),
+                )),
                 alert: Alert::Problem {
                     source: id,
                     notice: Notice {
@@ -442,5 +444,22 @@ mod tests {
         let back = delivery("shodh_notes_bot", &TelegramNotice::ConnectionBack);
         assert_eq!(back.item.status, InboxStatus::Done);
         assert_eq!(back.item.id, "telegram:connection");
+    }
+
+    #[test]
+    fn only_a_failed_answer_is_a_one_off_failure() {
+        let one_off = delivery("shodh_notes_bot", &TelegramNotice::ModelFailed);
+        assert_eq!(one_off.item.data["oneOff"], true);
+        for notice in [
+            TelegramNotice::ConnectionLost,
+            TelegramNotice::ConnectionStopped,
+            TelegramNotice::CapReached {
+                day: at(0).date_naive(),
+                cap: 20,
+            },
+        ] {
+            let d = delivery("shodh_notes_bot", &notice);
+            assert!(d.item.data.get("oneOff").is_none(), "{notice:?}");
+        }
     }
 }

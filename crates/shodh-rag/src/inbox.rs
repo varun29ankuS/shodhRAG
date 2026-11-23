@@ -114,6 +114,8 @@ pub enum InboxKind {
     /// Scheduled work of the engine that needs the user: a repeating task that stopped
     /// after failing again and again (its fix is Resume).
     Automation,
+    /// What's new: files new in a watched folder, one item per folder and day.
+    WhatsNew,
 }
 
 impl InboxKind {
@@ -130,6 +132,7 @@ impl InboxKind {
             Self::Connector => "connector",
             Self::Model => "model",
             Self::Automation => "automation",
+            Self::WhatsNew => "whats_new",
         }
     }
 
@@ -146,6 +149,7 @@ impl InboxKind {
             "connector" => Self::Connector,
             "model" => Self::Model,
             "automation" => Self::Automation,
+            "whats_new" => Self::WhatsNew,
             _ => return None,
         })
     }
@@ -499,6 +503,22 @@ mod tests {
         assert_eq!(stored.kind, InboxKind::Automation);
         assert_eq!(InboxKind::parse("automation"), Some(InboxKind::Automation));
         assert_eq!(InboxKind::Automation.as_str(), "automation");
+        assert_eq!(inbox.list().unwrap(), vec![stored]);
+    }
+
+    #[test]
+    fn a_whats_new_item_is_stored() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = store(&dir);
+        let item = new(
+            "whats_new:files:s1:20261123",
+            InboxKind::WhatsNew,
+            InboxStatus::Done,
+        );
+        let stored = inbox.put(&item, at(1, 9)).unwrap();
+        assert_eq!(stored.kind, InboxKind::WhatsNew);
+        assert_eq!(InboxKind::parse("whats_new"), Some(InboxKind::WhatsNew));
+        assert_eq!(InboxKind::WhatsNew.as_str(), "whats_new");
         assert_eq!(inbox.list().unwrap(), vec![stored]);
     }
 

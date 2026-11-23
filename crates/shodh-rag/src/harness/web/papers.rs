@@ -17,7 +17,10 @@
 //!    the local cross-encoder (or lexically when it is not installed) and
 //!    weak matches are dropped. An exact title match is always kept.
 
-use serde::Serialize;
+use std::collections::BTreeMap;
+
+use chrono::{DateTime, NaiveDate, Utc};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use url::Url;
 
@@ -383,6 +386,102 @@ pub fn paper_requests(query: &str, per_source: usize) -> Result<PaperRequests, W
 
 // ── parsing ───────────────────────────────────────────────────────────────
 
+/// One of the scholarly APIs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaperApi {
+    Arxiv,
+    OpenAlex,
+    SemanticScholar,
+}
+
+impl PaperApi {
+    /// Every API, in the order a check asks them.
+    pub const ALL: [PaperApi; 3] = [Self::Arxiv, Self::OpenAlex, Self::SemanticScholar];
+
+    /// The API's name, as the user reads it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Arxiv => ARXIV,
+            Self::OpenAlex => OPENALEX,
+            Self::SemanticScholar => SEMANTIC_SCHOLAR,
+        }
+    }
+}
+
+/// Results a paper alert asks of each API per check.
+pub const ALERT_RESULTS_PER_API: usize = 25;
+
+/// The requests of one paper alert check: one per API, newest first where the API can
+/// sort, and bounded by date (`since`, per API), so a weekly check returns what is new
+/// rather than the same best matches. arXiv is left out when the query has no
+/// significant term for it. Unlike [`paper_requests`], OpenAlex gets no exact-title
+/// request: one request per API.
+pub fn alert_requests(
+    query: &str,
+    since: &BTreeMap<PaperApi, NaiveDate>,
+    now: DateTime<Utc>,
+) -> Result<BTreeMap<PaperApi, Url>, WebError> {
+    let per_api = ALERT_RESULTS_PER_API.to_string();
+    let today = now.date_naive();
+    let since_of = |api: PaperApi| since.get(&api).copied().unwrap_or(today);
+    let mut out = BTreeMap::new();
+    if let Some(q) = arxiv_search_query(query) {
+        let range = format!(
+            "submittedDate:[{}0000 TO {}]",
+            since_of(PaperApi::Arxiv).format("%Y%m%d"),
+            now.format("%Y%m%d%H%M")
+        );
+        let mut url = api_url(ARXIV_API)?;
+        url.query_pairs_mut()
+            .append_pair("search_query", &format!("({q}) AND {range}"))
+            .append_pair("sortBy", "submittedDate")
+            .append_pair("sortOrder", "descending")
+            .append_pair("start", "0")
+            .append_pair("max_results", &per_api);
+        out.insert(PaperApi::Arxiv, url);
+    }
+    let mut openalex = api_url(OPENALEX_API)?;
+    openalex
+        .query_pairs_mut()
+        .append_pair("search", &clean(&query.replace('"', " ")))
+        .append_pair(
+            "filter",
+            &format!(
+                "from_publication_date:{}",
+                since_of(PaperApi::OpenAlex).format("%Y-%m-%d")
+            ),
+        )
+        .append_pair("per-page", &per_api)
+        .append_pair("select", OPENALEX_SELECT);
+    out.insert(PaperApi::OpenAlex, openalex);
+    let mut semantic_scholar = api_url(SEMANTIC_SCHOLAR_API)?;
+    semantic_scholar
+        .query_pairs_mut()
+        .append_pair("query", &words(query).join(" "))
+        .append_pair(
+            "publicationDateOrYear",
+            &format!(
+                "{}:",
+                since_of(PaperApi::SemanticScholar).format("%Y-%m-%d")
+            ),
+        )
+        .append_pair("limit", &per_api)
+        .append_pair("fields", SEMANTIC_SCHOLAR_FIELDS);
+    out.insert(PaperApi::SemanticScholar, semantic_scholar);
+    Ok(out)
+}
+
+/// A title reduced to its significant words, lower-cased: the key a paper known only by
+/// its title is stored under.
+pub fn title_key(title: &str) -> String {
+    words(title)
+        .into_iter()
+        .filter(|w| !is_stopword(w))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Parse an arXiv API Atom feed.
 pub fn parse_arxiv(xml: &str) -> Result<Vec<Paper>, WebError> {
     let doc = roxmltree::Document::parse(xml)
@@ -568,7 +667,7 @@ fn journal_doi(p: &Paper) -> Option<&str> {
 /// different journal DOIs mean different papers even under one title. A
 /// preprint and its journal version share a title and may carry an arXiv
 /// DOI and a journal DOI, so an arXiv DOI never blocks a match.
-fn same_paper(a: &Paper, b: &Paper) -> bool {
+pub fn same_paper(a: &Paper, b: &Paper) -> bool {
     if let (Some(x), Some(y)) = (&a.arxiv_id, &b.arxiv_id) {
         return x == y;
     }

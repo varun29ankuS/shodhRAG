@@ -1,0 +1,24 @@
+{
+  "about": "A small library for topic suggestions: titles read from PDFs by the paper graph's scans, PDF file names (some read as titles, the rest are ids or junk and must add nothing), and the graph's methods with the library papers that use each.",
+  "scanTitles": [
+    "Gated Linear Attention Transformers",
+    "Linear Attention for Speech Recognition",
+    "Compressing the KV Cache with Linear Attention",
+    "KV Cache Quantization at Scale",
+    "Efficient State Space Models for Audio",
+    "Structured State Space Models in Vision",
+    "Vector Search over Billion Scale Graphs"
+  ],
+  "fileNames": [
+    "linear_attention_kv_cache_eviction_final(1).pdf",
+    "2406.06484 - Vector Search with Product Quantization.pdf",
+    "2301.12345v2.pdf",
+    "download (3).pdf",
+    "paper_final(1).pdf",
+    "10.1145_3292500.3330701.pdf",
+    "3f9a2c7be81d4e60a1b2.pdf",
+    "untitled document.pdf",
+    "20231104.pdf"
+  ],
+  "methods": [["DeltaNet", 2], ["Mamba", 1]]
+}

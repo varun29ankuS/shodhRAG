@@ -1616,11 +1616,9 @@ function AppSplitView() {
               );
             })()}
           </div>
+          {/* Ask's own actions, then Sources, then the Inbox last: nothing to the bell's
+              right changes width, so it stays at one x on every view (UI audit rule 2). */}
           <div className="flex items-center gap-2">
-            <InboxButton
-              onNavigate={setActiveTab}
-              onOpenConversation={id => { switchConversation(id); setActiveTab('ask'); }}
-            />
             {viewTab === 'ask' && activeConversationId && (
               <ChatActionsMenu
                 conversationId={activeConversationId}
@@ -1837,6 +1835,10 @@ function AppSplitView() {
                 </Badge>
               );
             })()}
+            <InboxButton
+              onNavigate={setActiveTab}
+              onOpenConversation={id => { switchConversation(id); setActiveTab('ask'); }}
+            />
           </div>
         </div>
 

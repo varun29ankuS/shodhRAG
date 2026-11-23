@@ -147,10 +147,226 @@ export const STATUS_TONE: Record<InboxStatus, { dot: string; text: string }> = {
   failed: { dot: 'bg-shodh-error', text: 'text-shodh-error' },
 };
 
-/** How many items wait on the user (the bell's count). */
-export function waitingCount(items: readonly InboxItem[]): number {
-  return items.filter(i => i.status === 'needs_you').length;
+/**
+ * The Inbox's two tabs (Signal and Noise in the design, never in the UI): Attention
+ * holds what waits on the user and what stays stopped until they fix it; Info holds
+ * everything else. The bell counts Attention only.
+ */
+export type InboxTab = 'attention' | 'info';
+export const INBOX_TABS: readonly InboxTab[] = ['attention', 'info'];
+export const TAB_LABEL: Record<InboxTab, string> = { attention: 'Attention', info: 'Info' };
+
+/**
+ * `data.oneOff` (Rust `inbox_commands::ONE_OFF_KEY`): a connector failure that ended
+ * by itself (one answer failed, one push was refused, a rate limit that lifts alone).
+ */
+const ONE_OFF_KEY = 'oneOff';
+
+/**
+ * Whether a failed item of each kind stops something the user owns until they act.
+ * Keyed by every kind, so a new kind does not compile until it is placed. A failure
+ * that `recover` made from interrupted work keeps its working data, so it is never
+ * one of these: a restart never adds to Attention.
+ */
+const FAILED_STOPS: Record<InboxKind, (data: Record<string, unknown>) => boolean> = {
+  approval: () => false,
+  memory: () => false,
+  reminder: () => false,
+  // A folder that could not be synced or indexed at all; a sync that only missed some
+  // files is Info.
+  indexing: data => data.failure === 'sync' || data.failure === 'index',
+  tables: () => false,
+  citation_graph: () => false,
+  export: () => false,
+  install: () => false,
+  // A connection lost or stopped, missing permissions, today's cap: stopped until fixed.
+  connector: data => data[ONE_OFF_KEY] !== true,
+  // The chosen model has been failing for over an hour.
+  model: () => true,
+  // One failed run; three in a row become a needs-you hold.
+  automation: () => false,
+};
+
+/** The tab of an item. */
+export function tabOf(item: Pick<InboxItem, 'kind' | 'status'> & { data?: Record<string, unknown> }): InboxTab {
+  if (item.status === 'needs_you') return 'attention';
+  if (item.status === 'failed' && FAILED_STOPS[item.kind](item.data ?? {})) return 'attention';
+  return 'info';
 }
+
+/** The items of one tab, in the order given. */
+export function tabItems(items: readonly InboxItem[], tab: InboxTab): InboxItem[] {
+  return items.filter(i => tabOf(i) === tab);
+}
+
+/** How many items are in Attention (the bell's count and the Attention tab's). */
+export function attentionCount(items: readonly InboxItem[]): number {
+  return tabItems(items, 'attention').length;
+}
+
+/**
+ * `data.capped` (Rust `inbox_commands::MEMORY_CAPPED_KEY`): more memory suggestions
+ * wait than the Inbox lists.
+ */
+const MEMORY_CAPPED_KEY = 'capped';
+
+/** Whether more waits than the Inbox lists (memory suggestions past their cap). */
+export function attentionCapped(items: readonly InboxItem[]): boolean {
+  return items.some(i => i.kind === 'memory' && i.data[MEMORY_CAPPED_KEY] === true);
+}
+
+/** A count for a pill: `n`, or `${max}+` past `max`, or `${n}+` when more wait than listed. */
+export function countLabel(n: number, max: number, more = false): string {
+  if (n > max) return `${max}+`;
+  return more ? `${n}+` : String(n);
+}
+
+/** The widest Attention count shown before it reads `99+`. */
+export const ATTENTION_MAX = 99;
+
+/** The Attention count as shown, the same on the bell and on the Attention tab. */
+export function attentionLabel(items: readonly InboxItem[]): string {
+  return countLabel(attentionCount(items), ATTENTION_MAX, attentionCapped(items));
+}
+
+/** The counts the bell and the Attention tab show, and the bell's name. */
+export interface InboxCounts {
+  /** The Attention tab's count; `null` before the first answer, or when it failed with nothing to count. */
+  pill: string | null;
+  /** The bell's badge: the same text as the pill, hidden when nothing needs the user. */
+  bell: string | null;
+  bellAria: string;
+}
+
+export function inboxCounts(input: { loaded: boolean; error: string | null; items: readonly InboxItem[] }): InboxCounts {
+  const known = input.loaded && !(input.error !== null && input.items.length === 0);
+  const count = attentionCount(input.items);
+  const label = attentionLabel(input.items);
+  const bell = known && count > 0 ? label : null;
+  const bellAria =
+    bell === null ? 'Inbox' : label === '1' ? 'Inbox, 1 needs your attention' : `Inbox, ${label} need your attention`;
+  return { pill: known ? label : null, bell, bellAria };
+}
+
+/** Whether the panel is open, and which tab it shows. Every open starts on Attention, what the bell counted. */
+export interface PanelNav {
+  open: boolean;
+  tab: InboxTab;
+}
+
+export type PanelNavAction = { type: 'toggle' } | { type: 'open' } | { type: 'close' } | { type: 'show'; tab: InboxTab };
+
+export function panelNav(state: PanelNav, action: PanelNavAction): PanelNav {
+  switch (action.type) {
+    case 'open':
+      return { open: true, tab: 'attention' };
+    case 'toggle':
+      return state.open ? { ...state, open: false } : { open: true, tab: 'attention' };
+    case 'close':
+      return state.open ? { ...state, open: false } : state;
+    case 'show':
+      return state.tab === action.tab ? state : { ...state, tab: action.tab };
+  }
+}
+
+interface ClosestTarget {
+  closest(selector: string): unknown;
+}
+
+interface Container<T> {
+  contains(node: T | null): boolean;
+}
+
+/** Marks the Inbox's item list, and each item's row button inside it. */
+export const LIST_SELECTOR = '[data-inbox-list]';
+export const ROW_SELECTOR = '[data-inbox-row]';
+
+/**
+ * Where a key in the panel came from: an item's row, one of its buttons, the rest of
+ * the panel (the tabs, "Why is this here?", Show Info, Try again), or outside it (the
+ * pop-up, a portal whose keys bubble to the panel through React).
+ */
+export type FocusZone = 'row' | 'item' | 'panel' | 'outside';
+
+export function focusZone<T extends ClosestTarget>(target: T | null, panel: Container<T> | null): FocusZone {
+  if (!target || !panel || !panel.contains(target)) return 'outside';
+  if (target.closest(ROW_SELECTOR) !== null) return 'row';
+  if (target.closest(LIST_SELECTOR) !== null) return 'item';
+  return 'panel';
+}
+
+/**
+ * What a panel key does from `zone`: J/K move from anywhere in the panel; Enter opens
+ * only from a row (on a button it presses the button); A, D and U act only from the
+ * item list, so a key on a tab never acts on an item it does not show.
+ */
+export function keyAction(command: InboxCommand, zone: FocusZone): InboxCommand | null {
+  if (zone === 'outside') return null;
+  if (command === 'next' || command === 'previous') return command;
+  if (command === 'open') return zone === 'row' ? command : null;
+  return zone === 'row' || zone === 'item' ? command : null;
+}
+
+/** Whether a press at `target` closes the panel: outside it, and not in a pop-up (a portal) over it. */
+export function pointerDownCloses<T extends ClosestTarget>(target: T | null, root: Container<T> | null): boolean {
+  if (!root) return false;
+  if (!target) return true;
+  if (root.contains(target)) return false;
+  return target.closest('[role="dialog"]') === null;
+}
+
+/** Only the latest of overlapping `inbox_list` reads is applied: an older answer never overwrites a newer one. */
+export interface RequestGate {
+  begin(): number;
+  isLatest(ticket: number): boolean;
+}
+
+export function requestGate(): RequestGate {
+  let issued = 0;
+  return {
+    begin: () => ++issued,
+    isLatest: ticket => ticket === issued,
+  };
+}
+
+/** The Try again button: busy while the read it started runs. */
+export function retryButton(pending: boolean): { label: string; disabled: boolean } {
+  return pending ? { label: 'Trying again…', disabled: true } : { label: 'Try again', disabled: false };
+}
+
+/** What the open tab shows. A first load that has not answered is never "empty". */
+export type PanelState = 'loading' | 'error' | 'empty' | 'list';
+
+export function panelState(input: { loaded: boolean; error: string | null; count: number }): PanelState {
+  if (!input.loaded && input.error === null) return 'loading';
+  if (input.error !== null && input.count === 0) return 'error';
+  if (input.count === 0) return 'empty';
+  return 'list';
+}
+
+export interface EmptyCopy {
+  title: string;
+  detail: string;
+}
+
+export const EMPTY_COPY: Record<InboxTab, EmptyCopy> = {
+  attention: { title: 'Nothing needs your attention.', detail: 'Shodh puts approvals, reminders and suggestions here.' },
+  info: { title: 'Nothing new.', detail: 'Finished work and updates show here.' },
+};
+
+/** The fixed rules, shown in "Why is this here?". */
+export const TAB_RULES: Record<InboxTab, string> = {
+  attention:
+    'Attention has what waits for you (approvals, suggestions, reminders, a repeating task’s question, something on hold) and what stays stopped until you fix it: a model that keeps failing, a connector that stopped, a folder that could not be synced or indexed. The bell counts these.',
+  info: 'Info has everything else: work in progress, finished work, updates, and one-off failures that need nothing more from you.',
+};
+
+/**
+ * The item automations post while they wait so chat keeps working (PR 4), updated in
+ * place, never repeated: kind `automation`, status `working`, `data: {paused: 'chat',
+ * resumesAt}`. It is Info; after a restart `recover` marks it failed, still Info.
+ */
+export const AUTOMATION_YIELD_ID = 'automation:yield';
 
 export type InboxCommand = 'next' | 'previous' | 'open' | 'primary' | 'secondary' | 'undo';
 

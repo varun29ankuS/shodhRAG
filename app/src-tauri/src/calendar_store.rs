@@ -716,6 +716,39 @@ impl CalendarData {
         Ok(task)
     }
 
+    /// Inserts a task under `id`, with unchecked subtasks titled `subtasks`, unless a task
+    /// with that id exists: then that task is returned as it is. True when it was
+    /// inserted. Validated as [`CalendarData::insert_task`] validates. A repeating task's
+    /// copy for one occurrence always has the same id, so a retry never makes two.
+    pub fn insert_task_if_absent(
+        &mut self,
+        id: &str,
+        new: NewTask,
+        subtasks: &[String],
+    ) -> CalendarResult<(TodoItem, bool)> {
+        if let Some(existing) = self.tasks.iter().find(|t| t.id == id) {
+            return Ok((existing.clone(), false));
+        }
+        let titles = subtasks
+            .iter()
+            .map(|title| check_title(title))
+            .collect::<CalendarResult<Vec<String>>>()?;
+        let mut task = self.insert_task(new)?;
+        task.id = id.to_string();
+        task.subtasks = titles
+            .into_iter()
+            .map(|title| SubTask {
+                id: Uuid::new_v4().to_string(),
+                title,
+                completed: false,
+            })
+            .collect();
+        if let Some(stored) = self.tasks.last_mut() {
+            *stored = task.clone();
+        }
+        Ok((task, true))
+    }
+
     /// Apply `patch` to task `id`; returns the task before and after.
     pub fn patch_task(
         &mut self,
@@ -1610,6 +1643,36 @@ mod tests {
             store.load().unwrap().task(&t.id).unwrap().workspace_id,
             None
         );
+    }
+
+    #[test]
+    fn insert_if_absent_never_makes_two() {
+        let (_dir, store) = store();
+        let new = || NewTask {
+            title: "Submit timesheet".into(),
+            due_date: Some("2026-11-30T17:00".into()),
+            ..NewTask::default()
+        };
+        let subtasks = vec!["Hours".to_string(), "Send".to_string()];
+        let (first, inserted) = store
+            .update(|d| d.insert_task_if_absent("rep-j-202611301700", new(), &subtasks))
+            .unwrap();
+        assert!(inserted);
+        assert_eq!(first.id, "rep-j-202611301700");
+        assert_eq!(first.subtasks.len(), 2);
+        assert!(first.subtasks.iter().all(|s| !s.completed));
+        let (again, inserted) = store
+            .update(|d| d.insert_task_if_absent("rep-j-202611301700", new(), &subtasks))
+            .unwrap();
+        assert!(!inserted);
+        assert_eq!(again, first);
+        let data = store.load().unwrap();
+        assert_eq!(data.tasks.len(), 1);
+        assert_eq!(data.tasks[0], first);
+        assert!(store
+            .update(|d| d.insert_task_if_absent("rep-j-x", new(), &[" ".to_string()]))
+            .is_err());
+        assert_eq!(store.load().unwrap().tasks.len(), 1, "nothing written");
     }
 
     #[test]

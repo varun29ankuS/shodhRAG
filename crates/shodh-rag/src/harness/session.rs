@@ -28,11 +28,11 @@ use tokio_util::codec::{FramedRead, LinesCodec, LinesCodecError};
 
 use super::code_mode::{
     approval_for, auto_approval, auto_command, change_target, changed_between, code_catalog,
-    command_eligible, command_surroundings, create_branch, git_state, inventory_matches_in,
-    note_review, parse_guard_request, plan_change, starts_system_program, target_in_folder,
-    tree_snapshot, ChangePlan, ChangeTarget, CodeBranch, CodeBranchStore, CodeFolder, CodeSettings,
-    GateContext, GuardRequest, ReviewState, ReviewStore, TreeSnapshot, ALLOW_ANSWER, AUTO_MODE_KEY,
-    CODE_TOOLS, GUARD_COMMAND, IGNORE_RULES_UNDO, OMP_EXECUTION_TOOLS, UNTRACKED_UNDO,
+    command_eligible, command_surroundings, create_branch, git_state, inventory_fits, note_review,
+    parse_guard_request, plan_change, starts_system_program, target_in_folder, tree_snapshot,
+    ChangePlan, ChangeTarget, CodeBranch, CodeBranchStore, CodeFolder, CodeSettings, GateContext,
+    GuardRequest, ReviewState, ReviewStore, TreeSnapshot, ALLOW_ANSWER, AUTO_MODE_KEY, CODE_TOOLS,
+    GUARD_COMMAND, IGNORE_RULES_UNDO, OMP_EXECUTION_TOOLS, UNTRACKED_UNDO,
 };
 use super::code_mode::{
     approved_network, change_diff, creator_command_reason, install_network_text,
@@ -55,7 +55,8 @@ use super::omp::{normalise, HeldRun, NormaliserState, StepOutcome};
 use super::profile::AgentProfile;
 use super::protocol::{
     parse_frame, ExtensionUiRequestFrame, HostToolCallFrame, InboundFrame, MessageUpdateMode,
-    OutboundFrame, ResponseFrame, StreamingBehavior, SubagentLevel, ToolResultPayload,
+    OutboundFrame, ResponseFrame, StreamingBehavior, SubagentLevel, ToolLoadMode,
+    ToolResultPayload,
 };
 use super::run_command::{
     self, asked_timeout, CommandExecutor, CommandLimits, CommandOutcome, CommandSpec, RunControl,
@@ -2732,7 +2733,14 @@ impl OmpSession {
         if !reads_only {
             host.push(run_command::definition());
         }
-        let host_names: Vec<String> = host.iter().map(|d| d.name.clone()).collect();
+        // omp's state lists only the tools loaded at the start; a discoverable
+        // tool joins the model's context when it is looked for, so it may be
+        // absent from the inventory.
+        let (deferred, essential): (Vec<_>, Vec<_>) = host
+            .iter()
+            .partition(|d| d.load_mode == ToolLoadMode::Discoverable);
+        let host_names: Vec<String> = essential.iter().map(|d| d.name.clone()).collect();
+        let deferred: Vec<String> = deferred.iter().map(|d| d.name.clone()).collect();
         inner
             .command(OutboundFrame::SetEventFilter {
                 id: inner.next_id("c"),
@@ -2753,7 +2761,7 @@ impl OmpSession {
             })
             .await?;
         let tools = tool_inventory(state.data.as_ref());
-        if !inventory_matches_in(&tools, &host_names, reads_only) {
+        if !inventory_fits(&tools, &host_names, &deferred, reads_only) {
             return Err(HarnessError::CodeGuard(format!(
                 "the runtime offered the tools {tools:?}"
             )));

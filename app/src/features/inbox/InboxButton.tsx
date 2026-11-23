@@ -15,6 +15,7 @@ import type { ViewTab } from '../../lib/viewTabs';
 import { requestSettingsSection } from '../memory/navigation';
 import { parseConnectorTarget, requestConnectorPage } from '../connectors/navigation';
 import {
+  CHOICE_LABEL,
   STATUS_LABEL,
   STATUS_TONE,
   actionsFor,
@@ -25,7 +26,8 @@ import {
   settingsSectionOf,
   waitingCount,
 } from './model';
-import type { InboxItem, PrimaryAction } from './model';
+import type { InboxChoice, InboxItem, PrimaryAction } from './model';
+import { repeatDecide, repeatGet, repeatSet } from '../tasks/repeatApi';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-shodh-surface';
@@ -191,6 +193,22 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
     }
   };
 
+  // Answer a repeating task's question, or resume one on hold (saving its repeat again).
+  const choose = (item: InboxItem, choice: InboxChoice) => {
+    const jobId = str(item.data.jobId);
+    const taskId = str(item.data.taskId);
+    if (choice === 'resume') {
+      if (!taskId) return;
+      void run(item, async () => {
+        const view = await repeatGet(taskId);
+        if (view) await repeatSet(taskId, view.schedule);
+      }, 'The repeat was not resumed');
+      return;
+    }
+    if (!jobId) return;
+    void run(item, () => repeatDecide(jobId, choice), 'The answer was not saved');
+  };
+
   const secondary = (item: InboxItem) => {
     const { secondary: action } = actionsFor(item);
     if (action === 'deny') {
@@ -329,8 +347,26 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
                         </span>
                       </span>
                     </button>
-                    {(actions.primary || actions.secondary || item.link) && (
-                      <div className="flex items-center gap-1.5 pl-4">
+                    {(actions.primary || actions.secondary || actions.choices || item.link) && (
+                      <div className="flex flex-wrap items-center gap-1.5 pl-4">
+                        {actions.choices?.map((choice, i) => (
+                          <button
+                            key={choice}
+                            type="button"
+                            tabIndex={isSelected ? 0 : -1}
+                            disabled={disabled}
+                            onClick={() => choose(item, choice)}
+                            className={cn(
+                              ACTION,
+                              i === 0
+                                ? 'bg-shodh-accent text-shodh-on-accent hover:bg-shodh-accent-hover'
+                                : 'border border-shodh-border text-shodh-text-secondary hover:bg-shodh-raised-2 hover:text-shodh-text',
+                              FOCUS_RING,
+                            )}
+                          >
+                            {CHOICE_LABEL[choice]}
+                          </button>
+                        ))}
                         {actions.primary && (
                           <button
                             type="button"

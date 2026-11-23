@@ -332,6 +332,77 @@ fn the_tool_inventory_must_be_exact() {
     assert!(!inventory_matches_in(&reading, &[], false));
 }
 
+/// omp lists only the tools loaded at the start. A Creator session's
+/// discoverable tools (open_artifact, list_artifacts, design_check) are held
+/// back until the model looks for them, so their absence must not stop the
+/// session, while everything else stays exact.
+#[test]
+fn deferred_host_tools_may_be_absent_but_nothing_else_may_change() {
+    let run_command = RUN_COMMAND.to_string();
+    let host = vec!["finish_creation".to_string(), run_command.clone()];
+    let deferred = vec![
+        "open_artifact".to_string(),
+        "list_artifacts".to_string(),
+        "design_check".to_string(),
+    ];
+    let offered: Vec<String> = CODE_TOOLS
+        .iter()
+        .map(|t| t.to_string())
+        .chain(host.iter().cloned())
+        .collect();
+    // The inventory omp reports for such a session: no deferred tool in it.
+    assert!(inventory_fits(&offered, &host, &deferred, false));
+    // The exact check alone refuses it (the bug this guards against): it
+    // would need the deferred tools to be offered at the start.
+    let all: Vec<String> = host.iter().chain(&deferred).cloned().collect();
+    assert!(!inventory_matches_in(&offered, &all, false));
+    // A deferred tool that is already loaded is fine, too.
+    let mut loaded = offered.clone();
+    loaded.push("design_check".into());
+    assert!(inventory_fits(&loaded, &host, &deferred, false));
+    // A tool loaded at the start is still required.
+    assert!(!inventory_fits(&offered[1..], &host, &deferred, false));
+    let missing: Vec<String> = offered
+        .iter()
+        .filter(|t| *t != "finish_creation")
+        .cloned()
+        .collect();
+    assert!(!inventory_fits(&missing, &host, &deferred, false));
+    // A tool on neither list is refused, and so is a duplicate.
+    let mut extra = offered.clone();
+    extra.push("enola__explore".into());
+    assert!(!inventory_fits(&extra, &host, &deferred, false));
+    let mut duplicate = loaded.clone();
+    duplicate.push("design_check".into());
+    assert!(!inventory_fits(&duplicate, &host, &deferred, false));
+    // run_command must load at the start: deferred, it fails closed.
+    let start_only = vec!["finish_creation".to_string()];
+    let with_command: Vec<String> = deferred
+        .iter()
+        .cloned()
+        .chain([run_command.clone()])
+        .collect();
+    assert!(!inventory_fits(&offered, &start_only, &with_command, false));
+    // No tool that runs programs, under either list or offered.
+    for tool in OMP_EXECUTION_TOOLS {
+        let named: Vec<String> = deferred.iter().cloned().chain([tool.to_string()]).collect();
+        assert!(
+            !inventory_fits(&offered, &host, &named, false),
+            "{tool} registered as a deferred tool"
+        );
+        let mut with = offered.clone();
+        with.push(tool.to_string());
+        assert!(
+            !inventory_fits(&with, &host, &deferred, false),
+            "{tool} offered"
+        );
+    }
+    // A session that only reads: its deferred tools may be absent too.
+    let reading: Vec<String> = READ_TOOLS.iter().map(|t| t.to_string()).collect();
+    assert!(inventory_fits(&reading, &[], &deferred, true));
+    assert!(!inventory_fits(&reading, &[], &[run_command], true));
+}
+
 #[test]
 fn host_tools_are_allowed_without_omp_asking() {
     let overlay = host_tools_overlay_config(&["enola__explore".into(), "load_skill".into()]);

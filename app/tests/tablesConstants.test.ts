@@ -29,6 +29,9 @@ const SOURCES = [
   `${TABLES}prompt.rs`,
   `${TABLES}budget.rs`,
   `${TABLES}jobs.rs`,
+  // The table runner's lease and backoff ladder live in the scheduler engine.
+  '../../crates/shodh-rag/src/engine/lease.rs',
+  '../../crates/shodh-rag/src/engine/backoff.rs',
   '../src-tauri/src/table_commands.rs',
 ].map(source);
 

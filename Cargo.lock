@@ -10191,6 +10191,7 @@ dependencies = [
  "cfb 0.7.3",
  "chardetng",
  "chrono",
+ "chrono-tz",
  "csv",
  "dirs 5.0.1",
  "docling-core",

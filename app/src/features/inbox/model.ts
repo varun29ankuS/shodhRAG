@@ -16,7 +16,9 @@ export type InboxKind =
   | 'install'
   | 'connector'
   /** The user's chosen model keeps failing; Open goes to Settings → Model. */
-  | 'model';
+  | 'model'
+  /** Scheduled work that needs the user, e.g. a repeating task that stopped after failing. */
+  | 'automation';
 
 export interface InboxLink {
   /** A view id (`ask`, `library`, `tasks`, `settings`, ...). */
@@ -38,7 +40,7 @@ export interface InboxItem {
 }
 
 const STATUSES: readonly InboxStatus[] = ['working', 'needs_you', 'done', 'failed'];
-const KINDS: readonly InboxKind[] = ['approval', 'memory', 'reminder', 'indexing', 'tables', 'citation_graph', 'export', 'install', 'connector', 'model'];
+const KINDS: readonly InboxKind[] = ['approval', 'memory', 'reminder', 'indexing', 'tables', 'citation_graph', 'export', 'install', 'connector', 'model', 'automation'];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -93,11 +95,30 @@ export interface ItemActions {
   primary: PrimaryAction | null;
   /** D: Deny (an approval) or Dismiss (anything else that is not running). */
   secondary: SecondaryAction | null;
+  /** One-click answers: a repeating task's question, or Resume for one on hold. */
+  choices?: InboxChoice[];
 }
+
+/** The answers of a repeating task's question (`task_repeat_decide`), and Resume. */
+export type InboxChoice = 'make' | 'skip' | 'mark_done' | 'resume';
+
+export const CHOICE_LABEL: Record<InboxChoice, string> = {
+  make: 'Make the next one',
+  skip: 'Skip this one',
+  mark_done: 'Mark done',
+  resume: 'Resume',
+};
 
 /** What an item offers. Work still running has nothing to decide or dismiss. */
 export function actionsFor(item: Pick<InboxItem, 'kind' | 'status'> & { data?: Record<string, unknown> }): ItemActions {
   if (item.kind === 'approval') return { primary: 'approve', secondary: 'deny' };
+  // A repeating task's question is answered, never dismissed: the series waits on it.
+  if (item.kind === 'reminder' && item.status === 'needs_you' && Array.isArray(item.data?.choices)) {
+    return { primary: null, secondary: null, choices: ['make', 'skip', 'mark_done'] };
+  }
+  if (item.kind === 'automation' && item.data?.fix === 'resume') {
+    return { primary: null, secondary: null, choices: ['resume'] };
+  }
   if (item.kind === 'memory') return { primary: 'accept', secondary: 'dismiss' };
   if (item.kind === 'install' && item.status === 'needs_you' && item.data?.action === INSTALL_SCAN_READER) {
     return { primary: 'install', secondary: 'dismiss' };

@@ -42,6 +42,91 @@ The UI rules come from `docs/superpowers/specs/2026-11-23-ui-structure-audit.md`
 
 The branch is `feat/proactive-whats-new`, from `origin/master` `a1f6f145` (PR 1 #199 and PR 2 #202 merged). The next free migration is **20**. Open PRs #186 and #198 touch neither `audit/store.rs`, `folder_sync.rs`, `file_watcher.rs`, `engine_commands.rs`, `LibraryView.tsx` nor `agent_tools/mod.rs` (checked 2026-11-23).
 
+## Rulings and amendments (2026-11-23)
+
+These settle the open questions at the end of this plan. Where they differ from the plan, they override it.
+
+- **Q1:** the consent line is `CONSENT_TEMPLATE` in Global Constraints. It is one constant on each side, `whats_new::alerts::CONSENT_TEMPLATE` and `features/whatsNew/consent.ts` `CONSENT_TEMPLATE`. Tests on both sides pin the same literal for "linear attention KV cache".
+- **Q2, Q6, Q7, Q8, Q9:** as recommended:
+  - all three APIs, with no per-API switches;
+  - at most 10 alerts, with the per-API spacing and per-run limits as planned;
+  - the web-access switch also gates alerts;
+  - a rename is matched by size and modification time;
+  - the "N indexed" item is dropped when What's new covers the same files.
+- **Q3: topics are suggested from the library, as chips the user ticks.** This is the new Task 6b.
+- **Q4/Q5:** the first check runs immediately when the alert is turned on, over the last 14 days; after that, Mondays at 09:00. An Info item is posted only when something new was found. There are no desktop notifications.
+- **Q10:** Add to library stays in PR 3: open-access PDFs only, into a watched folder the user picks, refused in Local-only mode.
+- **D1–D16** are accepted.
+
+### Task 6b (new): Topic suggestions from the library
+
+**Files:**
+- Create: `crates/shodh-rag/src/whats_new/topics.rs`.
+- Modify:
+  - `crates/shodh-rag/src/research/citations/graph.rs`: `pub fn method_use_counts(&self) -> Vec<(&ConceptNode, usize)>`, the number of library papers that use each method;
+  - `app/src-tauri/src/whats_new.rs`: the command `paper_alert_suggestions`;
+  - `agent-coverage.json`: it maps to `whats_new`, whose report gains the suggestions;
+  - `api.ts`, and the alert dialog (Task 10b).
+- Test: the `topics.rs` tests over a fixture library (`whats_new/fixtures/topic-library.json`: titles and method counts).
+
+**What the library already has, and what is used.** Nothing here makes a model call or a network request, and the result is deterministic:
+- titles of library papers: `citation_scans` identities, else the file names of indexed PDFs with the extension and any arXiv id dropped;
+- method concepts of the paper graph, with how many library papers use each (only once the graph is built and results are accepted).
+
+**Interfaces:**
+```rust
+pub struct TopicInputs { pub titles: Vec<String>, pub methods: Vec<(String, usize)> }
+pub struct TopicSuggestion { pub words: String, pub from: TopicSource /* Titles | Method */, pub papers: usize }
+pub const MAX_SUGGESTIONS: usize = 8;
+pub fn suggest_topics(inputs: &TopicInputs, existing_alerts: &[String]) -> Vec<TopicSuggestion>;
+```
+
+**Ranking:**
+- **Phrases from titles.** A phrase is 2–3 consecutive words of one title, lower-cased by `relevance::words`.
+  - No stopword at either end, and no word shorter than 2 characters.
+  - A phrase's score is the number of distinct titles that contain it, and a phrase must reach at least 2.
+  - A phrase contained in a longer phrase with the same score is dropped.
+- **Method labels.** Each label scores `2 × papers` and is kept whole.
+- **Order:** by score (descending), then the number of words (descending), then alphabetically.
+- **Filtering:** phrases equal to an existing alert's words are dropped, ignoring case and spacing. At most `MAX_SUGGESTIONS` are returned.
+- **The empty library:** no titles and no methods gives `[]`.
+
+**UX (in the alert dialog):**
+- Under "Papers about", a row of chips, "Suggested from your library", shows each suggestion's exact words.
+- Ticking chips fills the words box with them, joined with " ", the exact text that will be sent. The box stays editable, and the user can also type a topic of their own.
+- The consent line always shows the box's text, and nothing is sent before **Turn on**.
+- With no suggestions, the chip row is absent and the box reads "Type a topic, e.g. linear attention".
+- Chip labels never wrap; past one row, chips scroll horizontally.
+
+**Tests:**
+- `suggestions_from_a_fixture_library_rank_by_shared_titles`: exact expected list.
+- `a_phrase_inside_a_longer_one_with_the_same_count_is_dropped`.
+- `methods_rank_above_single_title_phrases`.
+- `existing_alerts_are_not_suggested`.
+- `an_empty_library_suggests_nothing`.
+- `suggestions_are_deterministic`: shuffled inputs give an identical output.
+- `the_suggestions_command_sends_nothing` (app; the recording transport stays empty).
+- Frontend `ticking chips fills the words and the consent line shows them`.
+
+### The PR split
+
+The PR splits into two, opened one after the other. 3b is cut from 3a.
+
+- **PR 3a, folder What's new:**
+  - Tasks 1, 2, 4 and 5;
+  - Task 8 without Add to library:
+    - list, mark seen, dismiss, folder watch;
+    - the `whats_new` tool, `set_folder_watch` and navigation;
+    - `WhatsNewView` has `items` and `folders` only;
+  - Task 9 without the alert lines;
+  - Task 10 without the dialog or the alert rows ("+ Paper alert" is absent in 3a).
+- **PR 3b, paper alerts:**
+  - Tasks 3, 6, 6b and 7;
+  - Task 8's Add to library;
+  - Task 9's alert lines;
+  - Task 10's dialog (with the chips), alert rows, Local-only and failure states, and Resume.
+  - In 3b, `WhatsNewView` gains `alerts` and `blockedReason`.
+
 ## Global Constraints
 
 - **Builds and checks:**
@@ -69,7 +154,7 @@ The branch is `feat/proactive-whats-new`, from `origin/master` `a1f6f145` (PR 1 
 - **No foreign keys.** `shodh.db` never enables `PRAGMA foreign_keys`. Deleting a job deletes its feed rows in the same transaction.
 - **Background runs never move the screen and never call `notify`.** What's new is in-app only (Q4).
 - **Copy.** The exact strings below are pinned by tests:
-  - `CONSENT_TEMPLATE` (the spec's line, until Q1 is answered): `Once a week, Shodh will send the words “{words}” to arXiv, OpenAlex and Semantic Scholar. Nothing else leaves your computer.`
+  - `CONSENT_TEMPLATE` (ruled Q1): `Shodh sends these words: {words} to arXiv, OpenAlex and Semantic Scholar to look for new papers. Your files, your library and who you are stay on this computer.` `{words}` is the exact query sent, trimmed, with no quotes added.
   - `EMPTY_COPY`: `Nothing new yet. New files in your Library folders show up here. You can also turn on alerts for new papers on a topic.`
   - `LOCAL_ONLY_COPY`: `Paper alerts are paused: Local-only mode is on, so nothing leaves this computer.`
 
@@ -719,7 +804,7 @@ export const EMPTY_COPY: string; export const LOCAL_ONLY_COPY: string;
 
 **The consent flow** (`PaperAlertDialog`, from [+ Paper alert], Edit, or a suggestion the assistant made):
 1. "Papers about" `[ linear attention KV cache ]`. The words only; up to 200 characters.
-2. The consent line updates live, word for word: *Once a week, Shodh will send the words "linear attention KV cache" to arXiv, OpenAlex and Semantic Scholar. Nothing else leaves your computer.* (Q1)
+2. The consent line updates live, word for word: *Shodh sends these words: linear attention KV cache to arXiv, OpenAlex and Semantic Scholar to look for new papers. Your files, your library and who you are stay on this computer.* (Q1, ruled)
 3. One muted line: "The first check runs now. New papers show here and in your Inbox."
 4. **[Cancel] [Turn on]**. Turn on is disabled while the words are empty. Under Local-only the dialog shows `LOCAL_ONLY_COPY` in place of the buttons and offers [Open Privacy settings].
 5. Editing the words shows the consent line again and needs Turn on again. Switching an alert off and on needs no new consent, because the words did not change.

@@ -280,6 +280,10 @@ impl HostEffects for TauriEffects {
         }
     }
 
+    async fn task_repeats(&self) -> Option<std::sync::Arc<crate::task_repeat::Repeats>> {
+        crate::engine_commands::repeats(&self.app).await
+    }
+
     fn calendar_changed(&self, change: CalendarChange) {
         spawn_reindex(&self.app, &change);
         // Every task/event change (UI, agent tools, subtasks) goes through

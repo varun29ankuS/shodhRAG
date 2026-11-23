@@ -153,6 +153,10 @@ pub struct IndexJob {
 pub trait HostEffects: Send + Sync {
     /// A calendar record changed: re-index it and refresh open views.
     fn calendar_changed(&self, change: CalendarChange);
+    /// The repeating tasks (the scheduler engine), when the app database can be opened.
+    async fn task_repeats(&self) -> Option<Arc<crate::task_repeat::Repeats>> {
+        None
+    }
     /// Index a folder in the background and audit the outcome in `ctx`'s
     /// run scope.
     fn start_indexing(&self, ctx: &ToolContext, job: IndexJob);
@@ -373,6 +377,9 @@ pub(crate) mod testing {
         pub review_target: Mutex<Option<ReviewTarget>>,
         /// The ids of the design checks the assistant ran, as the pane keeps them.
         pub design_checks: Mutex<Vec<String>>,
+        /// Repeating tasks over this host's data folder, on a clock the test moves.
+        pub repeats: Arc<crate::task_repeat::Repeats>,
+        pub repeat_clock: Arc<crate::task_repeat::testing::TestClock>,
     }
 
     #[async_trait::async_trait]
@@ -420,6 +427,9 @@ pub(crate) mod testing {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .push(change);
+        }
+        async fn task_repeats(&self) -> Option<Arc<crate::task_repeat::Repeats>> {
+            Some(self.repeats.clone())
         }
         fn start_indexing(&self, _ctx: &ToolContext, job: IndexJob) {
             self.indexing
@@ -534,6 +544,13 @@ pub(crate) mod testing {
         let rag = RAGEngine::new(config).await.unwrap();
         let audit = Arc::new(AuditLog::open(dir.path().join("shodh.db"), None).unwrap());
         let memory = memory_state(dir.path(), Some(audit.clone())).await;
+        let repeat_clock = Arc::new(crate::task_repeat::testing::TestClock(Mutex::new(
+            crate::task_repeat::testing::local(2030, 1, 1, 10, 0),
+        )));
+        let repeats = Arc::new(crate::task_repeat::testing::repeats(
+            dir.path(),
+            repeat_clock.clone(),
+        ));
         let effects = Arc::new(Recorder {
             documents: dir.path().join("Documents"),
             calendar: Mutex::default(),
@@ -551,6 +568,8 @@ pub(crate) mod testing {
             reviews: Mutex::default(),
             review_target: Mutex::default(),
             design_checks: Mutex::default(),
+            repeats,
+            repeat_clock,
         });
         std::fs::create_dir_all(&effects.documents).unwrap();
         let roots = Arc::new(FixedRoots::default());

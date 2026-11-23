@@ -1178,6 +1178,55 @@ pub fn on_calendar_change(app: &tauri::AppHandle, change: &CalendarChange) {
     });
 }
 
+/// Repeating tasks for other modules' tests: over a temporary data folder, on a clock the
+/// test moves, telling nobody.
+#[cfg(test)]
+pub(crate) mod testing {
+    use super::*;
+    use shodh_rag::engine::clock::Clock;
+
+    pub struct TestClock(pub Mutex<DateTime<Utc>>);
+
+    impl TestClock {
+        pub fn set(&self, now: DateTime<Utc>) {
+            *self.0.lock().unwrap() = now;
+        }
+    }
+
+    impl Clock for TestClock {
+        fn now(&self) -> DateTime<Utc> {
+            *self.0.lock().unwrap()
+        }
+    }
+
+    struct QuietSink;
+
+    #[async_trait]
+    impl RepeatSink for QuietSink {
+        async fn calendar_changed(&self, _task: &TodoItem) {}
+        async fn post(&self, _item: NewInboxItem) {}
+        async fn resolve(&self, _id: &str) {}
+        fn ring(&self, _alert: &DueReminder) {}
+        fn changed(&self) {}
+    }
+
+    /// The instant of a local wall-clock time on this computer.
+    pub fn local(y: i32, m: u32, d: u32, h: u32, min: u32) -> DateTime<Utc> {
+        let naive = chrono::NaiveDate::from_ymd_opt(y, m, d)
+            .unwrap()
+            .and_hms_opt(h, min, 0)
+            .unwrap();
+        resolve_local(&Local, naive).unwrap()
+    }
+
+    /// Repeats over the task list and `shodh.db` of `dir`, on `clock`.
+    pub fn repeats(dir: &std::path::Path, clock: Arc<TestClock>) -> Repeats {
+        let store = Arc::new(EngineStore::open(&dir.join("shodh.db"), None).unwrap());
+        let engine = Arc::new(Engine::with_clock(store, clock, "agent-test"));
+        Repeats::new(engine, CalendarStore::in_dir(dir), Arc::new(QuietSink))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

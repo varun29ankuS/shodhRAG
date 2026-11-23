@@ -385,6 +385,27 @@ impl Core {
                 }
             }
         }
+        // Weak matches are kept as seen (dismissed, never listed), so a later check
+        // whose answers rank them higher does not offer them as new.
+        let mut weak = self.rows_of(job, &input.words, &found.weak);
+        for row in &mut weak {
+            row.data["weak"] = json!(true);
+        }
+        match self.feed.insert_if_absent(&weak, now) {
+            Ok(inserted) => {
+                for row in inserted {
+                    if let Err(e) = self.feed.set_dismissed(&row.id, true, now) {
+                        tracing::warn!(error = %e, "a weak match was not set aside");
+                    }
+                }
+            }
+            Err(e) => {
+                return Handled::Transient {
+                    code: "feed_unavailable".into(),
+                    detail: e.to_string(),
+                }
+            }
+        }
         let mut wait_secs: i64 = 3600;
         let mut all_offline = true;
         for (api, outcome) in &found.outcomes {
@@ -1218,13 +1239,22 @@ mod tests {
     #[async_trait]
     impl WhatsNewSink for Sink {
         async fn post(&self, item: NewInboxItem) {
-            self.posted.lock().unwrap().push(item);
+            self.posted
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(item);
         }
         async fn resolve(&self, id: &str) {
-            self.resolved.lock().unwrap().push(id.to_string());
+            self.resolved
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(id.to_string());
         }
         async fn resolve_prefixed(&self, _kind: InboxKind, prefix: &str) {
-            self.resolved.lock().unwrap().push(format!("{prefix}*"));
+            self.resolved
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(format!("{prefix}*"));
         }
         fn changed(&self) {}
     }
@@ -1267,10 +1297,15 @@ mod tests {
 
     impl Env {
         fn block(&self, reason: Option<&str>) {
-            *self.env.blocked.lock().unwrap() = reason.map(str::to_string);
+            *self.env.blocked.lock().unwrap_or_else(|e| e.into_inner()) =
+                reason.map(str::to_string);
         }
         fn posted(&self) -> Vec<NewInboxItem> {
-            self.sink.posted.lock().unwrap().clone()
+            self.sink
+                .posted
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
         }
         fn runs(&self, id: &str) -> Vec<Run> {
             self.store.runs(id, 50).unwrap()
@@ -1278,8 +1313,16 @@ mod tests {
         async fn tick(&self) {
             self.engine.tick(&self.alerts.handler()).await.unwrap();
         }
+        /// Papers found and listed (weak matches are kept as seen, not listed).
         fn papers(&self) -> usize {
-            self.alerts.core.feed.papers().unwrap().len()
+            self.alerts
+                .core
+                .feed
+                .papers()
+                .unwrap()
+                .iter()
+                .filter(|p| p.data.get("weak").is_none())
+                .count()
         }
     }
 
@@ -1324,7 +1367,14 @@ mod tests {
         let view = e.alerts.create(WORDS, CreatedBy::User).unwrap();
         e.block(Some(LOCAL_ONLY));
         e.alerts.check_now(&view.id).await.unwrap();
-        assert!(e.net.sent.lock().unwrap().is_empty(), "nothing was sent");
+        assert!(
+            e.net
+                .sent
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_empty(),
+            "nothing was sent"
+        );
         let runs = e.runs(&view.id);
         assert_eq!(runs[0].state, RunState::Skipped);
         assert_eq!(
@@ -1373,7 +1423,12 @@ mod tests {
                 .unwrap_err(),
             web_off
         );
-        assert!(e.net.sent.lock().unwrap().is_empty());
+        assert!(e
+            .net
+            .sent
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty());
     }
 
     #[tokio::test]
@@ -1558,7 +1613,12 @@ mod tests {
         assert_eq!(e.alerts.list().unwrap()[0].state, AlertState::Held);
         let resumed = e.alerts.update(&view.id, None, Some(true)).await.unwrap();
         assert_eq!(resumed.state, AlertState::Active);
-        assert!(e.sink.resolved.lock().unwrap().contains(&holds[0].id));
+        assert!(e
+            .sink
+            .resolved
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&holds[0].id));
     }
 
     #[tokio::test]
@@ -1570,7 +1630,11 @@ mod tests {
         e.clock.set(woke);
         e.tick().await;
         assert!(
-            e.net.sent.lock().unwrap().is_empty(),
+            e.net
+                .sent
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_empty(),
             "nothing sent the moment it woke"
         );
         let run = e.store.active_run(&view.id).unwrap().unwrap();
@@ -1626,7 +1690,7 @@ mod tests {
     #[tokio::test]
     async fn the_suggestions_command_sends_nothing() {
         let e = setup(monday());
-        *e.env.topics.lock().unwrap() = TopicInputs {
+        *e.env.topics.lock().unwrap_or_else(|e| e.into_inner()) = TopicInputs {
             titles: vec![
                 "Gated Linear Attention Transformers".into(),
                 "Linear Attention for Speech".into(),
@@ -1635,7 +1699,12 @@ mod tests {
         };
         let suggested = e.alerts.suggestions().await.unwrap();
         assert_eq!(suggested[0].words, "linear attention");
-        assert!(e.net.sent.lock().unwrap().is_empty());
+        assert!(e
+            .net
+            .sent
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty());
         // A topic already followed is not suggested.
         e.alerts
             .create("Linear Attention", CreatedBy::User)

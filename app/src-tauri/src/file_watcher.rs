@@ -235,12 +235,14 @@ impl FolderSyncState {
     /// Drops the manifest of `source_id`, a source the Library no longer
     /// lists. Waits for a running sync, which would otherwise write it back;
     /// a source listed and watched again meanwhile keeps its manifest.
-    pub async fn forget_source(&self, source_id: &str) {
+    /// Returns whether it was forgotten.
+    pub async fn forget_source(&self, source_id: &str) -> bool {
         let _turn = self.running.lock().await;
         if self.watched_ids().contains(source_id) {
-            return;
+            return false;
         }
         self.store.forget(source_id);
+        true
     }
 
     /// Removes the Library source `source_id` (the folder or file `path`):
@@ -960,7 +962,10 @@ pub async fn sync_folder_sources(
     for id in unlisted {
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
-            app.state::<FolderSyncState>().forget_source(&id).await;
+            if app.state::<FolderSyncState>().forget_source(&id).await {
+                // Its new files leave What's new with it, as on every other removal.
+                crate::whats_new::source_removed(&app, &id).await;
+            }
         });
     }
     // Once the folders are watched, so scans in them can go to their syncs.

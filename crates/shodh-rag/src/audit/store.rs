@@ -758,8 +758,9 @@ const MIGRATIONS: &[(i64, &str)] = &[
         // What's new (`crate::whats_new`): files new in a watched folder and papers a
         // paper alert found, one row each, never two for one file or paper (the unique
         // `(kind, source_ref)`). `job_id` is the engine job that found the row (a folder
-        // watch or a paper alert); deleting the job deletes its rows in the same
-        // transaction. `posted_run_id` is the run whose Inbox item told of the row.
+        // watch or a paper alert); deleting the job deletes its rows first, then the
+        // job (two writes: a crash between them leaves rows of no job, which the
+        // retention prunes). `posted_run_id` is the run whose Inbox item told of the row.
         // Rows are kept 90 days, dismissed ones too, so a dismissed paper is not found
         // again. Created only if absent, so the step can be applied again safely.
         "CREATE TABLE IF NOT EXISTS feed_item (

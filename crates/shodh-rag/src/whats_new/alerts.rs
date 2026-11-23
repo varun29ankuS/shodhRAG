@@ -29,8 +29,7 @@ pub const CONSENT_TEMPLATE: &str = "Shodh sends these words: {words} to arXiv, O
      on this computer.";
 /// Longest words an alert sends.
 pub const MAX_WORDS_CHARS: usize = 200;
-/// Most new papers one check keeps.
-pub const NEW_PAPERS_PER_RUN: usize = 10;
+
 /// How far back an alert's first check looks.
 pub const FIRST_WINDOW_DAYS: i64 = 14;
 /// Largest answer read from an API.
@@ -116,6 +115,10 @@ pub enum ApiOutcome {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AlertCheck {
     pub new: Vec<Paper>,
+    /// Papers the APIs answered that are not known yet and too weak a match to
+    /// show: kept as seen, so a later check (whose answers rank differently)
+    /// never offers them as new.
+    pub weak: Vec<Paper>,
     pub outcomes: BTreeMap<PaperApi, ApiOutcome>,
 }
 
@@ -210,6 +213,7 @@ pub async fn check_alert(
             }
             return AlertCheck {
                 new: Vec::new(),
+                weak: Vec::new(),
                 outcomes,
             };
         }
@@ -236,24 +240,39 @@ pub async fn check_alert(
             }
         }
     }
-    let fresh: Vec<_> = merge(lists)
-        .into_iter()
-        .filter(|m| !known.iter().any(|k| same_paper(k, &m.paper)))
-        .collect();
+    // Ranked over everything the APIs answered, then the known papers left out: a
+    // paper's relevance depends on the whole answer (the lexical score weighs terms
+    // by how rare they are in it), so ranking only what is left would let papers
+    // dropped as weak before pass now. Every relevant paper is kept, not only the
+    // best few: one left out would be "new" on the next check though it was there
+    // all along.
+    let merged = merge(lists);
+    let answered: Vec<Paper> = merged.iter().map(|m| m.paper.clone()).collect();
+    let limit = merged.len().max(1);
     let owned_query = query.to_string();
-    let fallback = fresh.clone();
+    let fallback = merged.clone();
     let ranked = tokio::task::spawn_blocking(move || {
-        rank_papers(&owned_query, fresh, scorer.as_ref(), NEW_PAPERS_PER_RUN)
+        rank_papers(&owned_query, merged, scorer.as_ref(), limit)
     })
     .await;
-    let new = match ranked {
+    let relevant = match ranked {
         Ok((papers, _, _)) => papers,
         Err(e) => {
             tracing::warn!(error = %e, "paper alert ranking failed; using keyword overlap");
-            rank_papers(query, fallback, None, NEW_PAPERS_PER_RUN).0
+            rank_papers(query, fallback, None, limit).0
         }
     };
-    AlertCheck { new, outcomes }
+    let is_known = |p: &Paper| known.iter().any(|k| same_paper(k, p));
+    let weak = answered
+        .into_iter()
+        .filter(|p| !relevant.iter().any(|r| same_paper(r, p)) && !is_known(p))
+        .collect();
+    let new = relevant.into_iter().filter(|p| !is_known(p)).collect();
+    AlertCheck {
+        new,
+        weak,
+        outcomes,
+    }
 }
 
 #[cfg(test)]
@@ -415,7 +434,7 @@ mod tests {
     async fn the_same_paper_from_three_apis_is_one() {
         let (found, _) = check(transport(&[]), &all(), &[]).await;
         assert!(!found.new.is_empty());
-        assert!(found.new.len() <= NEW_PAPERS_PER_RUN);
+
         for (i, a) in found.new.iter().enumerate() {
             for b in &found.new[i + 1..] {
                 assert!(
@@ -425,6 +444,41 @@ mod tests {
                     b.title
                 );
             }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_check_keeps_every_relevant_paper_so_the_same_answers_find_nothing_again() {
+        let (first, _) = check(transport(&[]), &all(), &[]).await;
+        assert!(!first.new.is_empty());
+        // The same answers again, with what the first check kept as known.
+        // What the first check kept: its new papers, and those it saw as weak.
+        let known: Vec<Paper> = first
+            .new
+            .iter()
+            .chain(&first.weak)
+            .map(|p| known_paper(&p.title, p.doi.as_deref(), p.arxiv_id.as_deref()))
+            .collect();
+        let (again, _) = check(transport(&[]), &all(), &known).await;
+        assert!(
+            again.new.is_empty(),
+            "every relevant paper was kept the first time: {:?}",
+            again.new.iter().map(|p| &p.title).collect::<Vec<_>>()
+        );
+        assert!(again.weak.is_empty());
+        // One API's answers alone rank differently; still nothing is new.
+        let only = BTreeSet::from([PaperApi::SemanticScholar]);
+        let (alone, _) = check(transport(&[]), &only, &known).await;
+        assert!(
+            alone.new.is_empty(),
+            "{:?}",
+            alone.new.iter().map(|p| &p.title).collect::<Vec<_>>()
+        );
+        for p in &first.weak {
+            assert!(
+                !first.new.iter().any(|n| same_paper(n, p)),
+                "weak and new are apart"
+            );
         }
     }
 

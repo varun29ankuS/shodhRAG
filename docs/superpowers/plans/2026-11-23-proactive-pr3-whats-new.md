@@ -152,7 +152,7 @@ The PR splits into two, opened one after the other. 3b is cut from 3a.
   - its `permissions/main-window.json` entry;
   - its `agent-coverage.json` entry;
   - a literal-string frontend use (`app/src/features/whatsNew/api.ts`).
-- **No foreign keys.** `shodh.db` never enables `PRAGMA foreign_keys`. Deleting a job deletes its feed rows in the same transaction.
+- **No foreign keys.** `shodh.db` never enables `PRAGMA foreign_keys`. Deleting a job deletes its feed rows too (the rows first, then the job: two writes, and a crash between them leaves rows the retention prunes).
 - **Background runs never move the screen and never call `notify`.** What's new is in-app only (Q4).
 - **Copy.** The exact strings below are pinned by tests:
   - `CONSENT_TEMPLATE` (ruled Q1): `Shodh sends these words: {words} to arXiv, OpenAlex and Semantic Scholar to look for new papers. Your files, your library and who you are stay on this computer.` `{words}` is the exact query sent, trimmed, with no quotes added.

@@ -106,8 +106,11 @@ pub struct SyncReport {
     /// Folders and files the sync could not read ([`FolderScan::unreadable`]):
     /// what the index holds of them was left as it was.
     pub unreadable: Vec<FileFailure>,
-    /// Files indexed for the first time in this sync, as spelled on disk, at
-    /// most [`MAX_ADDED`]: not changed files, not files that failed before,
+    /// Files indexed for the first time and not yet told of, as spelled on
+    /// disk, at most [`MAX_ADDED`]: those of this sync, and those of earlier
+    /// syncs whose report was never delivered (the app closed mid-sync, a
+    /// sync that failed after indexing, What's new unavailable): the
+    /// manifest keeps them until [`ManifestStore::acknowledge_added`]. Not changed files, not files that failed before,
     /// not files read again on request ([`ManifestStore::forget_file`]) and not
     /// renames (a file with the size and modification time of one removed in
     /// the same sync). A folder's first sync is a baseline and reports none,
@@ -485,6 +488,7 @@ struct ManifestRef<'a> {
     chunker_versions: &'a BTreeMap<String, u32>,
     added_baseline: bool,
     reread: &'a BTreeSet<String>,
+    pending_added: &'a [String],
 }
 
 /// A manifest saved before [`Manifest::added_baseline`] existed belongs to a
@@ -513,6 +517,10 @@ struct Manifest {
     /// ([`ManifestStore::forget_file`]): not new to the folder.
     #[serde(default)]
     reread: BTreeSet<String>,
+    /// Files indexed for the first time that no delivered report has told of
+    /// yet, as spelled on disk, in the order found.
+    #[serde(default)]
+    pending_added: Vec<String>,
 }
 
 impl Manifest {
@@ -524,6 +532,7 @@ impl Manifest {
             chunker_versions: &self.chunker_versions,
             added_baseline: self.added_baseline,
             reread: &self.reread,
+            pending_added: &self.pending_added,
         }
     }
 }
@@ -619,6 +628,22 @@ impl ManifestStore {
         manifest.reread.insert(key.to_string());
         self.save(source_id, &manifest.borrowed())?;
         Ok(true)
+    }
+
+    /// The first `count` files a delivered report of `source_id` told of as
+    /// added ([`SyncReport::added`] and [`SyncReport::added_more`]) are told:
+    /// the next sync no longer reports them. The caller keeps syncs of the
+    /// source from running meanwhile.
+    pub fn acknowledge_added(&self, source_id: &str, count: usize) -> Result<(), String> {
+        let Some(mut manifest) = self.load(source_id) else {
+            return Ok(());
+        };
+        if count == 0 || manifest.pending_added.is_empty() {
+            return Ok(());
+        }
+        let count = count.min(manifest.pending_added.len());
+        manifest.pending_added.drain(..count);
+        self.save(source_id, &manifest.borrowed())
     }
 
     /// The files outside the folder sources that could not be brought up to
@@ -818,6 +843,7 @@ pub(crate) struct FolderManifest<'a> {
     /// time has not had its baseline sync yet.
     added_baseline: bool,
     reread: BTreeSet<String>,
+    pending_added: Vec<String>,
 }
 
 impl FolderManifest<'_> {
@@ -853,6 +879,7 @@ impl FolderManifest<'_> {
                 chunker_versions: &self.chunker_versions,
                 added_baseline: self.added_baseline,
                 reread: &self.reread,
+                pending_added: &self.pending_added,
             },
         );
         if let Err(error) = saved {
@@ -982,7 +1009,7 @@ pub(crate) async fn adopt_indexed<'a>(
     // again), else what it owns in the index, now with the adopted files.
     // Files it owns without a recorded chunker version are looked at by its
     // next sync, which reads again those whose chunks are of an older one.
-    let (mut files, mut failures, mut chunker_versions, added_baseline, reread) =
+    let (mut files, mut failures, mut chunker_versions, added_baseline, reread, pending_added) =
         match manifests.remove(&ManifestStore::file_id(source_id)) {
             Some(own) => (
                 own.files,
@@ -990,6 +1017,7 @@ pub(crate) async fn adopt_indexed<'a>(
                 own.chunker_versions,
                 own.added_baseline,
                 own.reread,
+                own.pending_added,
             ),
             None => (
                 known_from_index(rag, source_id, &on_disk).await?,
@@ -997,6 +1025,7 @@ pub(crate) async fn adopt_indexed<'a>(
                 BTreeMap::new(),
                 false,
                 BTreeSet::new(),
+                Vec::new(),
             ),
         };
     for (key, stamp) in &adopted {
@@ -1014,6 +1043,7 @@ pub(crate) async fn adopt_indexed<'a>(
         chunker_versions,
         added_baseline,
         reread,
+        pending_added,
     };
     manifest.save();
 
@@ -1709,24 +1739,29 @@ async fn sync_folder_scanned(
     .await
     .map_err(|e| format!("Scanning {folder} failed: {e}"))?;
     let on_disk = &scanned.files;
-    let (known, mut failures, mut versions, reports_added, mut reread) = match store.load(source_id)
-    {
-        Some(manifest) => (
-            manifest.files,
-            manifest.failures,
-            manifest.chunker_versions,
-            manifest.added_baseline,
-            manifest.reread,
-        ),
-        // No manifest: this sync is the folder's baseline.
-        None => (
-            known_from_index(rag, source_id, on_disk).await?,
-            BTreeMap::new(),
-            BTreeMap::new(),
-            false,
-            BTreeSet::new(),
-        ),
-    };
+    let (known, mut failures, mut versions, reports_added, mut reread, mut pending) =
+        match store.load(source_id) {
+            Some(manifest) => (
+                manifest.files,
+                manifest.failures,
+                manifest.chunker_versions,
+                manifest.added_baseline,
+                manifest.reread,
+                manifest.pending_added,
+            ),
+            // No manifest: this sync is the folder's baseline.
+            None => (
+                known_from_index(rag, source_id, on_disk).await?,
+                BTreeMap::new(),
+                BTreeMap::new(),
+                false,
+                BTreeSet::new(),
+                Vec::new(),
+            ),
+        };
+    // Files found by an earlier sync whose report was not delivered, still on
+    // disk.
+    pending.retain(|path| on_disk.contains_key(&normalize_source_path(Path::new(path))));
     // Files the folder did not have before this sync: never indexed, never
     // failed, not dropped to be read again.
     let new_keys: BTreeSet<String> = if reports_added {
@@ -1831,6 +1866,7 @@ async fn sync_folder_scanned(
                 failures: &BTreeMap<String, FileFailure>,
                 versions: &BTreeMap<String, u32>,
                 reread: &BTreeSet<String>,
+                pending: &[String],
                 added_baseline: bool| {
         store.save(
             source_id,
@@ -1841,6 +1877,7 @@ async fn sync_folder_scanned(
                 chunker_versions: versions,
                 added_baseline,
                 reread,
+                pending_added: pending,
             },
         )
     };
@@ -1860,7 +1897,14 @@ async fn sync_folder_scanned(
         if deleted > 0 {
             report.removed += 1;
         }
-        save(&files, &failures, &versions, &reread, reports_added)?;
+        save(
+            &files,
+            &failures,
+            &versions,
+            &reread,
+            &pending,
+            reports_added,
+        )?;
     }
     let heal_total = heal.len();
     let mut heal_done = 0;
@@ -1910,10 +1954,12 @@ async fn sync_folder_scanned(
                         Some(at) => {
                             removed_stamps.swap_remove(at);
                         }
-                        None if report.added.len() < MAX_ADDED => {
-                            report.added.push(path.display().to_string());
+                        None => {
+                            let shown = path.display().to_string();
+                            if !pending.contains(&shown) {
+                                pending.push(shown);
+                            }
                         }
-                        None => report.added_more += 1,
                     }
                 }
             }
@@ -1943,19 +1989,29 @@ async fn sync_folder_scanned(
         if let Some((_, stamp)) = on_disk.get(&key) {
             files.insert(key, *stamp);
         }
-        save(&files, &failures, &versions, &reread, reports_added)?;
+        save(
+            &files,
+            &failures,
+            &versions,
+            &reread,
+            &pending,
+            reports_added,
+        )?;
         if healing {
             heal_done += 1;
             progress(heal_done, heal_total);
         }
     }
     report.failures = failures.values().cloned().collect();
+    report.added = pending.iter().take(MAX_ADDED).cloned().collect();
+    report.added_more = pending.len().saturating_sub(MAX_ADDED);
     // A sync that went through to the end has done the folder's baseline.
     save(
         &files,
         &failures,
         &versions,
         &reread,
+        &pending,
         reports_added || !stopped,
     )?;
     if report.indexed + report.removed + report.scans_kept > 0 || !report.unreadable.is_empty() {
@@ -2104,6 +2160,7 @@ mod tests {
                         chunker_versions: &BTreeMap::new(),
                         added_baseline: true,
                         reread: &BTreeSet::new(),
+                        pending_added: &[],
                     },
                 )
                 .unwrap();
@@ -2511,6 +2568,10 @@ mod tests {
         assert_eq!(second.added.len(), 1, "{second:?}");
         assert!(second.added[0].ends_with("rules.txt"), "{second:?}");
         assert_eq!(second.added_more, 0);
+        // Told: the next sync does not report it again.
+        store
+            .acknowledge_added("s1", second.added.len() + second.added_more)
+            .expect("acknowledged");
         assert_eq!(
             indexed(&rag, "s1").await.keys().collect::<Vec<_>>(),
             ["garage.md", "lease.txt", "rules.txt"]
@@ -2728,6 +2789,91 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn new_files_of_a_sync_stopped_mid_way_are_reported_by_the_next() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let rag = engine(dir.path()).await;
+        let store = ManifestStore::in_dir(dir.path().join("sync"));
+        let folder = dir.path().join("docs");
+        std::fs::create_dir_all(&folder).expect("folder");
+        std::fs::write(folder.join("first.txt"), PASSAGE).expect("file");
+        let folder_text = folder.display().to_string();
+        sync_folder(&folder_text, "s1", &store, &rag, || false)
+            .await
+            .expect("baseline");
+
+        for i in 0..50 {
+            std::fs::write(folder.join(format!("new-{i:02}.txt")), PASSAGE).expect("file");
+        }
+        // Killed after 20 files: its report is never delivered.
+        let asked = std::sync::atomic::AtomicUsize::new(0);
+        let stop_after_twenty = || asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 20;
+        let killed = sync_folder(&folder_text, "s1", &store, &rag, stop_after_twenty)
+            .await
+            .expect("sync");
+        assert_eq!(killed.indexed, 20);
+        let next = sync_folder(&folder_text, "s1", &store, &rag, || false)
+            .await
+            .expect("sync");
+        assert_eq!(next.indexed, 30);
+        assert_eq!(
+            next.added.len(),
+            50,
+            "the 20 of the killed sync and the 30 of this one"
+        );
+        let names: BTreeSet<String> = next
+            .added
+            .iter()
+            .map(|p| {
+                Path::new(p)
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert_eq!(names.len(), 50);
+        // Delivered and told: nothing is reported again, and new files after it are.
+        store
+            .acknowledge_added("s1", next.added.len() + next.added_more)
+            .expect("acknowledged");
+        let quiet = sync_folder(&folder_text, "s1", &store, &rag, || false)
+            .await
+            .expect("sync");
+        assert!(quiet.added.is_empty(), "{quiet:?}");
+        std::fs::write(folder.join("later.txt"), PASSAGE).expect("file");
+        let later = sync_folder(&folder_text, "s1", &store, &rag, || false)
+            .await
+            .expect("sync");
+        assert_eq!(later.added.len(), 1);
+        assert!(later.added[0].ends_with("later.txt"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_reported_file_deleted_before_it_was_told_is_dropped() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let rag = engine(dir.path()).await;
+        let store = ManifestStore::in_dir(dir.path().join("sync"));
+        let folder = dir.path().join("docs");
+        std::fs::create_dir_all(&folder).expect("folder");
+        std::fs::write(folder.join("first.txt"), PASSAGE).expect("file");
+        let folder_text = folder.display().to_string();
+        sync_folder(&folder_text, "s1", &store, &rag, || false)
+            .await
+            .expect("baseline");
+        std::fs::write(folder.join("brief.txt"), PASSAGE).expect("file");
+        let found = sync_folder(&folder_text, "s1", &store, &rag, || false)
+            .await
+            .expect("sync");
+        assert_eq!(found.added.len(), 1);
+        // Not delivered, and the file is gone before the next sync.
+        std::fs::remove_file(folder.join("brief.txt")).expect("delete");
+        let after = sync_folder(&folder_text, "s1", &store, &rag, || false)
+            .await
+            .expect("sync");
+        assert!(after.added.is_empty(), "{after:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_file_that_failed_before_is_not_new() {
         let dir = tempfile::tempdir().expect("temp dir");
         let rag = engine(dir.path()).await;
@@ -2922,6 +3068,7 @@ mod tests {
                     chunker_versions: &BTreeMap::new(),
                     added_baseline: true,
                     reread: &BTreeSet::new(),
+                    pending_added: &[],
                 },
             )
             .expect("manifest");
@@ -3418,6 +3565,7 @@ mod tests {
                     chunker_versions: &versions,
                     added_baseline: true,
                     reread: &BTreeSet::new(),
+                    pending_added: &[],
                 },
             )
             .expect("manifest");
@@ -4256,6 +4404,7 @@ mod tests {
                     chunker_versions: &BTreeMap::new(),
                     added_baseline: true,
                     reread: &BTreeSet::new(),
+                    pending_added: &[],
                 },
             )
             .expect("manifest");

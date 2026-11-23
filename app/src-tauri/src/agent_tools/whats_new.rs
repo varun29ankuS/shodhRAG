@@ -200,18 +200,26 @@ impl SetFolderWatchTool {
             .and_then(Value::as_bool)
             .ok_or_else(|| invalid(tool, "`on` (true or false) is required"))?;
         let folders = self.host.effects.watched_folders();
-        let found = folders.iter().find(|(id, folder)| {
-            id == source
-                || crate::whats_new::folder_name(folder).eq_ignore_ascii_case(source)
-                || folder.eq_ignore_ascii_case(source)
-        });
-        match found {
-            Some((id, folder)) => Ok((id.clone(), folder.clone(), on)),
-            None => {
-                let names: Vec<String> = folders
-                    .iter()
-                    .map(|(id, f)| format!("{} ({id})", crate::whats_new::folder_name(f)))
-                    .collect();
+        let describe = |(id, f): &(String, String)| {
+            format!("{} ({id}: {f})", crate::whats_new::folder_name(f))
+        };
+        // A source id names one folder; a name or path may name several.
+        let by_id: Vec<&(String, String)> = folders.iter().filter(|(id, _)| id == source).collect();
+        let found: Vec<&(String, String)> = if by_id.is_empty() {
+            folders
+                .iter()
+                .filter(|(_, folder)| {
+                    crate::whats_new::folder_name(folder).eq_ignore_ascii_case(source)
+                        || folder.eq_ignore_ascii_case(source)
+                })
+                .collect()
+        } else {
+            by_id
+        };
+        match found.as_slice() {
+            [(id, folder)] => Ok((id.clone(), folder.clone(), on)),
+            [] => {
+                let names: Vec<String> = folders.iter().map(describe).collect();
                 Err(ToolError::NotFound(if names.is_empty() {
                     format!("No watched folder named {source}: the Library watches none now.")
                 } else {
@@ -220,6 +228,16 @@ impl SetFolderWatchTool {
                         names.join(", ")
                     )
                 }))
+            }
+            several => {
+                let names: Vec<String> = several.iter().map(|f| describe(f)).collect();
+                Err(invalid(
+                    tool,
+                    format!(
+                        "{source} names more than one watched folder: {}. Give its source id.",
+                        names.join(", ")
+                    ),
+                ))
             }
         }
     }
@@ -495,10 +513,10 @@ impl HostTool for DeletePaperAlertTool {
     }
 }
 
+/// The approval label names the full folder, so two folders of one name are told apart.
 fn switch_label(folder: &str, on: bool) -> String {
     format!(
-        "Show new files in {} in What's new: {}",
-        crate::whats_new::folder_name(folder),
+        "Show new files in {folder} in What's new: {}",
         if on { "on" } else { "off" }
     )
 }
@@ -755,7 +773,11 @@ mod tests {
                 shodh_rag::engine::store::CreatedBy::User,
             )
             .unwrap();
-        *t.effects.alert_env.blocked.lock().unwrap() = Some(LOCAL_ONLY.into());
+        *t.effects
+            .alert_env
+            .blocked
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(LOCAL_ONLY.into());
         let create = CreatePaperAlertTool {
             host: t.host.clone(),
         };
@@ -791,7 +813,11 @@ mod tests {
                 shodh_rag::engine::store::CreatedBy::User,
             )
             .unwrap();
-        *t.effects.alert_env.topics.lock().unwrap() = shodh_rag::whats_new::topics::TopicInputs {
+        *t.effects
+            .alert_env
+            .topics
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = shodh_rag::whats_new::topics::TopicInputs {
             titles: vec![
                 "Structured State Space Models".into(),
                 "Efficient State Space Models".into(),
@@ -828,8 +854,11 @@ mod tests {
         let args = json!({ "source": "research papers", "on": false });
         let preview = tool.preview(&args).await.unwrap();
         assert_eq!(
-            preview.label.as_deref(),
-            Some("Show new files in Research Papers in What's new: off")
+            preview.label,
+            Some(format!(
+                "Show new files in {} in What's new: off",
+                folder.display()
+            ))
         );
         let (ctx, mut rx) = ctx();
         let out = tool.execute(args, &ctx).await.unwrap();
@@ -848,8 +877,44 @@ mod tests {
             .await
             .unwrap_err();
         match err {
-            ToolError::NotFound(message) => assert!(message.contains("Research Papers (s1)")),
+            ToolError::NotFound(message) => assert!(message.contains("Research Papers (s1: ")),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn set_folder_watch_refuses_a_name_two_folders_share() {
+        let t = testing::host().await;
+        let first = t.dir.path().join("a").join("Papers");
+        let second = t.dir.path().join("b").join("Papers");
+        watch(&t, "s1", &first);
+        watch(&t, "s2", &second);
+        let tool = SetFolderWatchTool {
+            host: t.host.clone(),
+        };
+        let err = tool
+            .preview(&json!({ "source": "papers", "on": false }))
+            .await
+            .unwrap_err();
+        match err {
+            ToolError::InvalidArguments { reasons, .. } => {
+                assert!(
+                    reasons.contains("more than one watched folder"),
+                    "{reasons}"
+                );
+                assert!(reasons.contains(&first.display().to_string()), "{reasons}");
+                assert!(reasons.contains(&second.display().to_string()), "{reasons}");
+            }
+            other => panic!("{other:?}"),
+        }
+        // Its source id names one.
+        let preview = tool
+            .preview(&json!({ "source": "s2", "on": false }))
+            .await
+            .unwrap();
+        assert!(preview
+            .label
+            .unwrap()
+            .contains(&second.display().to_string()));
     }
 }

@@ -36,6 +36,7 @@ import {
   rowsOf,
   savedPathOf,
   sectionState,
+  renderedIds,
   unseenIds,
   watchLine,
 } from './model';
@@ -99,10 +100,17 @@ export function WhatsNewSection() {
   const folders = view?.folders ?? [];
   const alerts = view?.alerts ?? [];
   const blocked = blockedCopy(view?.blockedReason ?? null);
-  const buckets = useMemo(() => rowsOf(items, new Date()), [items]);
+  const buckets = useMemo(() => {
+    const more = new Map(folders.map(f => [f.sourceId, f.moreByDay]));
+    return rowsOf(items, new Date(), (sourceId, day) => more.get(sourceId)?.[day] ?? 0);
+  }, [items, folders]);
   const total = rowCount(buckets);
   const shown = showAll ? buckets : firstRows(buckets, VISIBLE_ROWS);
-  const unseen = useMemo(() => unseenIds(items), [items]);
+  // Only what is on screen counts as seen: the rows shown, and a busy day once expanded.
+  const unseen = useMemo(() => {
+    const onScreen = new Set(renderedIds(shown, expanded));
+    return unseenIds(items).filter(id => onScreen.has(id));
+  }, [items, shown, expanded]);
 
   // Rows count as seen once the section has been on screen for a moment.
   useEffect(() => {

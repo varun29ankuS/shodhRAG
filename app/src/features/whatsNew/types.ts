@@ -24,7 +24,7 @@ export interface FeedItem {
   dismissedAt: string | null;
   link: unknown;
   /**
-   * A file: `{ sourceId, path, folder, more? }`. A paper: `{ doi, arxivId, year, authors,
+   * A file: `{ sourceId, path, folder }`. A paper: `{ doi, arxivId, year, authors,
    * venue, abstract, pdfUrl, landingUrl, sources, alertId, words, addedPath? }`.
    */
   data: Record<string, unknown>;
@@ -37,6 +37,8 @@ export interface FolderWatchView {
   on: boolean;
   /** Stopped after failing again and again; Resume turns it on again. */
   held: boolean;
+  /** Files found beyond the listed ones, by local day (`yyyy-mm-dd`). */
+  moreByDay: Record<string, number>;
 }
 
 export type AlertState = 'checking' | 'waiting_retry' | 'offline' | 'active' | 'off' | 'held' | 'blocked';

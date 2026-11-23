@@ -17,6 +17,7 @@
 //!   runs in a row the folder's job is put on hold with an Attention item (its fix:
 //!   Resume, which turns the folder's watch on again).
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -32,7 +33,9 @@ use shodh_rag::engine::store::{
 use shodh_rag::folder_sync::SyncReport;
 use shodh_rag::inbox::{InboxKind, InboxLink, InboxStatus, NewInboxItem};
 use shodh_rag::rag_engine::normalize_source_path;
-use shodh_rag::whats_new::store::{FeedItem, FeedKind, FeedStore, NewFeedItem};
+use shodh_rag::whats_new::store::{
+    FeedItem, FeedKind, FeedStore, NewFeedItem, FEED_RETENTION_DAYS,
+};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::file_watcher::{FolderSourceRef, FolderSyncState};
@@ -124,6 +127,32 @@ fn source_of(job: &Job) -> &str {
     &job.subject
 }
 
+/// A folder watch's count of files found beyond the sync's list
+/// ([`shodh_rag::folder_sync::SyncReport::added_more`]): kept on the job, by local day,
+/// so no row being a duplicate or dismissed can lose it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MoreCount {
+    /// Files beyond the list, by local day (`yyyy-mm-dd`).
+    #[serde(default)]
+    by_day: BTreeMap<String, u64>,
+    /// Of them, those no Inbox item has told of yet.
+    #[serde(default)]
+    untold: u64,
+}
+
+fn more_of(job: &Job) -> MoreCount {
+    job.input
+        .get("more")
+        .cloned()
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default()
+}
+
+fn local_day(at: DateTime<Utc>) -> String {
+    at.with_timezone(&Local).format("%Y-%m-%d").to_string()
+}
+
 fn folder_of(job: &Job) -> String {
     job.input
         .get("folder")
@@ -141,6 +170,8 @@ pub struct FolderWatchView {
     pub on: bool,
     /// Its job is on hold after failing again and again.
     pub held: bool,
+    /// Files found beyond the listed ones, by local day (`yyyy-mm-dd`).
+    pub more_by_day: BTreeMap<String, u64>,
 }
 
 /// What the What's new section shows.
@@ -166,6 +197,22 @@ impl Folders {
         self.engine.store()
     }
 
+    fn save_more(&self, job: &Job, more: &MoreCount) -> Result<(), String> {
+        let mut input = job.input.clone();
+        input["more"] = serde_json::to_value(more).map_err(|e| e.to_string())?;
+        self.store()
+            .update_job(
+                &job.id,
+                &JobPatch {
+                    input: Some(input),
+                    ..JobPatch::default()
+                },
+                self.engine.now(),
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     /// Posts the folder's item of the day for what `job` has not told of yet.
     async fn post_digest(&self, job: &Job, run: &Run) -> Handled {
         let transient = |e: String| Handled::Transient {
@@ -176,7 +223,8 @@ impl Folders {
             Ok(rows) => rows,
             Err(e) => return transient(e.to_string()),
         };
-        if unposted.is_empty() {
+        let mut more = more_of(job);
+        if unposted.is_empty() && more.untold == 0 {
             return Handled::Nothing;
         }
         let now = self.engine.now();
@@ -190,12 +238,10 @@ impl Folders {
                 rows.push(row.clone());
             }
         }
-        let more: usize = rows
-            .iter()
-            .filter_map(|r| r.data.get("more").and_then(Value::as_u64))
-            .map(|n| usize::try_from(n).unwrap_or(usize::MAX))
-            .sum();
-        let count = rows.len().saturating_add(more);
+        let more_today = more.by_day.get(&local_day(now)).copied().unwrap_or(0);
+        let count = rows
+            .len()
+            .saturating_add(usize::try_from(more_today.max(more.untold)).unwrap_or(usize::MAX));
         let names: Vec<String> = rows.iter().map(|r| r.title.clone()).collect();
         let folder = folder_of(job);
         let title = digest_title(count, &folder);
@@ -222,6 +268,12 @@ impl Folders {
         let ids: Vec<String> = unposted.iter().map(|r| r.id.clone()).collect();
         if let Err(e) = self.feed.mark_posted(&ids, &run.id) {
             return transient(e.to_string());
+        }
+        if more.untold > 0 {
+            more.untold = 0;
+            if let Err(e) = self.save_more(job, &more) {
+                return transient(e);
+            }
         }
         self.sink.changed();
         Handled::Succeeded {
@@ -335,8 +387,9 @@ impl WhatsNew {
 
     /// A sync of the folder `folder` (source `source_id`) indexed `added` for the first
     /// time (and `added_more` beyond them). Records them, unless the folder's watch is
-    /// off, and starts its run. Returns whether What's new shows the folder's new files
-    /// (then its item stands for the sync's "indexed" one).
+    /// off, and starts its run. Returns whether What's new shows anything new of them
+    /// (then its item stands for the sync's "indexed" one): a file already in the feed
+    /// (found before, within the retention, and not removed with its folder) is not new.
     pub async fn files_added(
         &self,
         source_id: &str,
@@ -344,8 +397,8 @@ impl WhatsNew {
         added: &[String],
         added_more: usize,
     ) -> Result<bool, String> {
-        if added.is_empty() {
-            return self.is_on(source_id);
+        if added.is_empty() && added_more == 0 {
+            return Ok(false);
         }
         let job = match self.job_of(source_id)? {
             Some(job) if !job.enabled => return Ok(false),
@@ -367,18 +420,13 @@ impl WhatsNew {
             .iter()
             .filter(|p| !saved.contains(&normalize_source_path(Path::new(p.as_str()))))
             .collect();
-        if added.is_empty() {
-            return Ok(true);
+        if added.is_empty() && added_more == 0 {
+            return Ok(false);
         }
-        let last = added.len() - 1;
         let rows: Vec<NewFeedItem> = added
             .iter()
-            .enumerate()
-            .map(|(i, path)| {
-                let mut data = json!({ "sourceId": source_id, "path": path, "folder": name });
-                if i == last && added_more > 0 {
-                    data["more"] = json!(added_more);
-                }
+            .map(|path| {
+                let data = json!({ "sourceId": source_id, "path": path, "folder": name });
                 NewFeedItem {
                     kind: FeedKind::File,
                     source_ref: normalize_source_path(Path::new(path)),
@@ -395,15 +443,27 @@ impl WhatsNew {
             .feed
             .insert_if_absent(&rows, self.folders.engine.now())
             .map_err(|e| e.to_string())?;
-        if !inserted.is_empty() {
-            self.folders.sink.changed();
-            self.folders
-                .engine
-                .event(&self.handler, &job.id)
-                .await
-                .map_err(|e| e.to_string())?;
+        if added_more > 0 {
+            let now = self.folders.engine.now();
+            let mut more = more_of(&job);
+            let day = local_day(now);
+            let more_n = u64::try_from(added_more).unwrap_or(u64::MAX);
+            *more.by_day.entry(day).or_default() += more_n;
+            more.untold = more.untold.saturating_add(more_n);
+            // Only the retention's days are kept.
+            let oldest = local_day(now - chrono::TimeDelta::days(FEED_RETENTION_DAYS));
+            more.by_day.retain(|day, _| *day >= oldest);
+            self.folders.save_more(&job, &more)?;
         }
-        Ok(true)
+        let shown = !inserted.is_empty() || added_more > 0;
+        if shown {
+            self.folders.sink.changed();
+            // The rows are kept: a run that cannot start now is started at launch.
+            if let Err(e) = self.folders.engine.event(&self.handler, &job.id).await {
+                tracing::warn!(job = %job.id, error = %e, "What's new: the folder's item was not posted yet");
+            }
+        }
+        Ok(shown)
     }
 
     /// The folder `source_id` left the Library: its job, its rows and its items go.
@@ -449,6 +509,7 @@ impl WhatsNew {
                     folder: folder_name(folder),
                     on: true,
                     held: false,
+                    more_by_day: BTreeMap::new(),
                 })
             }
             None => self.create_job(source_id, folder)?,
@@ -474,7 +535,7 @@ impl WhatsNew {
                 .feed
                 .unposted(&job.id)
                 .map_err(|e| e.to_string())?;
-            if !pending.is_empty() {
+            if !pending.is_empty() || more_of(&job).untold > 0 {
                 self.folders
                     .engine
                     .event(&self.handler, &job.id)
@@ -488,6 +549,7 @@ impl WhatsNew {
             folder: folder_name(folder),
             on: job.enabled,
             held: job.hold_reason.is_some(),
+            more_by_day: more_of(&job).by_day,
         })
     }
 
@@ -501,7 +563,8 @@ impl WhatsNew {
                     source_id: source_id.clone(),
                     folder: folder_name(folder),
                     on: job.as_ref().is_none_or(|j| j.enabled),
-                    held: job.is_some_and(|j| j.hold_reason.is_some()),
+                    held: job.as_ref().is_some_and(|j| j.hold_reason.is_some()),
+                    more_by_day: job.map(|j| more_of(&j).by_day).unwrap_or_default(),
                 })
             })
             .collect()
@@ -569,7 +632,7 @@ impl WhatsNew {
         };
         for job in jobs {
             let pending = self.folders.feed.unposted(&job.id).unwrap_or_default();
-            if pending.is_empty() {
+            if pending.is_empty() && more_of(&job).untold == 0 {
                 continue;
             }
             if let Err(e) = self.folders.engine.event(&self.handler, &job.id).await {
@@ -617,7 +680,19 @@ pub async fn sync_reported(app: &AppHandle, source: &FolderSourceRef, report: &S
         .files_added(&source.id, &source.path, &report.added, report.added_more)
         .await
     {
-        Ok(shown) => shown,
+        Ok(shown) => {
+            // Delivered: the folder's next sync no longer reports them. Until then
+            // (What's new unavailable, or failing) they stay in the manifest.
+            let told = report.added.len() + report.added_more;
+            if let Err(e) = app
+                .state::<FolderSyncState>()
+                .store()
+                .acknowledge_added(&source.id, told)
+            {
+                tracing::warn!(source_id = %source.id, error = %e, "new files told, but not marked as told");
+            }
+            shown
+        }
         Err(e) => {
             tracing::warn!(source_id = %source.id, error = %e, "new files not added to What's new");
             false
@@ -741,6 +816,8 @@ mod tests {
     struct Sink {
         posted: Mutex<Vec<NewInboxItem>>,
         resolved: Mutex<Vec<String>>,
+        /// The next post is the last thing the run does (it panics after it).
+        crash_after_post: std::sync::atomic::AtomicBool,
     }
 
     #[async_trait]
@@ -750,6 +827,12 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .push(item);
+            if self
+                .crash_after_post
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                panic!("Shodh stopped after posting");
+            }
         }
         async fn resolve(&self, id: &str) {
             self.resolved
@@ -928,17 +1011,55 @@ mod tests {
     async fn a_second_report_of_the_same_file_adds_nothing() {
         let e = env(local(2026, 11, 23, 9, 0));
         let files = [e.file("a.pdf")];
-        e.whats_new
+        assert!(e
+            .whats_new
             .files_added("s1", &e.folder(), &files, 0)
             .await
-            .unwrap();
-        e.whats_new
+            .unwrap());
+        // Found again: nothing is new, so the sync's own notice stands.
+        assert!(!e
+            .whats_new
             .files_added("s1", &e.folder(), &files, 0)
             .await
-            .unwrap();
+            .unwrap());
         assert_eq!(e.whats_new.items().unwrap().len(), 1);
         assert_eq!(e.posted().len(), 1);
         assert_eq!(e.runs().len(), 1, "no run row for nothing new");
+    }
+
+    #[tokio::test]
+    async fn a_file_restored_after_deletion_is_new_only_once_its_row_is_gone() {
+        let e = env(local(2026, 11, 23, 9, 0));
+        let path = e.file("a.pdf");
+        assert!(e
+            .whats_new
+            .files_added("s1", &e.folder(), &[path.clone()], 0)
+            .await
+            .unwrap());
+        // Deleted and put back within the retention: its row is still there.
+        std::fs::remove_file(&path).unwrap();
+        let path = e.file("a.pdf");
+        assert!(!e
+            .whats_new
+            .files_added("s1", &e.folder(), &[path.clone()], 0)
+            .await
+            .unwrap());
+        // Past the retention its row was pruned: restored, it is new again.
+        e.feed
+            .prune(e.clock.now() + chrono::TimeDelta::days(FEED_RETENTION_DAYS + 1))
+            .unwrap();
+        assert!(e
+            .whats_new
+            .files_added("s1", &e.folder(), &[path.clone()], 0)
+            .await
+            .unwrap());
+        // Removed with its folder, its row went too: added back, it is new.
+        e.whats_new.source_removed("s1").await.unwrap();
+        assert!(e
+            .whats_new
+            .files_added("s1", &e.folder(), &[path], 0)
+            .await
+            .unwrap());
     }
 
     #[tokio::test]
@@ -954,10 +1075,71 @@ mod tests {
             e.posted()[0].detail.as_deref(),
             Some("a.pdf, b.pdf and 36 more")
         );
+        // The count beyond the list is the job's, not a row's: a dismissed or
+        // duplicate row loses none of it.
+        let a = e
+            .whats_new
+            .items()
+            .unwrap()
+            .into_iter()
+            .find(|r| r.title == "a.pdf")
+            .unwrap();
+        assert!(e.whats_new.dismiss(&a.id, false).unwrap());
+        assert!(!e
+            .whats_new
+            .files_added("s1", &e.folder(), &[files[0].clone()], 0)
+            .await
+            .unwrap());
+        e.whats_new
+            .files_added("s1", &e.folder(), &[e.file("c.pdf")], 4)
+            .await
+            .unwrap();
+        let last = e.posted().pop().unwrap();
+        assert_eq!(
+            last.title, "42 new files in Research Papers",
+            "b and c, and 40 more"
+        );
+        let views = e.whats_new.folders(&[("s1".into(), e.folder())]).unwrap();
+        assert_eq!(views[0].more_by_day.values().sum::<u64>(), 40);
+    }
+
+    #[tokio::test]
+    async fn files_only_beyond_the_list_are_still_told() {
+        let e = env(local(2026, 11, 23, 9, 0));
+        assert!(e
+            .whats_new
+            .files_added("s1", &e.folder(), &[], 7)
+            .await
+            .unwrap());
+        assert_eq!(e.posted()[0].title, "7 new files in Research Papers");
     }
 
     #[tokio::test]
     async fn a_crash_between_post_and_mark_reposts_the_same_digest() {
+        let e = env(local(2026, 11, 23, 9, 0));
+        // The run stops after the item is posted and before its rows are marked.
+        e.sink
+            .crash_after_post
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        e.whats_new
+            .files_added("s1", &e.folder(), &[e.file("a.pdf")], 0)
+            .await
+            .unwrap();
+        assert_eq!(e.posted().len(), 1);
+        assert_eq!(e.feed.unposted(&e.job().id).unwrap().len(), 1, "not marked");
+        // The next launch tells of them again: the same item, then marked.
+        e.whats_new.launch().await;
+        let posted = e.posted();
+        assert_eq!(posted.len(), 2);
+        assert_eq!(posted[0].id, posted[1].id);
+        assert_eq!(posted[0].title, posted[1].title);
+        assert!(e.feed.unposted(&e.job().id).unwrap().is_empty());
+        e.whats_new.launch().await;
+        assert_eq!(e.posted().len(), 2, "told once more, never again");
+    }
+
+    #[tokio::test]
+    async fn rows_left_untold_before_the_post_are_told_at_launch() {
         let e = env(local(2026, 11, 23, 9, 0));
         // Rows recorded, then Shodh stopped before the item was posted and marked.
         let job = e.whats_new.create_job("s1", &e.folder()).unwrap();
@@ -1045,7 +1227,7 @@ mod tests {
             .sink
             .resolved
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .contains(&format!("{FOLDER_HOLD_PREFIX}s1")));
     }
 
@@ -1063,7 +1245,12 @@ mod tests {
             .unwrap()
             .is_none());
         assert!(e.whats_new.items().unwrap().is_empty());
-        let resolved = e.sink.resolved.lock().unwrap().clone();
+        let resolved = e
+            .sink
+            .resolved
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         assert!(resolved.contains(&format!("{FOLDER_DIGEST_PREFIX}s1:*")));
         assert!(resolved.contains(&format!("{FOLDER_HOLD_PREFIX}s1")));
     }

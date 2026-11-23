@@ -735,7 +735,7 @@ mod tests {
                 "Remove the alert for “state space models”. The papers it found leave What's new."
             )
         );
-        let (ctx, mut rx) = ctx();
+        let (ctx, mut rx) = testing::ctx();
         delete
             .execute(json!({ "id": alert.id }), &ctx)
             .await

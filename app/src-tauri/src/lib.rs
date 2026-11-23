@@ -50,6 +50,7 @@ mod table_model_commands;
 mod task_repeat;
 mod ui_state_commands;
 mod updater;
+mod whats_new;
 mod visual_commands;
 mod workspace_commands;
 
@@ -1084,6 +1085,10 @@ pub fn run() {
             task_repeat::task_repeat_clear,
             task_repeat::task_repeat_runs,
             task_repeat::task_repeat_decide,
+            whats_new::whats_new_list,
+            whats_new::whats_new_mark_seen,
+            whats_new::whats_new_dismiss,
+            whats_new::folder_watch_set,
             // Background mode (tray, start with Windows)
             background::get_background_status,
             background::set_close_to_tray,

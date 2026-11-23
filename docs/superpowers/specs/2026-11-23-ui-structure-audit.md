@@ -82,6 +82,42 @@ things stay where they were, nothing silently disappears.
   sessions card is about 90 words before its button. This is already queued for the copy pass (memory "UI:
   sturdy, unambiguous"). It is listed here because it pushes each view's controls down by different amounts.
 
+### J. The code review panel ("Review this")
+
+Opened from an HTML block in an answer; model Claude Sonnet 5.5 through a Claude (Pro/Max) sign-in.
+
+- **It covers the conversation.** The panel takes the right half (720–1400 px) over Ask:
+  - the answer is cut mid-word;
+  - the message box is cut at "Claude S…";
+  - the status line underneath still shows the previous answer's model.
+- **The primary button is cramped.** "Review this" wraps onto two lines inside an orange button that also
+  holds the shortcut (Ctrl+Shift+E).
+- **The presets read as tabs, but act as a single choice.**
+  - Algorithm, Security, Performance, Simpler version, Architecture and Your question look like tabs.
+  - "Your question" is selected on open, with an empty box under it.
+  - Picking another preset hides the box, so the user can't tell whether their question will be sent.
+- **It offers a model that can't answer, then fails.**
+  - The line beside the button says it sends to claude-sonnet-5-5.
+  - After about 10 s, a red paragraph says subscription models answer only through the assistant in Ask.
+  - The failure has no fix button (switch model, use a key) and no short state. It is finding G again.
+- **No result layout.** Below the controls, half the panel is empty, with no hint of what a review returns or
+  where.
+- **Mixed type.** The title row mixes a bold label with a monospace subtitle ("Code from the answer (html)"),
+  and the editor's label is a lowercase "snippet".
+
+### K. Ask says it made something it can't make
+
+The user asked, in **Ask** mode, "build me a small artifact" and then "html page is fine".
+- The model printed an HTML code block and wrote "You can now view it in the Artifacts tab".
+- It then opened Artifacts, which was empty.
+- Asked "i dont see any html page there", it said it "will create a proper artifact now", and again made nothing.
+
+The cause:
+- Ask has no tool that builds or saves a page; only Creator mode does.
+- The prompt never says what the mode cannot do, and nothing offers the switch.
+
+The user's request was an explicit make. Under the 2026-11-21 artifacts rule, that belongs in Artifacts.
+
 ### What already works
 
 - The sidebar is identical on every view.
@@ -118,6 +154,20 @@ things stay where they were, nothing silently disappears.
    - Send stays enabled, because a different model may work.
 7. **Buttons never wrap.** Labels are `white-space: nowrap` with a minimum width; a row that doesn't fit
    moves into an overflow menu.
+8. **Panels never cover the conversation they belong to.** The review panel docks beside the chat; the chat
+   narrows rather than being covered.
+9. **The review panel** is laid out as follows:
+   - one row of preset chips, which can combine with "Your question", and the question box always visible;
+   - a compact primary button, with the shortcut in the tooltip;
+   - a result area with its own empty, working, done and failed states;
+   - a failed state with a short line plus "Switch model". A model that can't serve the review is never offered:
+     the panel picks the first one that can, or says none can, before sending.
+10. **Making things from Ask:**
+    - every non-Creator mode's prompt states that it cannot build apps, pages or games;
+    - an explicit make request gets a one-click "Build in Creator" card that resends the request in Creator
+      (turning on Code mode first, as #189 does);
+    - the assistant never says something is in Artifacts unless a tool saved it.
+
 
 Each rule gets a test:
 - frame and top-bar geometry checked per view in the frontend tests (the same rects as this audit: title left

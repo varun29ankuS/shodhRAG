@@ -171,10 +171,16 @@ The user's request was an explicit make. Under the 2026-11-21 artifacts rule, th
       - it runs without asking. It writes only to the app's own artifact store, never the user's folders, and
         the page runs in the locked preview with no access to the app, files or network;
       - asking for changes ("make the button blue") updates the same artifact as a new version, not a new one.
-    - **Builds that need more go to Creator, launched by the assistant.** Multiple files, packages or commands
-      call for Creator. The assistant posts one card: "This needs Creator: it makes a folder and runs commands.
-      Build it?" One click turns on Code mode if needed (as #189 does) and sends the same request in Creator.
-      There's no mode menu to find.
+    - **Builds that need more: the assistant suggests Creator in its own reply** (user, 2026-11-23: "that should
+      be a suggestion given by the intelligence").
+      - When a request needs multiple files, packages or commands, the assistant says so in its answer, in one
+        line: why, and what Creator would do.
+      - It attaches the action to that line as a suggestion chip, "Build it in Creator".
+      - Clicking the chip, or replying "yes", turns on Code mode if needed (as #189 does) and sends the same
+        request in Creator. Ignoring it changes nothing.
+      - It is never a modal and never automatic, and there's no mode menu to find.
+      - The same pattern serves any mode the intelligence thinks fits better, for example "This needs your code
+        folder: Switch to Code". It is one suggestion, made by the assistant, in the conversation.
     - **The prompt and the tool decide, not the user's wording.** "Build/make/create me a page, app, game,
       chart, diagram or document" is a make request. An explanation that happens to contain code is not.
       This keeps the 2026-11-21 rule: only asked-for makes become artifacts.

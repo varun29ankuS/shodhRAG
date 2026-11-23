@@ -68,6 +68,8 @@ Copies are created insert-if-absent under a deterministic id, so the engine neve
    - `inbox_commands::settled_reminders` drops every `reminder` item whose `data.taskId` is not an open task. The decision item therefore carries `data.taskId` = the open latest copy, so completing or deleting that copy settles the item. Its id is `repeat:<job_id>`, never `reminder:<task_id>`, so it cannot collide with the copy's own reminder item or `tauri_host::settled_reminder`.
    - `model.ts` `KINDS` silently skips unknown kinds, so `'automation'` must be added there in the same task as the Rust variant.
 5. **Every completion path reaches the hook.** UI `update_task`, the reminder toast's Mark done (`update_task`), the agent's `complete_task`/`update_task` (`save_task_patch`) and the phone's `update_task` (`phone_link.rs:1174`, which calls `calendar_commands::update_task`) all end in `TauriEffects::calendar_changed`. The only calendar writes that bypass it are `reminders.rs` `mark_fired`/`snooze_reminder`, which never change `status`. Task 7 hooks there and nowhere else.
+6. **The launch barrier must never swallow today's missed-reminder notice.** The engine's half reports through a drop guard on every exit path (Task 7, `a_failing_engine_still_lets_the_missed_reminder_summary_through`).
+7. **An event never opens a decision.** A `task_completed` run that finds an open subject (a second completion after the copy was made) does nothing and leaves no History row. Only a passed occurrence opens a decision.
 
 ---
 
@@ -129,7 +131,16 @@ Copies are created insert-if-absent under a deterministic id, so the engine neve
 - Test: none changed. `jobs_tests.rs`, `fill_tests.rs`, `calls.rs` tests module, `testkit.rs` and every external caller (11 files import `tables::calls::*` clock items) stay byte-identical.
 
 **What moves (verbatim, doc comments included):**
-- `lease.rs`: `LEASE_MINUTES`, `PROCESS_TOKEN`, `process_token` (from `pub(super)` to `pub(crate)`), `LIVE_RUNS`, `live_runs`, `LiveRun` (to `pub(crate)`, same body), `timestamp`, `lease_cutoff`.
+- `lease.rs`: `LEASE_MINUTES`, `PROCESS_TOKEN`, `process_token` (from `pub(super)` to `pub(crate)`), `LIVE_RUNS`, `live_runs`, `LiveRun` (the struct, `enter` and `is_live` become `pub(crate)`; the bodies are unchanged), `timestamp`, `lease_cutoff`.
+
+**Re-exports, so that no importer changes.** The only importers found are `tables/schedule.rs` (`super::jobs::{process_token, timestamp, ...}`), `app/src-tauri/src/table_commands.rs` and `notifications.rs` (which import only items that stay), and the 11 files that import clock items from `tables::calls`.
+- In `jobs.rs`:
+  - `pub use crate::engine::lease::LEASE_MINUTES;`
+  - `pub use crate::engine::backoff::{BACKOFF_LADDER_MINUTES, STALE_RESET_WAIT_SECS, MAX_PANICS};`
+  - `pub(super) use crate::engine::lease::{process_token, timestamp};` (keeps `schedule.rs` unchanged)
+  - `use crate::engine::lease::{lease_cutoff, LiveRun, PROCESS_TOKEN};` (`jobs_tests.rs` reaches `lease_cutoff` and `timestamp` through `use super::*`)
+- In `calls.rs`:
+  - `pub use crate::engine::clock::{day_key, next_utc_midnight, utc_day, Clock, SystemClock};`
 - `backoff.rs`: `BACKOFF_LADDER_MINUTES`, `STALE_RESET_WAIT_SECS`, `MAX_PANICS`.
 - `clock.rs`: `Clock`, `SystemClock`, `utc_day`, `next_utc_midnight`, `day_key`.
 
@@ -352,7 +363,13 @@ inbox_items rebuilt (as 18 did) with kinds + 'model', 'automation', 'whats_new',
 - **Edits.** `TaskSaved` of the subject refreshes the snapshot. That covers edits and `detach_workspace_tasks` (which emits `TaskSaved` per task). `TaskSaved` of an older copy does nothing.
 - **Completion:**
   - `TaskSaved` of the subject with `status == completed` calls `Engine::event(TaskCompleted)`.
-  - The handler is **state-based**: on any run it reads the calendar. A completed subject means make the copy; an open subject means wait for a decision.
+  - The handler is **state-based**: on any run it reads the calendar.
+    - **Event trigger:**
+      - a completed subject means make the copy;
+      - an **open subject means do nothing**: no copy, no decision, and no run row (the run is cancelled and pruned, never shown in History). A UI and a phone completion arriving together therefore make one copy and never a bogus decision.
+    - **Schedule, catch-up or reconcile trigger:**
+      - a completed subject means make the copy;
+      - an open subject means wait for a decision.
   - A missed event is therefore made good at the next occurrence or launch.
 - **Making a copy:**
   1. Insert `rep-<job>-<local key>` if absent.
@@ -373,6 +390,9 @@ inbox_items rebuilt (as 18 did) with kinds + 'model', 'automation', 'whats_new',
   - `make`: make the copy for `scheduled_for`; run `succeeded` "You chose Make the next one (the one before wasn't done)".
   - `skip`: run `skipped` "Skipped by you"; the series waits for the next occurrence.
   - `mark_done`: complete the open copy through `update_task`'s path, so it is recorded like any completion; the event answers the run with "Made when last week's was done (…)".
+  - **Every way the decision ends resolves `repeat:<job>`:** make, skip, completion, the series stopped or cleared, and a hold.
+    - It cannot be left to `settled_reminders`. After Make or Skip the old copy is still open, so the item would otherwise stay as an answered question.
+    - The item is resolved after the run's end is written, so a crash re-posts it at launch rather than losing it.
 - **Locked or unreadable calendar:**
   - `CalendarError::Io`/`Unreadable` is `Transient("calendar_unreadable")`.
   - After 3 failed runs the series is held, with an Attention item `repeat-hold:<job>`, kind `automation`: "Couldn't make *Submit timesheet*'s next copy: the task list couldn't be read. [Resume]".
@@ -381,16 +401,20 @@ inbox_items rebuilt (as 18 did) with kinds + 'model', 'automation', 'whats_new',
   - Reconcile (see Decisions).
   - Re-post the item of every waiting decision (`put` is an upsert, so it repeats safely).
   - Occurrences that passed while closed fold into the one decision.
-  - That decision's alert goes to `reminders`' launch summary through a **two-party barrier** in `ReminderState`: the reminders loop's first plan and the engine's first plan each hand over their missed list, and whichever arrives second sends the one "Missed while Shodh was closed" notification. No timeout is involved: the engine side reports at once, empty, when `shodh.db` is unavailable.
+  - That decision's alert goes to `reminders`' launch summary through a **two-party barrier** in `ReminderState`: the reminders loop's first plan and the engine's first plan each hand over their missed list, and whichever arrives second sends the one "Missed while Shodh was closed" notification.
+    - No timeout is involved.
+    - The engine side reports on **every** exit path through a drop guard: success, error, panic, and `shodh.db` unavailable (empty). A failing engine therefore never swallows today's missed-reminder notice.
 
 - [ ] **Step 1: Write the failing tests:**
   - `insert_if_absent_never_makes_two`;
   - `completing_the_latest_copy_makes_exactly_one_next_copy_at_the_following_occurrence`;
-  - `completing_twice_ui_then_phone_change_makes_one_copy`;
+  - `completing_twice_ui_then_phone_change_makes_one_copy`: also asserts no decision item and exactly one new History row;
   - `an_occurrence_with_the_last_copy_open_makes_no_copy_and_one_decision`;
   - `make_the_next_one_creates_the_copy_for_this_occurrence`;
   - `skip_this_one_records_skipped_and_waits_for_the_next`;
   - `mark_last_done_completes_it_and_makes_this_occurrences_copy`;
+  - each of the three answer tests also asserts that `repeat:<job>` is gone from the Inbox;
+  - `a_failing_engine_still_lets_the_missed_reminder_summary_through`;
   - `an_ignored_decision_across_two_more_occurrences_stays_one_item_and_one_possible_copy`;
   - `a_three_day_sleep_folds_into_the_same_decision`: `missed` = 2 and the alert rings once; with the app closed, the alert also reaches the launch summary;
   - `completing_from_the_phone_answers_the_decision` (drives `on_calendar_change` with the `TaskSaved` the phone's `update_task` produces; see D14);
@@ -451,7 +475,7 @@ inbox_items rebuilt (as 18 did) with kinds + 'model', 'automation', 'whats_new',
 
 **Files:**
 - Create: `app/src/features/tasks/repeat.ts`, `RepeatField.tsx`, `RepeatHistory.tsx`, `app/tests/taskRepeat.test.ts`
-- Modify: `app/src/features/tasks/TaskDetailSheet.tsx` (Repeat under Due, History above Notes), `TasksStore.tsx` (refresh the repeat view on `calendar-changed` and `inbox-changed`)
+- Modify: `app/src/features/tasks/TaskDetailSheet.tsx` (Repeat under Due, History as the last section before the footer, so a new run never pushes another field), `TasksStore.tsx` (refresh the repeat view on `calendar-changed` and `inbox-changed`)
 - Test: `app/tests/taskRepeat.test.ts`
 
 - [ ] **Step 1: Write the failing tests** for `repeat.ts`:
@@ -487,7 +511,7 @@ inbox_items rebuilt (as 18 did) with kinds + 'model', 'automation', 'whats_new',
 
 **Files:**
 - Modify:
-  - `app/src-tauri/src/agent_tools/mod.rs`: `HostEffects` gains `task_repeat(&self) -> Option<Arc<dyn RepeatAccess>>`, implemented by `TauriEffects`; the test host returns a temp-store implementation.
+  - `app/src-tauri/src/agent_tools/mod.rs`: `HostEffects` gains `task_repeat(&self) -> Option<Arc<dyn RepeatAccess>>`, with no default. There are exactly two implementors: `TauriEffects` (`tauri_host.rs:75`) and the test `Recorder` (`agent_tools/mod.rs:379`), which returns a temp-store implementation. Both change in this task.
   - `app/src-tauri/src/agent_tools/calendar.rs`:
     - `create_task`/`update_task` take `repeat` (the `Schedule` JSON, or `"none"` on update); the preview reads "Repeats every Monday at 09:00".
     - `update_task` takes `repeat_next: make|skip`; the preview reads "Make the next *Submit timesheet* (the last one isn't done)".
@@ -510,13 +534,15 @@ inbox_items rebuilt (as 18 did) with kinds + 'model', 'automation', 'whats_new',
 
 ## UX: Repeat and History in the task sheet
 
-**Layout.** Fixed slots, so nothing moves when the state changes:
+**Layout.** Fixed slots, so nothing moves when the state changes.
 
 ```
  Due      Mon 24 Nov, 17:00
  Repeat   [Every week on Mon v]  (i)          <- the control never changes width (min-w, truncates)
-          Next  Mon 1 Dec, 17:00             <- the one-line state slot is always rendered (min-h of one line)
- History                                      <- the heading is always shown once a series exists
+          Next  Mon 1 Dec, 17:00             <- state line: always rendered, one line, truncates (full text in the tooltip)
+          [                                ]  <- action row: always reserved at one button height, empty in states with no fix
+ ...      Notes, Project, Subtasks, Workspace, Ask (unchanged)
+ History                                      <- the last section before the footer, so new rows never push a field
    Mon 24 Nov  Made         when last week's was done (Fri 21 Nov)          [Open]
    Mon 17 Nov  Made         you chose "Make the next one"                   [Open]
    Mon 10 Nov  Skipped      by you
@@ -524,9 +550,16 @@ inbox_items rebuilt (as 18 did) with kinds + 'model', 'automation', 'whats_new',
                                                      Show all (12)
 ```
 
+**The Repeat slot.**
+- It has two fixed rows in every state, including "Doesn't repeat" and "Needs a due date":
+  - a **state line** (a state word plus a short fact);
+  - an **action row** at one button height.
+- The action row holds at most three fixed-width buttons, which fit the sheet's narrowest width. When a state has no fix, the row is empty but keeps its height.
+- History sits at the bottom of the sheet. Turning Repeat on adds it there, below every other field.
+
 **States of the slot.** Each has a label, a state word and one fix. The explanation sits behind the `(i)` tooltip.
 
-| State | Slot (one line) | Fix | Tooltip |
+| State | State line (one line) | Action row | Tooltip |
 |---|---|---|---|
 | No due date | "Needs a due date" (muted); the control is disabled | none (Due is right above) | "Set a due date first; each copy is due on the next date." |
 | Doesn't repeat | the control reads "Doesn't repeat"; the slot is blank but keeps its height | none | "Make a new copy of this task on a schedule." |

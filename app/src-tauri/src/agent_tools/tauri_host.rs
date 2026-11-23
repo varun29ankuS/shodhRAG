@@ -289,6 +289,8 @@ impl HostEffects for TauriEffects {
         }
         // A reminder may have been set, moved or removed.
         crate::reminders::wake(&self.app);
+        // The latest copy of a repeating task may have been completed, edited or deleted.
+        crate::task_repeat::on_calendar_change(&self.app, &change);
         // A reminder that rang for a task now done or deleted waits on nothing.
         if let Some(id) = settled_reminder(&change) {
             let app = self.app.clone();

@@ -47,6 +47,7 @@ mod storage_commands;
 mod store_notices;
 mod table_commands;
 mod table_model_commands;
+mod task_repeat;
 mod ui_state_commands;
 mod updater;
 mod visual_commands;
@@ -66,6 +67,7 @@ mod code_review_commands;
 mod conversation_commands;
 mod conversation_turns;
 mod design_check_commands;
+mod engine_commands;
 mod event_emitter;
 
 use tauri::Manager;
@@ -643,6 +645,12 @@ pub fn run() {
             // Task reminders: native notifications while the app runs.
             app.manage(reminders::ReminderState::default());
             reminders::spawn(app.handle().clone());
+            // Repeating tasks, on the scheduler engine (shodh.db): one loop, woken by
+            // every task change.
+            app.manage(engine_commands::EngineState::new(
+                &app.state::<audit_commands::AuditState>(),
+            ));
+            engine_commands::spawn(app.handle().clone());
 
             // Tray icon: the window can hide there and reminders keep ringing.
             app.manage(background::BackgroundState::with_pause(pause));

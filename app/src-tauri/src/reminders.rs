@@ -67,6 +67,60 @@ pub struct DueReminder {
     pub due_date: Option<String>,
     /// When it rings.
     pub at: DateTime<Utc>,
+    /// Set when this is a repeating task's question rather than its own reminder: the
+    /// next one fell due while this copy is still open (the toast offers the answers).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeat: Option<RepeatAlert>,
+}
+
+/// The question of a repeating task, carried by its reminder alert.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepeatAlert {
+    pub job_id: String,
+    /// The occurrence that fell due (UTC, RFC 3339).
+    pub occurrence: String,
+    /// What happened, in words: "Due again today, but last week's isn't done."
+    pub detail: String,
+}
+
+/// Who reports what was missed while Shodh was closed: the reminders and the repeating
+/// tasks each report once at launch, and one notification says it for both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaunchPart {
+    Reminders,
+    Repeats,
+}
+
+/// The launch's missed lists, until both have come in.
+#[derive(Debug, Default)]
+pub struct LaunchMissed {
+    reminders: Option<Vec<DueReminder>>,
+    repeats: Option<Vec<DueReminder>>,
+    told: bool,
+}
+
+impl LaunchMissed {
+    /// Takes `part`'s list. Returns what to announce now: nothing until both parts have
+    /// reported, then both lists together once; a part that reports again after that
+    /// (the reminders, once an unreadable calendar can be read) is announced alone.
+    pub fn report(&mut self, part: LaunchPart, list: Vec<DueReminder>) -> Option<Vec<DueReminder>> {
+        if self.told {
+            return (!list.is_empty()).then_some(list);
+        }
+        let slot = match part {
+            LaunchPart::Reminders => &mut self.reminders,
+            LaunchPart::Repeats => &mut self.repeats,
+        };
+        slot.get_or_insert_with(Vec::new).extend(list);
+        if self.reminders.is_none() || self.repeats.is_none() {
+            return None;
+        }
+        self.told = true;
+        let mut all = self.reminders.take().unwrap_or_default();
+        all.extend(self.repeats.take().unwrap_or_default());
+        (!all.is_empty()).then_some(all)
+    }
 }
 
 /// Reminders not yet shown, of tasks that are not done, in `tz`. Values that
@@ -85,6 +139,7 @@ pub fn pending<Tz: TimeZone>(data: &CalendarData, tz: &Tz) -> Vec<DueReminder> {
                 reminder: reminder.to_string(),
                 due_date: t.due_date.clone(),
                 at,
+                repeat: None,
             })
         })
         .collect();
@@ -155,6 +210,7 @@ pub fn snooze_until(now: NaiveDateTime, minutes: u32) -> NaiveDateTime {
 pub struct ReminderState {
     wake: Notify,
     missed: Mutex<Vec<DueReminder>>,
+    launch: Mutex<LaunchMissed>,
 }
 
 impl ReminderState {
@@ -269,18 +325,35 @@ async fn record_missed(app: &AppHandle, store: &CalendarStore, missed: Vec<DueRe
             recorded.push(reminder);
         }
     }
-    if recorded.is_empty() {
-        return;
-    }
-    let body = match recorded.as_slice() {
-        [one] => due_text(one),
-        many => format!("{} reminders. Open Shodh to see them.", many.len()),
-    };
-    notify(app, "Missed while Shodh was closed", &body);
     for reminder in &recorded {
         crate::inbox_commands::post(app, inbox_item(reminder, true)).await;
     }
-    let state = app.state::<ReminderState>();
+    report_launch(app, LaunchPart::Reminders, recorded);
+}
+
+/// Hands `part`'s list of what was missed while Shodh was closed to the launch summary:
+/// once both the reminders and the repeating tasks have reported, one desktop
+/// notification says it for both, and the in-app list shows them.
+pub fn report_launch(app: &AppHandle, part: LaunchPart, list: Vec<DueReminder>) {
+    let Some(state) = app.try_state::<ReminderState>() else {
+        return;
+    };
+    let announce = state
+        .launch
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .report(part, list);
+    let Some(recorded) = announce else {
+        return;
+    };
+    let body = match recorded.as_slice() {
+        [one] => match &one.repeat {
+            Some(repeat) => format!("{}: {}", one.title, repeat.detail),
+            None => due_text(one),
+        },
+        many => format!("{} reminders. Open Shodh to see them.", many.len()),
+    };
+    notify(app, "Missed while Shodh was closed", &body);
     let list = {
         let mut kept = state.missed.lock().unwrap_or_else(|e| e.into_inner());
         kept.extend(recorded);
@@ -328,6 +401,7 @@ async fn run(app: AppHandle) {
         Ok(dir) => CalendarStore::in_dir(&dir),
         Err(e) => {
             tracing::error!(error = %e, "reminders are off: no app data directory");
+            report_launch(&app, LaunchPart::Reminders, Vec::new());
             return;
         }
     };
@@ -356,11 +430,13 @@ async fn run(app: AppHandle) {
                     Utc::now(),
                     first.then_some(launched_at),
                 );
-                first = false;
                 let wrote = !plan.missed.is_empty() || !plan.due.is_empty();
-                if !plan.missed.is_empty() {
+                if first || !plan.missed.is_empty() {
+                    // The first plan always reports, even with nothing missed, so the
+                    // repeating tasks' part of the launch summary is never held up.
                     record_missed(&app, &store, plan.missed).await;
                 }
+                first = false;
                 for reminder in plan.due {
                     ring(&app, &store, reminder).await;
                 }
@@ -371,6 +447,11 @@ async fn run(app: AppHandle) {
             }
             Err(e) => {
                 failures = failures.saturating_add(1);
+                if first && failures == 1 {
+                    // Nothing can be known missed yet: the repeating tasks' part of the
+                    // launch summary goes out without waiting for the calendar.
+                    report_launch(&app, LaunchPart::Reminders, Vec::new());
+                }
                 if failures == 1 {
                     calendar_unreadable(&store, &e);
                 } else {
@@ -629,6 +710,49 @@ mod tests {
         let later = plan(pending(&data, &Kolkata), utc(2026, 10, 29, 7, 0), None);
         assert_eq!(later.due.len(), 3);
         assert!(later.missed.is_empty());
+    }
+
+    fn due(task_id: &str) -> DueReminder {
+        DueReminder {
+            task_id: task_id.into(),
+            title: task_id.into(),
+            reminder: "2026-11-23T09:00".into(),
+            due_date: None,
+            at: utc(2026, 11, 23, 3, 30),
+            repeat: None,
+        }
+    }
+
+    #[test]
+    fn the_launch_summary_waits_for_both_parts_and_is_told_once() {
+        let mut launch = LaunchMissed::default();
+        assert_eq!(launch.report(LaunchPart::Reminders, vec![due("a")]), None);
+        assert_eq!(
+            launch.report(LaunchPart::Repeats, vec![due("r")]),
+            Some(vec![due("a"), due("r")]),
+            "one notification for both"
+        );
+        // A later report (a calendar that could not be read at first) is told alone.
+        assert_eq!(
+            launch.report(LaunchPart::Reminders, vec![due("b")]),
+            Some(vec![due("b")])
+        );
+        assert_eq!(launch.report(LaunchPart::Reminders, Vec::new()), None);
+    }
+
+    #[test]
+    fn a_failing_engine_still_lets_the_missed_reminder_summary_through() {
+        // When the engine fails at launch, its drop guard reports an empty list.
+        let mut launch = LaunchMissed::default();
+        assert_eq!(launch.report(LaunchPart::Reminders, vec![due("a")]), None);
+        assert_eq!(
+            launch.report(LaunchPart::Repeats, Vec::new()),
+            Some(vec![due("a")])
+        );
+        // Nothing missed on either side: nothing to say.
+        let mut quiet = LaunchMissed::default();
+        assert_eq!(quiet.report(LaunchPart::Repeats, Vec::new()), None);
+        assert_eq!(quiet.report(LaunchPart::Reminders, Vec::new()), None);
     }
 
     #[test]

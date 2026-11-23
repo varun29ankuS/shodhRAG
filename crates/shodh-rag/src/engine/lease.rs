@@ -62,11 +62,11 @@ impl Drop for LiveRun {
 }
 
 /// Fixed-width UTC with milliseconds and `Z`: string order is time order.
-pub(crate) fn timestamp(at: DateTime<Utc>) -> String {
+pub fn timestamp(at: DateTime<Utc>) -> String {
     at.to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
 /// Heartbeats at or before this instant belong to a run that is gone.
-pub(crate) fn lease_cutoff(now: DateTime<Utc>) -> String {
+pub fn lease_cutoff(now: DateTime<Utc>) -> String {
     timestamp(now - TimeDelta::minutes(LEASE_MINUTES))
 }

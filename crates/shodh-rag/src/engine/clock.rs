@@ -1,7 +1,7 @@
 //! The clock: injected so that days, resets and waits are deterministic in tests, and the
 //! UTC day that call counters count on.
 
-use chrono::{DateTime, NaiveDate, TimeDelta, TimeZone, Utc};
+use chrono::{DateTime, LocalResult, NaiveDate, NaiveDateTime, TimeDelta, TimeZone, Utc};
 
 /// The time. Injected so that days, resets and waits are deterministic in tests.
 pub trait Clock: Send + Sync {
@@ -36,4 +36,23 @@ pub fn next_utc_midnight(at: DateTime<Utc>) -> DateTime<Utc> {
 /// The stored form of a day: `YYYY-MM-DD`.
 pub fn day_key(day: NaiveDate) -> String {
     day.format("%Y-%m-%d").to_string()
+}
+
+/// The instant a local wall-clock time means in `tz`. An ambiguous time
+/// (clocks went back, the hour happens twice) is its first occurrence; a
+/// time that does not exist (clocks went forward) is the first minute after
+/// the gap, so a reminder in the skipped hour rings as soon as it ends
+/// rather than never.
+pub fn resolve_local<Tz: TimeZone>(tz: &Tz, local: NaiveDateTime) -> Option<DateTime<Utc>> {
+    let mut probe = local;
+    // Real gaps are at most a few hours; a day bounds the search.
+    for _ in 0..=24 * 60 {
+        match tz.from_local_datetime(&probe) {
+            LocalResult::Single(t) | LocalResult::Ambiguous(t, _) => {
+                return Some(t.with_timezone(&Utc))
+            }
+            LocalResult::None => probe += chrono::Duration::minutes(1),
+        }
+    }
+    None
 }

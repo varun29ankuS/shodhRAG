@@ -28,8 +28,9 @@
 use std::sync::Mutex;
 use std::time::Duration;
 
-use chrono::{DateTime, LocalResult, NaiveDateTime, TimeZone, Timelike, Utc};
+use chrono::{DateTime, NaiveDateTime, TimeZone, Timelike, Utc};
 use serde::Serialize;
+pub use shodh_rag::engine::clock::resolve_local;
 use shodh_rag::inbox::{InboxKind, InboxLink, InboxStatus, NewInboxItem};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::Notify;
@@ -66,25 +67,6 @@ pub struct DueReminder {
     pub due_date: Option<String>,
     /// When it rings.
     pub at: DateTime<Utc>,
-}
-
-/// The instant a local wall-clock time means in `tz`. An ambiguous time
-/// (clocks went back, the hour happens twice) is its first occurrence; a
-/// time that does not exist (clocks went forward) is the first minute after
-/// the gap, so a reminder in the skipped hour rings as soon as it ends
-/// rather than never.
-pub fn resolve_local<Tz: TimeZone>(tz: &Tz, local: NaiveDateTime) -> Option<DateTime<Utc>> {
-    let mut probe = local;
-    // Real gaps are at most a few hours; a day bounds the search.
-    for _ in 0..=24 * 60 {
-        match tz.from_local_datetime(&probe) {
-            LocalResult::Single(t) | LocalResult::Ambiguous(t, _) => {
-                return Some(t.with_timezone(&Utc))
-            }
-            LocalResult::None => probe += chrono::Duration::minutes(1),
-        }
-    }
-    None
 }
 
 /// Reminders not yet shown, of tasks that are not done, in `tz`. Values that

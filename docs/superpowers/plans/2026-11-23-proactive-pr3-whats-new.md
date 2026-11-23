@@ -106,11 +106,11 @@ The branch is `feat/proactive-whats-new`, from `origin/master` `a1f6f145` (PR 1 
 | `crates/shodh-rag/src/harness/web/papers.rs` (modify, Task 6) | `alert_requests`; `pub fn same_paper`; `PaperApi`. |
 | `crates/shodh-rag/src/whats_new/alerts.rs`, `pace.rs`, `library.rs` (create, Task 6) | The alert check, the per-API pacer, and the library's paper identities. |
 | `app/src-tauri/src/agent_tools/research.rs` (modify, Task 8) | `download_into` extracted from `download_file`'s `execute` (behaviour kept). |
-| `app/src-tauri/src/agent_tools/whats_new.rs` (create, Task 9), `agent_tools/mod.rs` (modify) | Tools; `LIBRARY_SECTIONS` gains `whats_new`; `HostEffects::whats_new`. |
-| `app/src-tauri/src/lib.rs`, `permissions/main-window.json`, `agent-coverage.json` (modify, Tasks 7–9) | Registration, ACL, coverage, `navigation.librarySections.whats_new`. |
-| `app/src/features/whatsNew/model.ts`, `api.ts` (create, Tasks 7–8, 10) | Pure view model; command wrappers with literal names. |
-| `app/src/features/whatsNew/WhatsNewSection.tsx`, `PaperAlertDialog.tsx` (create, Task 11) | The Library section and the consent dialog. |
-| `app/src/features/library/LibraryView.tsx`, `app/src/features/agent/navigation.ts` (modify, Tasks 9, 11) | Mount the section; the `whats_new` section target. |
+| `app/src-tauri/src/agent_tools/whats_new.rs` (create, Tasks 7–8), `agent_tools/mod.rs` (modify) | Tools; `LIBRARY_SECTIONS` gains `whats_new`; `HostEffects::whats_new`. |
+| `app/src-tauri/src/lib.rs`, `permissions/main-window.json`, `agent-coverage.json` (modify, Tasks 7–8) | Registration, ACL, coverage, `navigation.librarySections.whats_new`. |
+| `app/src/features/whatsNew/types.ts`, `api.ts`, `consent.ts` (create, Task 7), `model.ts` (create, Task 9) | Wire types; command wrappers with literal names; the consent line; the pure view model. |
+| `app/src/features/whatsNew/WhatsNewSection.tsx`, `PaperAlertDialog.tsx` (create, Task 10) | The Library section and the consent dialog. |
+| `app/src/features/library/LibraryView.tsx`, `app/src/features/agent/navigation.ts` (modify, Tasks 8, 10) | Mount the section; the `whats_new` section target. |
 | `app/tests/whatsNew.test.ts` (create), `app/tests/inbox.test.ts` (modify) | Frontend tests. |
 
 ---
@@ -151,6 +151,10 @@ pub struct SyncReport {
   - it is not matched as a rename.
 - **Rename matching:** take the multiset of `known[k]` stamps over `plan.remove`. An added key whose on-disk `FileStamp` equals one of them consumes that stamp and is not added.
 - `forget_file` inserts the key into `reread`. The sync removes a key from `reread` once that file is processed.
+- **Every manifest write states both fields:**
+  - the per-file `save` closure writes the sync's current values;
+  - `forget_file` and the adoption save (`folder_sync.rs:993`, through `Manifest::borrowed()`) keep the loaded manifest's values;
+  - a manifest an adoption creates for a source that had none gets `added_baseline: false`. Only a completed sync sets it true.
 - `added` is capped at `MAX_ADDED`, in plan order. `added_more` = the rest.
 
 - [ ] **Step 1: Write the failing tests:**
@@ -166,6 +170,7 @@ pub struct SyncReport {
   - `a_forgotten_file_read_again_is_not_new`: `store.forget_file("s1", key_of(a.md))`, then a sync gives `indexed == 1`, `added == []`, and `reread` is empty afterwards.
   - `a_file_that_failed_before_is_not_new`: a file that failed in sync 2, fixed and indexed in sync 3, gives `added == []`.
   - `added_is_capped_with_a_count_of_the_rest`: 205 new files give `added.len() == 200`, `added_more == 5`.
+  - `an_adopted_manifest_keeps_its_baseline_flag`: after an adoption save, a source that had finished its baseline still reports added files.
   - `a_legacy_manifest_reports_files_added_since`: a manifest JSON without `added_baseline` or `reread`, plus one new file on disk, gives `added == [that file]`.
   - `sync_report_serialises_added_more_in_camel_case`: `serde_json::to_value(report)["addedMore"]` exists, and `"new_failures"` keeps its current spelling.
   - Existing whole-struct expectations (`first` at line 2370 and the "Added, changed, deleted and renamed" sync after it) gain `added`/`added_more` at their real values. In that test, `rules.txt` is added and the renamed file is not.
@@ -338,6 +343,7 @@ impl WhatsNew {
   - What's new is on for the folder;
   - the report's only change is `added` (`indexed == added.len() + added_more`, with `removed == 0`, `new_failures == 0`, no failures and nothing unreadable).
   Any other sync keeps today's item.
+  - When D6 suppresses the item, it also resolves any existing `indexing:<source>` item. A failed sync (`failure:'sync'`, Attention) is therefore cleared by the next sync that recovers, even one that only added files.
 - **Removal.** `source_removed` deletes the job, its rows (`FeedStore::delete_job`) and every `whats_new:files:<source>:` Inbox item (`resolve_prefixed`).
 
 - [ ] **Step 1: Write the failing tests:**
@@ -349,6 +355,7 @@ impl WhatsNew {
   - `a_paper_added_to_the_library_is_not_also_a_new_file`.
   - `removing_a_source_deletes_its_job_rows_and_digests`.
   - `a_sync_that_only_added_files_posts_no_indexing_item_when_watched`, plus its pair `…_still_posts_it_when_not_watched` (`file_watcher::inbox_item` unit tests).
+  - `a_recovered_sync_that_only_added_files_clears_the_failed_item`: a failed `indexing:<source>` item, then a sync whose only change is added files, leaves no `indexing:<source>` item.
 - [ ] **Step 2: Run** CI "App tests and doc tests". Expected: the new tests fail.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run** CI "App tests and doc tests". Expected: they pass.
@@ -426,11 +433,10 @@ pub fn consent_line(words: &str) -> String;  // CONSENT_TEMPLATE with {words}
 
 - [ ] **Step 1: Write the failing tests:**
   - `alert_requests_are_one_per_api_bounded_by_date`: an exact URL per API for "linear attention KV cache" and a fixed `since`/`now`; no `openalex_title`.
-  - `alert_requests_carry_no_identity`: run `check_alert` on fakes, then for every request in `FakeTransport.sent`:
-    - no header named `from`;
-    - no `mailto` in the URL;
-    - no `@` anywhere in URL or headers;
-    - the `user-agent` header equals `client::USER_AGENT` (or is absent and set by the transport, asserted through `ReqwestTransport`'s builder constant).
+  - `alert_requests_carry_no_identity`: run `check_alert` on fakes. Then:
+    - every request in `FakeTransport.sent` has an empty `headers` list (the alert code adds none: no `user-agent`, no `from`);
+    - no URL contains `mailto` or `@`;
+    - `!client::USER_AGENT.contains('@')`. The user agent is set only by `ReqwestTransport`'s builder.
   - `new_papers_skip_the_library_and_earlier_items`: from the `linear-attention` fixtures:
     - a `LibraryPapers` holding one fixture paper's arXiv id;
     - an earlier row holding another's DOI;
@@ -449,14 +455,21 @@ pub fn consent_line(words: &str) -> String;  // CONSENT_TEMPLATE with {words}
 - [ ] **Step 4: Run** CI "Tests". Expected: they pass. The `search_papers` and `papers_calibration` tests are unchanged and pass.
 - [ ] **Step 5: Commit** "Paper alerts: date-bounded checks of arXiv, OpenAlex and Semantic Scholar, de-duplicated against the library".
 
-### Task 7: The paper alert job, its commands and the consent
+### Task 7: The paper alert job, its commands, its tools and the consent
+
+The coverage gate (`agent_coverage.rs:237`) refuses a command that maps to an agent tool not yet registered. Each tool therefore lands in the same task as its command.
 
 **Files:**
 - Modify:
-  - `app/src-tauri/src/whats_new.rs`: the `PaperAlerts` handler and the commands;
+  - `app/src-tauri/src/whats_new.rs`: the `PaperAlerts` handler and the commands.
+  - `app/src-tauri/src/agent_tools/mod.rs`: `HostEffects::whats_new(&self) -> Option<Arc<crate::whats_new::WhatsNew>>`, default `None` (as `task_repeats`). `TauriEffects` and the test `Recorder` implement it. Register the new module.
   - `app/src-tauri/src/lib.rs`, `permissions/main-window.json`, `agent-coverage.json`.
-- Create: `app/src/features/whatsNew/api.ts` (wrappers for this task's commands), `app/src/features/whatsNew/consent.ts` (`consentLine`, pure).
-- Test: the `whats_new.rs` tests module, using a `SafeClient` over an app-side recording `HttpTransport` and `Resolver` (both traits are public), and `app/tests/whatsNew.test.ts`.
+- Create:
+  - `app/src-tauri/src/agent_tools/whats_new.rs`: the three alert tools.
+  - `app/src/features/whatsNew/types.ts`: the wire types `FeedItem`, `AlertView`, `AlertState` and `WhatsNewView`, used by `api.ts`, `model.ts` and the components.
+  - `app/src/features/whatsNew/api.ts`: wrappers for this task's commands, with literal names.
+  - `app/src/features/whatsNew/consent.ts`: `consentLine`, pure.
+- Test: the `whats_new.rs` tests module, using a `SafeClient` over an app-side recording `HttpTransport` and `Resolver` (both traits are public); `agent_tools/whats_new.rs` tests; `app/tests/whatsNew.test.ts`.
 
 **Commands:**
 - `paper_alert_create(words: String) -> AlertView`:
@@ -464,36 +477,47 @@ pub fn consent_line(words: &str) -> String;  // CONSENT_TEMPLATE with {words}
   - refused for empty words, or words over 200 characters;
   - refused past `MAX_ALERTS = 10`, with the message "You have 10 paper alerts. Remove one to add another.";
   - stores `consent = {text: consent_line(words), at: now}`;
-  - the job has `schedule = Weekly { days: [Mon], at: 09:00 }` (Q4), `catch_up = once`, `overlap = skip`, `max_attempts = 4`, `created_by = user`;
-  - it starts the first check at once (`Trigger::Manual`, Q5).
+  - the job has `schedule = Weekly { days: [Mon], at: 09:00 }` (Q4), `catch_up = once`, `overlap = skip`, `created_by = user`;
+  - the job has `max_attempts = 5`. That number is only the engine's safety stop: the handler's own counter, below, ends a run before it is reached.
+  - It starts the first check at once with `Engine::event(handler, job_id)`, a `Trigger::Event` run (Q5). The handler is state-based, so the event needs no payload.
 - `paper_alert_update(id, words: Option<String>, enabled: Option<bool>) -> AlertView`:
   - new words are refused under Local-only, store a new consent and keep `checked_through`;
   - `enabled: true` clears a hold and the streak, and resolves `paper-alert-hold:<id>` (D11).
 - `paper_alert_delete(id) -> bool`: deletes the job and its rows, and resolves its Inbox items.
 - `AlertView`:
   - `{id, words, consentText, state, lastCheckedAt, lastSummary, nextCheckAt, failedApis, blockedReason}`;
-  - `state` is one of `checking | waiting_retry | active | off | held | blocked`. `blocked` is computed from the policy at read time.
+  - `state` is one of `checking | waiting_retry | offline | active | off | held | blocked`.
+  - `blocked` is computed from the policy at read time.
+  - A run waiting with code `after_wake` reads `checking`, never `offline`.
 
-**The handler (`run`), in order:**
+**The handler (`run`).** `AlertInput.run_checked` is `{run_id, apis: BTreeSet<PaperApi>, retries: u32}`. It is reset when `run.id` differs from the stored run id. In order:
 1. **The policy is blocked:** return `Skipped { summary: "Not checked: Local-only mode is on." }` (or the web-access reason) and send nothing.
-2. **A `catch_up` run with `attempt == 0`:** `RetryAt { at: now + 2 min, reason: Offline, code: "after_wake" }` (§5.3).
-3. **Otherwise** `check_alert` over the APIs not yet in `run_checked`. Then:
+2. **A `catch_up` run seen for the first time** (no `run_checked` for it): store `run_checked`, then return `RetryAt { at: now + 2 min, reason: Backoff, code: "after_wake" }` (§5.3). This wait does not count toward `retries`.
+3. **Otherwise** `check_alert` over the APIs not yet in `run_checked.apis`. Then:
    - insert the new papers as rows;
    - post (upsert) `whats_new:papers:<job>:<run>` when this run has found ≥ 1 paper so far:
      - title `4 new papers for “linear attention”`;
      - detail `From arXiv and OpenAlex. Semantic Scholar didn't answer; Shodh tries again at 11:40.`, in plain words;
    - `mark_posted`;
-   - write `checked_through[api] = today` for each answered API, and add it to `run_checked`;
+   - write `checked_through[api] = today` for each answered API, and add it to `run_checked.apis`;
    - prune the feed.
-4. **What it returns:**
+4. **What it returns.** `MAX_API_RETRIES = 3` is counted in `run_checked.retries`:
    - every API answered: `Succeeded { summary: "Found 4 new papers" | "Nothing new" }`;
-   - some answered and some failed, with `attempt + 1 < max_attempts`: `RetryAt { at: now + max(1 h, retry_after), reason: Backoff }`, keeping the items already posted;
+   - some answered and some failed, with `retries < 3`: `retries += 1`, then `RetryAt { at: now + max(1 h, retry_after), reason: Backoff }`. The items already posted are kept;
    - some answered, retries used up: `Succeeded { summary: "Found 4 new papers; Semantic Scholar didn't answer" }`;
-   - none answered and every failure is `Offline`: `RetryAt { now + 15 min, Offline }` while attempts remain, then `Skipped { "Not checked: no internet connection" }`. Never `Failed`, so being offline never holds an alert;
-   - none answered, otherwise: `RetryAt` 1 h while attempts remain, then `Permanent` (counts toward the hold).
+   - none answered and every failure is `Offline`: `RetryAt { now + 15 min, Offline }` while `retries < 3`, then `Skipped { "Not checked: no internet connection" }`. Never `Failed`, so being offline never holds an alert;
+   - none answered, otherwise: `RetryAt` 1 h while `retries < 3`, then `Permanent` (counts toward the hold).
 - **`held`:** posts `paper-alert-hold:<job>`, kind `automation`, `needs_you`:
   - title `The alert for “linear attention” stopped: arXiv, OpenAlex and Semantic Scholar failed 3 weeks in a row.`;
   - `data = {jobId, fix:'resume', resume:'paper_alert'}`.
+
+**Tools:**
+- `create_paper_alert {words}` and `update_paper_alert {id, words?, enabled?}`:
+  - Write tier, with `must_confirm` true;
+  - the preview is the consent line, plus "The first check runs now." on create;
+  - refused with the policy's reason under Local-only.
+- `delete_paper_alert {id}`: Write tier, local edit. Preview: "Stop the alert for “x”. The papers it found stay in What's new."
+- After saving, each tool highlights the alert row it changed (§12 item 5) through `show_in_library` once Task 8 adds the section. In this task it emits no navigation.
 
 **Coverage:**
 
@@ -506,33 +530,51 @@ pub fn consent_line(words: &str) -> String;  // CONSENT_TEMPLATE with {words}
 - [ ] **Step 1: Write the failing tests:**
   - `a_blocked_run_sends_nothing_and_is_skipped`: Local-only is on, so the recording transport's `sent` is empty, the run is `skipped`, and `failure_streak` is 0.
   - `local_only_refuses_creating_and_rewording_an_alert`. Also asserted: web access off refuses with its own reason (Q7).
-  - `creating_an_alert_stores_the_consent_and_checks_at_once`: `consentText` equals `consent_line(words)`, and one run is started.
+  - `creating_an_alert_stores_the_consent_and_checks_at_once`: `consentText` equals `consent_line(words)`, and one `event` run is started.
   - `one_api_failing_posts_the_rest_and_retries_only_it`:
-    - attempt 1: the posted item names arXiv and OpenAlex, and the run waits `backoff` until +1 h;
-    - attempt 2: only Semantic Scholar is asked, and the same item id is updated.
+    - first pass: the posted item names arXiv and OpenAlex, and the run waits `backoff` until +1 h;
+    - second pass: only Semantic Scholar is asked, and the same item id is updated.
+  - `three_retries_then_the_run_succeeds_with_what_it_found`. Also asserted: after a catch-up wait there are still 3 retries.
   - `a_retry_that_returns_the_same_paper_adds_nothing`.
   - `offline_three_weeks_running_never_holds`.
   - `three_failed_weeks_hold_with_one_attention_item_and_resume_clears_it`.
   - `nothing_new_posts_no_inbox_item` (Q4).
-  - `a_catch_up_run_waits_two_minutes_after_a_wake`.
+  - `a_catch_up_run_waits_two_minutes_after_a_wake_and_reads_checking`.
   - `ten_alerts_is_the_most`.
+  - Tool tests:
+    - `create_paper_alert_asks_with_the_consent_line`;
+    - `update_with_new_words_asks_again`;
+    - `paper_alert_tools_are_refused_in_local_only`, with the reason passed through.
   - In `whatsNew.test.ts`, `the consent line names all three APIs`: `consentLine('linear attention KV cache')` equals the same literal as the Rust test.
 - [ ] **Step 2: Run** CI "App tests and doc tests" and "Frontend Typecheck + Tests". Expected: the new tests fail.
-- [ ] **Step 3: Implement.** Register the three commands in all four places.
+- [ ] **Step 3: Implement.** Register the three commands in all four places, and the three tools.
 - [ ] **Step 4: Run** the same CI jobs. Expected: they pass, including the ACL and coverage gates.
 - [ ] **Step 5: Commit** "Paper alerts: weekly checks the user consents to, refused in Local-only mode".
 
-### Task 8: The What's new commands, folder watch, and Add to library
+### Task 8: The What's new commands, folder watch, Add to library, the `whats_new` tool and navigation
+
+`whats_new_list`, the `whats_new` tool, `LIBRARY_SECTIONS` on both sides, `navigation.librarySections.whats_new` and the `LibraryView` arm all land here. The coverage gate checks them together.
 
 **Files:**
 - Modify:
-  - `app/src-tauri/src/whats_new.rs`;
-  - `app/src-tauri/src/agent_tools/research.rs`: extract `pub(crate) async fn download_into(client: &SafeClient, url: &Url, plan: &FolderPlan, file_name: Option<&str>) -> Result<Downloaded, ToolError>` from `DownloadFileTool::execute` (lines 642–end of the write). `execute` calls it, so its behaviour and tests are unchanged.
-  - `lib.rs`, `permissions/main-window.json`, `agent-coverage.json`, `app/src/features/whatsNew/api.ts`.
-- Test: `whats_new.rs`, and the `research.rs` tests, unchanged and passing.
+  - `app/src-tauri/src/whats_new.rs`.
+  - `app/src-tauri/src/agent_tools/research.rs`: extract `pub(crate) async fn download_into(client: &SafeClient, url: &Url, plan: &FolderPlan, file_name: Option<&str>) -> Result<Downloaded, ToolError>` from `DownloadFileTool::execute` (line 642 to the end of the write). `execute` calls it, so its behaviour and tests are unchanged.
+  - `app/src-tauri/src/agent_tools/whats_new.rs`: the `whats_new` and `set_folder_watch` tools.
+  - `app/src-tauri/src/agent_tools/mod.rs`: `LIBRARY_SECTIONS: [&str; 5]`, ending in `"whats_new"`.
+  - `app/src/features/agent/navigation.ts`: `LIBRARY_SECTIONS` adds `'whats_new'`.
+  - `app/src/features/library/LibraryView.tsx`: the `target.section === 'whats_new'` arm. It reveals `agentItemKey('library-section','whats_new')` or `agentItemKey('feed-item', item)`, with a `missed` message until Task 10 renders the section.
+  - `lib.rs`, `permissions/main-window.json`, `app/src/features/whatsNew/api.ts`.
+  - `agent-coverage.json`, with these entries:
+    - the commands below;
+    - `navigation.librarySections.whats_new = ["whats_new"]`.
+- Test: `whats_new.rs`; `agent_tools/whats_new.rs` (the `expect_navigation` helper); the `research.rs` tests, unchanged and passing; the coverage gate.
 
 **Commands:**
-- `whats_new_list() -> WhatsNewView`: `{items: FeedItem[] (≤ 200, newest first, file rows whose file no longer exists dropped: D14), alerts: AlertView[], folders: {sourceId, folder, on}[], blockedReason}`.
+- `whats_new_list() -> WhatsNewView`: maps to `whats_new`. It returns:
+  - `items: FeedItem[]`: at most 200, newest first, with file rows whose file no longer exists dropped (D14);
+  - `alerts: AlertView[]`;
+  - `folders: {sourceId, folder, on}[]`;
+  - `blockedReason`.
 - `whats_new_mark_seen(ids)`: **excluded** ("What the user has seen is theirs, as with `inbox_dismiss`.").
 - `whats_new_dismiss(id, restore: bool)`: **excluded**, with the same reason. `restore` backs Undo.
 - `folder_watch_set(source_id, on)`: maps to `set_folder_watch`.
@@ -541,58 +583,31 @@ pub fn consent_line(words: &str) -> String;  // CONSENT_TEMPLATE with {words}
   - It downloads only the API-reported `data.pdfUrl` into the folder's root, named `<title_key truncated to 80>.pdf`.
   - It then sets `data.addedPath` and returns the path. The watcher indexes the file; Task 5's rule keeps it from showing again as a new file.
 
+**Tools:**
+- `whats_new`:
+  - Read tier;
+  - returns the items (title, folder or sources, found, seen) and the alerts with their states, under `UNTRUSTED_NOTICE`;
+  - emits `show_in_library(ctx, "whats_new", item, label)`.
+- `set_folder_watch {source, on}`: Write tier, local edit. Preview: "Show new files in *Research Papers* in What's new: on". After saving, it highlights the folder row.
+- The Task 7 alert tools now also highlight their row through `show_in_library(ctx, "whats_new", Some(alert_id), …)`.
+
 - [ ] **Step 1: Write the failing tests:**
   - `the_list_hides_dismissed_rows_and_missing_files`;
   - `dismiss_and_restore`;
   - `mark_seen_sets_seen_at_once`;
   - `folder_watch_off_then_on`;
   - `add_to_library_refuses_without_an_open_access_pdf_and_in_local_only`;
-  - `add_to_library_downloads_only_the_reported_pdf_url` (recording transport: one request, to `pdfUrl`).
-- [ ] **Step 2: Run** CI "App tests and doc tests". Expected: the new tests fail.
-- [ ] **Step 3: Implement.** Register all five commands in all four places.
-- [ ] **Step 4: Run** CI "App tests and doc tests" and "Frontend Typecheck + Tests". Expected: they pass.
-- [ ] **Step 5: Commit** "What's new: list, dismiss, folder watch and Add to library".
-
-### Task 9: Agent tools and `whats_new` navigation
-
-**Files:**
-- Create: `app/src-tauri/src/agent_tools/whats_new.rs`.
-- Modify:
-  - `app/src-tauri/src/agent_tools/mod.rs`:
-    - `LIBRARY_SECTIONS: [&str; 5]`, ending in `"whats_new"`;
-    - `HostEffects::whats_new(&self) -> Option<Arc<WhatsNew>>`, default `None`, with `TauriEffects` and the test `Recorder` implemented;
-    - registration.
-  - `app/src/features/agent/navigation.ts`: `LIBRARY_SECTIONS` adds `'whats_new'`.
-  - `agent-coverage.json`: `navigation.librarySections.whats_new = ["whats_new"]`; `whats_new_list` gets `{tool: "whats_new"}`.
-  - `app/src/features/library/LibraryView.tsx`: the `target.section === 'whats_new'` arm (Task 11 renders the section it reveals).
-- Test: `agent_tools/whats_new.rs` tests (the `expect_navigation` helper) and the coverage gate.
-
-**Tools:**
-- `whats_new`:
-  - Read tier;
-  - returns the items (title, folder or sources, found, seen) and the alerts with their states, under `UNTRUSTED_NOTICE`;
-  - emits `show_in_library(ctx, "whats_new", item, label)`.
-- `create_paper_alert {words}` and `update_paper_alert {id, words?, enabled?}`:
-  - Write tier, with `must_confirm` true;
-  - the preview is the consent line, plus "The first check runs now." on create.
-- `delete_paper_alert {id}`: Write tier, local edit. Preview: "Stop the alert for “x”. The papers it found stay in What's new."
-- `set_folder_watch {source, on}`: Write tier, local edit. Preview: "Show new files in *Research Papers* in What's new: on".
-- Each write highlights the alert or folder row it changed (§12 item 5).
-
-- [ ] **Step 1: Write the failing tests:**
+  - `add_to_library_downloads_only_the_reported_pdf_url` (recording transport: one request, to `pdfUrl`);
   - `whats_new_opens_the_section_and_marks_text_untrusted`;
-  - `create_paper_alert_asks_with_the_consent_line`;
-  - `update_with_new_words_asks_again`;
-  - `paper_alert_tools_are_refused_in_local_only` (the reason is passed through);
   - `set_folder_watch_previews_the_folder`;
   - `whats_new_navigation_round_trips` (`expect_navigation`).
   - The existing coverage test checks `LIBRARY_SECTIONS` on both sides and the `LibraryView` handler.
 - [ ] **Step 2: Run** CI "App tests and doc tests". Expected: the new tests fail.
-- [ ] **Step 3: Implement.**
+- [ ] **Step 3: Implement.** Register all five commands in all four places, and both tools.
 - [ ] **Step 4: Run** CI "App tests and doc tests" and "Frontend Typecheck + Tests". Expected: they pass.
-- [ ] **Step 5: Commit** "What's new: the assistant reads it and sets alerts and folder watches with approval".
+- [ ] **Step 5: Commit** "What's new: list, dismiss, folder watch, Add to library, and the assistant's view of it".
 
-### Task 10: The What's new view model
+### Task 9: The What's new view model
 
 **Files:**
 - Create: `app/src/features/whatsNew/model.ts`.
@@ -626,6 +641,7 @@ export const EMPTY_COPY: string; export const LOCAL_ONLY_COPY: string;
     | `checking` | "Checking now…" |
     | `waiting_retry` | "Semantic Scholar didn't answer; trying again at 11:40" |
     | `held` | "Stopped after failing 3 weeks in a row", fix `resume` |
+    | `offline` | "No internet connection; Shodh checks again when it's back" |
     | `blocked` | `LOCAL_ONLY_COPY`, fix `privacy` |
     | `off` | "Off" |
   - `the empty copy is the spec's`;
@@ -635,12 +651,12 @@ export const EMPTY_COPY: string; export const LOCAL_ONLY_COPY: string;
 - [ ] **Step 4: Run** CI "Frontend Typecheck + Tests". Expected: they pass.
 - [ ] **Step 5: Commit** "What's new: the section's states, buckets and alert lines".
 
-### Task 11: The Library section, the alert dialog and the Inbox link
+### Task 10: The Library section, the alert dialog and the Inbox link
 
 **Files:**
 - Create: `app/src/features/whatsNew/WhatsNewSection.tsx`, `PaperAlertDialog.tsx`.
 - Modify:
-  - `app/src/features/library/LibraryView.tsx`: mount the section after `{unlistedCard}` and before the folder groups. It shows when `hasLibrary` or alerts exist. The `whats_new` arm reveals `agentItemKey('library-section','whats_new')` or `agentItemKey('feed-item', id)`.
+  - `app/src/features/library/LibraryView.tsx`: mount the section after `{unlistedCard}` and before the folder groups. It shows when `hasLibrary` or alerts exist. It carries the `data-agent-item` keys that Task 8's arm reveals.
   - `app/src/features/inbox/InboxButton.tsx`: Resume with `data.resume === 'paper_alert'` calls `paperAlertUpdate(jobId, {enabled: true})`. The repeat path is unchanged.
   - The folder card's menu (`FolderCard`) gains the toggle "Show new files in What's new".
 - Test: `app/tests/whatsNew.test.ts` (source checks with `read()`).
@@ -650,7 +666,7 @@ export const EMPTY_COPY: string; export const LOCAL_ONLY_COPY: string;
   - `no button in the section wraps`: no `flex-wrap`, and every button carries `whitespace-nowrap`.
   - `paper text is plain text`: no `ReactMarkdown` and no `dangerouslySetInnerHTML` in either file.
   - `the dialog shows the consent line before Turn on`: `consentLine(` is used in `PaperAlertDialog.tsx`, and the Turn on button is the only call site of `paperAlertCreate(`.
-  - `LibraryView opens the whats_new section`: matches `target.section === 'whats_new'`.
+  - `the section carries the keys the navigation reveals`: `agentItemKey('library-section', 'whats_new')` and `agentItemKey('feed-item'` occur in `WhatsNewSection.tsx`.
   - `resume of a paper alert calls paper_alert_update`.
 - [ ] **Step 2: Run** CI "Frontend Typecheck + Tests". Expected: the new checks fail.
 - [ ] **Step 3: Implement** to the UX section below. Refresh on the `whats-new-changed` and `folder-sync` events. Mark seen after the section has been on screen for 1 s (IntersectionObserver).
@@ -727,11 +743,11 @@ export const EMPTY_COPY: string; export const LOCAL_ONLY_COPY: string;
 | The first sync is a baseline | Task 1 `a_first_sync_is_a_baseline`, `an_interrupted_first_sync_stays_a_baseline` |
 | Added files show, changed ones don't | Task 1 (`a_changed_file_is_not_new`, rename, forget), Task 5 `added_files_become_rows_and_one_digest` |
 | De-dup across the APIs and against the library | Task 6 `the_same_paper_from_three_apis_is_one`, `new_papers_skip_the_library_and_earlier_items`, `a_paper_known_by_title_is_not_new_when_it_gains_a_doi` |
-| The consent line names all three APIs | Task 6 and Task 7 (Rust and TS, same literal), Task 9 preview |
-| Local-only refuses alerts | Task 7 (create, reword, run), Task 8 (Add to library), Task 9 (tools) |
+| The consent line names all three APIs | Task 6 and Task 7 (Rust and TS, same literal; tool preview) |
+| Local-only refuses alerts | Task 7 (create, reword, run), Task 7 (tools), Task 8 (Add to library) |
 | Fixture API replies only | Tasks 6–8: `FakeTransport` and recording transports over the `linear-attention` fixtures |
 | One Info item per run | Task 5 (`two_syncs_on_one_day_update_one_digest`), Task 7 (`one_api_failing_…` updates one id) |
-| `whats_new` navigation | Task 9 `whats_new_navigation_round_trips` and the coverage gate, Task 11 `LibraryView` arm |
+| `whats_new` navigation | Task 8 `whats_new_navigation_round_trips`, the coverage gate and the `LibraryView` arm; Task 10 renders the section |
 
 ## Departures from the spec
 
@@ -751,10 +767,11 @@ export const EMPTY_COPY: string; export const LOCAL_ONLY_COPY: string;
 - **D6. A watcher sync whose only change is files What's new reports posts no `indexing:` item.** Otherwise every new file shows twice in Info.
 - **D7. Alerts have their own requests.** They are date-bounded and newest-first, one per API, with no OpenAlex title request. Each API's `checkedThrough` date lives in the job's `input_json`. `search_papers` asks for relevance with no date, so a weekly re-run would return the same classics.
 - **D8. Retries, and "try again in an hour".** The engine gains `Handled::RetryAt`.
-  - A failed API is retried alone, an hour later (or at its `Retry-After`), up to 3 times. After that the run succeeds with what it found and names the API that didn't answer.
+  - A failed API is retried alone, an hour later (or at its `Retry-After`), up to 3 times, counted by the handler (`run_checked.retries`). After that the run succeeds with what it found and names the API that didn't answer.
   - A run fails, and counts toward the hold, only when no API answered and the cause was not the connection.
   - Being offline ends `skipped`, so a laptop that was away never holds its alerts.
-  - A catch-up run waits 2 minutes (§5.3). PR 1 deferred that rule.
+  - A catch-up run waits 2 minutes (§5.3), as `backoff` with code `after_wake`. It reads "Checking now…" and does not use up a retry. PR 1 deferred that rule.
+  - The first check at turn-on is an `event` run, since the engine has no manual start.
 - **D9. An alert is its `paper_alert` engine job.** There is no separate table, and the alert id is the job id.
 - **D10. De-dup against the library is only as good as what Shodh knows of the library's papers:**
   - the citation scans (made when the paper graph is built);
@@ -804,8 +821,8 @@ export const EMPTY_COPY: string; export const LOCAL_ONLY_COPY: string;
 - **Spec coverage:**
   - §7 new files: Tasks 1 and 5. Paper alerts: Tasks 6 and 7.
   - Data: Task 2. Inbox: Tasks 2, 5 and 7.
-  - Commands and tools: Tasks 7–9. UX: Tasks 10 and 11.
-  - §12 item 4: Task 9 and Task 11.
+  - Commands and tools: Tasks 7–8. UX: Tasks 9 and 10.
+  - §12 item 4: Task 8 and Task 10.
   - §5.3's wake and offline rules are D8.
 - **Types shared across tasks:**
   - `PaperApi`, `AlertInput`, `AlertView.state`, `FeedItem` (camelCase);

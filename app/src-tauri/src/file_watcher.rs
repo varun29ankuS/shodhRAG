@@ -659,7 +659,7 @@ fn inbox_item(
 #[derive(Debug)]
 enum SyncNotice {
     /// Post (or update) the folder's `indexing:` item.
-    Post(NewInboxItem),
+    Post(Box<NewInboxItem>),
     /// Remove the folder's `indexing:` item: What's new's item tells of this sync.
     Clear(String),
 }
@@ -687,7 +687,7 @@ fn sync_notice(
     if shown_in_whats_new && result.as_ref().is_ok_and(only_added) {
         return Some(SyncNotice::Clear(format!("indexing:{}", source.id)));
     }
-    inbox_item(source, result).map(SyncNotice::Post)
+    inbox_item(source, result).map(|item| SyncNotice::Post(Box::new(item)))
 }
 
 /// Why a sync's card says something could not be read: the folders and
@@ -749,7 +749,7 @@ async fn sync_once(app: &AppHandle, source: &FolderSourceRef) {
             Err(_) => false,
         };
         match sync_notice(source, &result, shown) {
-            Some(SyncNotice::Post(item)) => crate::inbox_commands::post(app, item).await,
+            Some(SyncNotice::Post(item)) => crate::inbox_commands::post(app, *item).await,
             Some(SyncNotice::Clear(id)) => crate::inbox_commands::resolve(app, id).await,
             None => {}
         }

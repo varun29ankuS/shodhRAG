@@ -18,7 +18,17 @@ import {
   attentionCount,
   attentionLabel,
   countLabel,
+  focusZone,
+  inboxCounts,
+  keyAction,
+  panelNav,
   panelState,
+  pointerDownCloses,
+  requestGate,
+  retryButton,
+  ATTENTION_MAX,
+  LIST_SELECTOR,
+  ROW_SELECTOR,
   tabItems,
   tabOf,
   AUTOMATION_YIELD_ID,
@@ -273,27 +283,51 @@ test('the attention tab and the bell agree, and each tab keeps the given order',
   assert.equal(attentionCount(list), 3);
   assert.deepEqual(tabItems(list, 'attention').map(i => i.id), ['a', 'm', 'x']);
   assert.deepEqual(tabItems(list, 'info').map(i => i.id), ['e', 't', 'i']);
-  assert.equal(attentionLabel(list, 99), '3');
-  assert.equal(attentionLabel(list, 2), '2+');
+  assert.equal(attentionLabel(list), '3');
+  const counts = inboxCounts({ loaded: true, error: null, items: list });
+  assert.deepEqual(counts, { pill: '3', bell: '3', bellAria: 'Inbox, 3 need your attention' });
 });
 
 test('count labels cap at their width', () => {
   assert.equal(countLabel(0, 99), '0');
   assert.equal(countLabel(99, 99), '99');
   assert.equal(countLabel(100, 99), '99+');
-  assert.equal(countLabel(10, 9), '9+', 'the bell');
+  assert.equal(countLabel(10, 9), '9+');
+  assert.equal(ATTENTION_MAX, 99);
 });
 
-test('past the memory cap the attention count says so, never a smaller number', () => {
+test('the bell shows exactly what the Attention tab shows, past 9 and past 99', () => {
+  for (const n of [1, 10, 99, 100, 250]) {
+    const list = Array.from({ length: n }, (_, i) => item(`a${i}`, 'approval', 'needs_you'));
+    const counts = inboxCounts({ loaded: true, error: null, items: list });
+    assert.equal(counts.bell, counts.pill, `${n} items`);
+    assert.equal(counts.pill, n > 99 ? '99+' : String(n));
+  }
+  assert.equal(inboxCounts({ loaded: true, error: null, items: [item('a', 'approval', 'needs_you')] }).bellAria, 'Inbox, 1 needs your attention');
+});
+
+test('past the memory cap the attention count says so, on the bell and the tab', () => {
   const capped = Array.from({ length: 50 }, (_, n) =>
     withData(item(`memory:p${n}`, 'memory', 'needs_you'), { suggestionId: `p${n}`, capped: true }));
-  assert.equal(attentionLabel(capped, 99), '50+');
-  assert.equal(attentionLabel([...capped, item('a', 'approval', 'needs_you')], 99), '51+');
-  assert.equal(attentionLabel(capped, 9), '9+', 'the bell');
+  const counts = inboxCounts({ loaded: true, error: null, items: capped });
+  assert.equal(counts.pill, '50+');
+  assert.equal(counts.bell, '50+');
+  assert.equal(counts.bellAria, 'Inbox, 50+ need your attention');
+  assert.equal(attentionLabel([...capped, item('a', 'approval', 'needs_you')]), '51+');
   const uncapped = capped.map(i => withData(i, { suggestionId: i.data.suggestionId }));
-  assert.equal(attentionLabel(uncapped, 99), '50');
+  assert.equal(attentionLabel(uncapped), '50');
   // A capped flag on anything but a memory suggestion means nothing.
-  assert.equal(attentionLabel([withData(item('r', 'reminder', 'needs_you'), { capped: true })], 99), '1');
+  assert.equal(attentionLabel([withData(item('r', 'reminder', 'needs_you'), { capped: true })]), '1');
+});
+
+test('no count before the first answer, or beside a failed load with nothing to count', () => {
+  const one = [item('a', 'approval', 'needs_you')];
+  assert.deepEqual(inboxCounts({ loaded: false, error: null, items: [] }), { pill: null, bell: null, bellAria: 'Inbox' });
+  assert.deepEqual(inboxCounts({ loaded: true, error: 'x', items: [] }), { pill: null, bell: null, bellAria: 'Inbox' });
+  // A refresh that failed keeps the last list, and its count.
+  assert.equal(inboxCounts({ loaded: true, error: 'x', items: one }).pill, '1');
+  // Loaded and nothing waiting: the tab says 0, the bell shows nothing.
+  assert.deepEqual(inboxCounts({ loaded: true, error: null, items: [] }), { pill: '0', bell: null, bellAria: 'Inbox' });
 });
 
 test('loading is never shown as empty', () => {
@@ -320,45 +354,118 @@ test('no UI text says Signal or Noise', () => {
   for (const text of texts) assert.doesNotMatch(text, /signal|noise/i);
 });
 
-const inboxButton = () => read('features/inbox/InboxButton.tsx');
+// The panel's behaviour as pure functions (this repo has no DOM test harness: its
+// tests run under Node's strip-types runner, which cannot load .tsx).
 
-test('the panel has two tabs and opens on attention; only Attention has a count', () => {
-  const source = inboxButton();
-  assert.match(source, /role="tablist"/);
-  assert.match(source, /role="tab"/);
-  assert.match(source, /role="tabpanel"/);
-  assert.match(source, /setTab\('attention'\)/);
-  assert.match(source, /attentionLabel\(visible, 99\)/);
-  assert.match(source, />\s*Show Info\s*</, 'the empty Attention link names no number');
-  assert.doesNotMatch(source, /Show Info \(/);
+test('every open starts on Attention, from the bell or the palette, before the first frame', () => {
+  const onInfo = { open: false, tab: 'info' as const };
+  assert.deepEqual(panelNav(onInfo, { type: 'toggle' }), { open: true, tab: 'attention' });
+  assert.deepEqual(panelNav(onInfo, { type: 'open' }), { open: true, tab: 'attention' });
+  const shown = panelNav({ open: true, tab: 'attention' }, { type: 'show', tab: 'info' });
+  assert.deepEqual(shown, { open: true, tab: 'info' });
+  assert.deepEqual(panelNav(shown, { type: 'toggle' }), { open: false, tab: 'info' }, 'closing keeps the tab until the next open');
+  assert.deepEqual(panelNav(panelNav(shown, { type: 'close' }), { type: 'toggle' }), { open: true, tab: 'attention' });
+  const closed = { open: false, tab: 'attention' as const };
+  assert.equal(panelNav(closed, { type: 'close' }), closed, 'closing a closed panel changes nothing');
 });
 
-test('the badge counts attention', () => {
-  const source = inboxButton();
-  assert.match(source, /attentionLabel\(visible, 9\)/);
-  assert.doesNotMatch(source, /waitingCount/);
-  assert.match(source, /need your attention/);
+// A DOM stand-in: an element with the selectors it matches, inside or outside the panel.
+interface Fake {
+  name: string;
+  matches: string[];
+  closest(selector: string): unknown;
+}
+const el = (name: string, ...matches: string[]): Fake => ({
+  name,
+  matches,
+  closest: (selector: string) => (selector.split(',').some(s => matches.includes(s.trim())) ? {} : null),
+});
+const box = (...inside: Fake[]) => ({ contains: (n: Fake | null) => n !== null && inside.includes(n) });
+
+const row = el('row', ROW_SELECTOR, LIST_SELECTOR);
+const rowButton = el('Approve', LIST_SELECTOR);
+const tabButton = el('Info tab', '[role="tab"]');
+const why = el('Why is this here?');
+const showInfo = el('Show Info');
+const tryAgain = el('Try again');
+const popover = el('pop-up', '[role="dialog"]');
+const panel = box(row, rowButton, tabButton, why, showInfo, tryAgain);
+
+test('keys act on an item only from the item list', () => {
+  assert.equal(focusZone(row, panel), 'row');
+  assert.equal(focusZone(rowButton, panel), 'item');
+  for (const other of [tabButton, why, showInfo, tryAgain]) assert.equal(focusZone(other, panel), 'panel', other.name);
+  assert.equal(focusZone(popover, panel), 'outside', 'the pop-up is a portal outside the panel');
+  assert.equal(focusZone(null, panel), 'outside');
+
+  for (const command of ['primary', 'secondary', 'undo'] as const) {
+    assert.equal(keyAction(command, 'row'), command);
+    assert.equal(keyAction(command, 'item'), command);
+    assert.equal(keyAction(command, 'panel'), null, `${command} on a tab, Why, Show Info or Try again`);
+    assert.equal(keyAction(command, 'outside'), null, `${command} in the pop-up`);
+  }
+  assert.equal(keyAction('open', 'row'), 'open');
+  assert.equal(keyAction('open', 'item'), null, 'Enter on a button presses that button');
+  assert.equal(keyAction('open', 'panel'), null);
+  for (const command of ['next', 'previous'] as const) {
+    assert.equal(keyAction(command, 'panel'), command, 'J/K reach the list from a tab');
+    assert.equal(keyAction(command, 'outside'), null);
+  }
+});
+
+test('A on the Info tab never approves an approval in Attention', () => {
+  const command = inboxCommand({ key: 'a' });
+  assert.equal(command, 'primary');
+  assert.equal(keyAction(command!, focusZone(tabButton, panel)), null);
+});
+
+test('a press in the Why pop-up keeps the Inbox open; a press elsewhere outside closes it', () => {
+  const bell = el('bell');
+  const root = box(bell, row, rowButton, tabButton, why);
+  const page = el('page');
+  assert.equal(pointerDownCloses(popover, root), false);
+  assert.equal(pointerDownCloses(row, root), false);
+  assert.equal(pointerDownCloses(bell, root), false, 'the bell toggles it itself');
+  assert.equal(pointerDownCloses(page, root), true);
+  assert.equal(pointerDownCloses(null, root), true, 'a press on the document itself');
+  assert.equal(pointerDownCloses(page, null), false, 'no panel, nothing to close');
+});
+
+test('an older Inbox read never overwrites a newer one', () => {
+  const gate = requestGate();
+  const first = gate.begin();
+  const second = gate.begin();
+  assert.equal(gate.isLatest(first), false, 'the first answer arrives late and is dropped');
+  assert.equal(gate.isLatest(second), true);
+  const third = gate.begin();
+  assert.equal(gate.isLatest(second), false);
+  assert.equal(gate.isLatest(third), true);
+});
+
+test('Try again shows that it is trying, and cannot be pressed twice', () => {
+  assert.deepEqual(retryButton(false), { label: 'Try again', disabled: false });
+  assert.deepEqual(retryButton(true), { label: 'Trying again…', disabled: true });
 });
 
 test('the inbox action row never wraps', () => {
-  const source = inboxButton();
+  // Wrapping is layout, which Node cannot measure; this pins the classes that forbid it
+  // (the coordinator checks the rendered row over CDP).
+  const source = read('features/inbox/InboxButton.tsx');
   assert.doesNotMatch(source, /flex-wrap/);
   const action = /const ACTION =\s*'([^']*)'/.exec(source);
   assert.ok(action, 'the ACTION class constant');
   assert.match(action[1], /whitespace-nowrap/);
 });
 
-test('the why popover neither closes nor drives the inbox', () => {
-  const source = inboxButton();
-  assert.match(source, /label="Why is this here\?"/);
-  assert.ok((source.match(/insideOtherDialog/g) ?? []).length >= 3, 'imported, and used by the mousedown and key handlers');
-});
-
-test('the empty state is never shown before the first load', () => {
-  const source = inboxButton();
-  assert.match(source, /panelState\(/);
-  assert.match(source, /'loading'/);
-  assert.doesNotMatch(source, /Nothing is waiting for you\./);
+test('work stopped at close, as Rust stores it, lands in Info', () => {
+  // Written by the Rust test `work_stopped_at_close_matches_the_fixture_the_inbox_tabs_read`
+  // (app/src-tauri/src/inbox_commands.rs), which asserts recover() makes exactly this.
+  const fixture = JSON.parse(readFileSync(new URL('./fixtures/inbox/stopped-at-close.json', import.meta.url), 'utf8'));
+  const items = parseItems(fixture);
+  assert.equal(items.length, 2, 'both rows parse');
+  assert.deepEqual(items.map(i => [i.kind, i.status]), [['citation_graph', 'failed'], ['indexing', 'failed']]);
+  for (const i of items) assert.equal(tabOf(i), 'info', i.id);
+  assert.equal(attentionCount(items), 0);
 });
 
 test('the inbox is the last control of the top bar', () => {

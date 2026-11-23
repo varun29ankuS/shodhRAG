@@ -532,6 +532,56 @@ mod tests {
         );
     }
 
+    /// The rows `recover` leaves for work stopped by a close, exactly as `inbox_list`
+    /// sends them. `app/tests/inbox.test.ts` reads the same file and checks that they
+    /// land in Info, so a restart never raises the bell.
+    #[test]
+    fn work_stopped_at_close_matches_the_fixture_the_inbox_tabs_read() {
+        use chrono::TimeZone;
+        let dir = tempfile::tempdir().unwrap();
+        let store = InboxStore::open(&dir.path().join("shodh.db"), None).unwrap();
+        let started = Utc.with_ymd_and_hms(2026, 11, 23, 9, 0, 0).unwrap();
+        // The working items of a folder's first index and of the citation graph, as
+        // `enhanced_rag_commands` and `graph_commands` post them.
+        for item in [
+            work_item(
+                "indexing:s1".into(),
+                InboxKind::Indexing,
+                InboxStatus::Working,
+                "Indexing Papers",
+                None,
+                Some(InboxLink::new(
+                    "library",
+                    Some(json!({ "kind": "source", "sourceId": "s1" })),
+                )),
+            ),
+            work_item(
+                "citation_graph".into(),
+                InboxKind::CitationGraph,
+                InboxStatus::Working,
+                "Building the citation graph",
+                Some("3 indexed PDFs".into()),
+                Some(InboxLink::new("library", None)),
+            ),
+        ] {
+            store.put(&item, started).unwrap();
+        }
+        store
+            .recover(started + chrono::Duration::minutes(5))
+            .unwrap();
+        let sent = serde_json::to_value(store.list().unwrap()).unwrap();
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../tests/fixtures/inbox/stopped-at-close.json");
+        let fixture: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            sent,
+            fixture,
+            "{}",
+            serde_json::to_string_pretty(&sent).unwrap()
+        );
+    }
+
     #[test]
     fn memory_items_past_the_cap_are_cut_and_marked_capped() {
         let memory = |n: usize| InboxItem {

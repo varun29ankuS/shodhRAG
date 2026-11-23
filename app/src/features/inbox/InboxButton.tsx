@@ -1,11 +1,10 @@
-import React, { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import React, { useCallback, useEffect, useId, useMemo, useReducer, useRef, useState, useSyncExternalStore } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { Bell, Check, ExternalLink, Inbox as InboxIcon, RotateCcw, X } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { notify } from '../../lib/notify';
 import { removeWithUndo, undoLast } from '../../lib/undoToast';
-import { insideOtherDialog } from '../../lib/escapeScope';
 import { relativeTime } from '../../utils/time';
 import { InfoPopover } from '../../components/ui/InfoPopover';
 import { acceptSuggestion, errorText, rejectSuggestion } from '../memory/api';
@@ -25,18 +24,22 @@ import {
   TAB_LABEL,
   TAB_RULES,
   actionsFor,
-  attentionCapped,
-  attentionCount,
-  attentionLabel,
+  focusZone,
+  inboxCounts,
   inboxCommand,
+  keyAction,
   keepSelection,
   moveSelection,
+  panelNav,
   panelState,
   parseItems,
+  pointerDownCloses,
+  requestGate,
+  retryButton,
   settingsSectionOf,
   tabItems,
 } from './model';
-import type { InboxChoice, InboxItem, InboxTab, PrimaryAction } from './model';
+import type { InboxChoice, InboxItem, InboxTab, PrimaryAction, RequestGate } from './model';
 import { repeatDecide, repeatGet, repeatSet } from '../tasks/repeatApi';
 
 const FOCUS_RING =
@@ -70,9 +73,11 @@ function targetElement(target: EventTarget | null): Element | null {
  * dismisses, U undoes the last dismissal.
  */
 export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps) {
-  const [open, setOpen] = useState(false);
-  const [tab, setTab] = useState<InboxTab>('attention');
+  const [{ open, tab }, nav] = useReducer(panelNav, { open: false, tab: 'attention' });
   const [items, setItems] = useState<InboxItem[]>([]);
+  const [retrying, setRetrying] = useState(false);
+  const gateRef = useRef<RequestGate>(requestGate());
+  const sectionRef = useRef<HTMLElement>(null);
   const [loaded, setLoaded] = useState(false);
   const [hidden, setHidden] = useState<ReadonlySet<string>>(() => new Set());
   const [selected, setSelected] = useState<Record<InboxTab, number>>({ attention: 0, info: 0 });
@@ -90,16 +95,31 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
   const tabId = (t: InboxTab) => `${tabsId}-${t}`;
   const tabPanelId = `${tabsId}-panel`;
 
+  // Reads overlap (several change events at once): only the latest answer is applied.
   const load = useCallback(async () => {
+    const gate = gateRef.current;
+    const ticket = gate.begin();
     try {
-      setItems(parseItems(await invoke<unknown>('inbox_list')));
+      const listed = parseItems(await invoke<unknown>('inbox_list'));
+      if (!gate.isLatest(ticket)) return;
+      setItems(listed);
       setLoadError(null);
+      setLoaded(true);
     } catch (err) {
+      if (!gate.isLatest(ticket)) return;
       setLoadError(errorText(err));
-    } finally {
       setLoaded(true);
     }
   }, []);
+
+  const retry = async () => {
+    setRetrying(true);
+    try {
+      await load();
+    } finally {
+      setRetrying(false);
+    }
+  };
 
   useEffect(() => {
     void load();
@@ -109,7 +129,7 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
       listen('memory-suggestions-changed', () => void load()),
       listen('calendar-changed', () => void load()),
     ];
-    const openFromPalette = () => setOpen(true);
+    const openFromPalette = () => nav({ type: 'open' });
     window.addEventListener(OPEN_INBOX_EVENT, openFromPalette);
     return () => {
       window.removeEventListener(OPEN_INBOX_EVENT, openFromPalette);
@@ -117,11 +137,9 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
     };
   }, [load]);
 
-  // Every open starts on Attention, which is what the badge counted.
+  // Opening lands on Attention (panelNav) and focuses its selected row.
   useEffect(() => {
-    if (!open) return;
-    setTab('attention');
-    focusRowRef.current = true;
+    if (open) focusRowRef.current = true;
   }, [open]);
 
   // Suggestions being rejected in Settings → Memory are hidden here too.
@@ -137,8 +155,7 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
   );
   const list = useMemo(() => tabItems(visible, tab), [visible, tab]);
   const infoHasItems = useMemo(() => tabItems(visible, 'info').length > 0, [visible]);
-  const attention = attentionCount(visible);
-  const capped = attentionCapped(visible);
+  const counts = inboxCounts({ loaded, error: loadError, items: visible });
   const current = list[selected[tab]] ?? null;
   const state = panelState({ loaded, error: loadError, count: list.length });
 
@@ -158,9 +175,7 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
-      const target = targetElement(e.target);
-      if (insideOtherDialog<Element>(target, rootRef.current)) return;
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+      if (pointerDownCloses<Element>(targetElement(e.target), rootRef.current)) nav({ type: 'close' });
     };
     document.addEventListener('mousedown', onDown);
     return () => document.removeEventListener('mousedown', onDown);
@@ -188,7 +203,7 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
     if (!link) return;
     const view = normalizeViewTab(link.view);
     const target = parseTarget(link.target);
-    setOpen(false);
+    nav({ type: 'close' });
     if (target?.kind === 'conversation') {
       onOpenConversation(target.conversationId);
       return;
@@ -287,7 +302,7 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
   };
 
   const showTab = (next: InboxTab, focus: boolean) => {
-    setTab(next);
+    nav({ type: 'show', tab: next });
     if (focus) tabRefs.current.get(next)?.focus();
   };
 
@@ -303,18 +318,18 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
 
   const onKeyDown = (e: React.KeyboardEvent) => {
     // Keys in the "Why is this here?" pop-up (a portal, bubbling here) are its own.
-    if (insideOtherDialog<Element>(targetElement(e.target), rootRef.current)) return;
+    const zone = focusZone<Element>(targetElement(e.target), sectionRef.current);
+    if (zone === 'outside') return;
     if (e.key === 'Escape') {
       e.preventDefault();
-      setOpen(false);
+      nav({ type: 'close' });
       buttonRef.current?.focus();
       return;
     }
     const target = e.target as HTMLElement;
-    const command = inboxCommand(e, target.tagName === 'INPUT' || target.tagName === 'TEXTAREA');
+    const typed = inboxCommand(e, target.tagName === 'INPUT' || target.tagName === 'TEXTAREA');
+    const command = typed === null ? null : keyAction(typed, zone);
     if (!command) return;
-    // Enter on an action button activates that button, not the row.
-    if (command === 'open' && target.dataset.inboxRow === undefined) return;
     e.preventDefault();
     if (command === 'next' || command === 'previous') {
       focusRowRef.current = true;
@@ -328,22 +343,17 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
     }
   };
 
-  const bellLabel =
-    attention === 0
-      ? 'Inbox'
-      : attention === 1 && !capped
-        ? 'Inbox, 1 needs your attention'
-        : `Inbox, ${attentionLabel(visible, 99)} need your attention`;
+  const retryAction = retryButton(retrying);
 
   return (
     <div className="relative" ref={rootRef}>
       <button
         ref={buttonRef}
         type="button"
-        onClick={() => setOpen(o => !o)}
+        onClick={() => nav({ type: 'toggle' })}
         aria-expanded={open}
         aria-controls={open ? panelId : undefined}
-        aria-label={bellLabel}
+        aria-label={counts.bellAria}
         title="Inbox"
         className={cn(
           'relative w-7 h-7 rounded-md inline-flex items-center justify-center text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
@@ -351,18 +361,19 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
         )}
       >
         <Bell className="w-4 h-4" aria-hidden="true" />
-        {attention > 0 && (
+        {counts.bell !== null && (
           <span
             aria-hidden="true"
             className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-shodh-warning-soft text-shodh-text ring-1 ring-shodh-warning text-caption font-bold leading-[18px] text-center tabular-nums whitespace-nowrap"
           >
-            {attentionLabel(visible, 9)}
+            {counts.bell}
           </span>
         )}
       </button>
 
       {open && (
         <section
+          ref={sectionRef}
           id={panelId}
           aria-labelledby={headingId}
           onKeyDown={onKeyDown}
@@ -405,14 +416,14 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
                 >
                   {TAB_LABEL[t]}
                   {/* Only Attention has a count: Info is finished work, not a to-do list. */}
-                  {t === 'attention' && loaded && (
+                  {t === 'attention' && counts.pill !== null && (
                     <span
                       className={cn(
                         'min-w-[28px] h-[18px] px-1 rounded-full text-caption font-bold leading-[18px] text-center tabular-nums',
-                        attention > 0 ? 'bg-shodh-warning-soft text-shodh-text ring-1 ring-shodh-warning' : 'bg-shodh-raised-2 text-shodh-text-muted',
+                        counts.bell !== null ? 'bg-shodh-warning-soft text-shodh-text ring-1 ring-shodh-warning' : 'bg-shodh-raised-2 text-shodh-text-muted',
                       )}
                     >
-                      {attentionLabel(visible, 99)}
+                      {counts.pill}
                     </span>
                   )}
                 </button>
@@ -424,9 +435,9 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
             {state === 'list' && loadError && (
               <div role="alert" className="mx-2 mt-1.5 px-2.5 py-1.5 flex items-center gap-2 rounded-md border border-shodh-border bg-shodh-raised text-caption text-shodh-error">
                 <span className="flex-1 min-w-0 truncate" title={loadError}>{`Couldn’t refresh the Inbox: ${loadError}`}</span>
-                <button type="button" onClick={() => void load()} className={cn(ACTION, 'border border-shodh-border text-shodh-text-secondary hover:bg-shodh-raised-2 hover:text-shodh-text', FOCUS_RING)}>
+                <button type="button" onClick={() => void retry()} disabled={retryAction.disabled} className={cn(ACTION, 'border border-shodh-border text-shodh-text-secondary hover:bg-shodh-raised-2 hover:text-shodh-text', FOCUS_RING)}>
                   <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
-                  Try again
+                  {retryAction.label}
                 </button>
               </div>
             )}
@@ -435,9 +446,9 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
             ) : state === 'error' ? (
               <div role="alert" className="px-3.5 py-6 flex flex-col items-center gap-2 text-center">
                 <p className="m-0 text-small text-shodh-error break-words">{`Couldn’t load the Inbox: ${loadError}`}</p>
-                <button type="button" onClick={() => void load()} className={cn(ACTION, 'border border-shodh-border text-shodh-text-secondary hover:bg-shodh-raised-2 hover:text-shodh-text', FOCUS_RING)}>
+                <button type="button" onClick={() => void retry()} disabled={retryAction.disabled} className={cn(ACTION, 'border border-shodh-border text-shodh-text-secondary hover:bg-shodh-raised-2 hover:text-shodh-text', FOCUS_RING)}>
                   <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
-                  Try again
+                  {retryAction.label}
                 </button>
               </div>
             ) : state === 'empty' ? (
@@ -456,7 +467,7 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
                 )}
               </div>
             ) : (
-              <ul className="m-0 p-1 list-none max-h-[420px] overflow-y-auto" aria-label={`${TAB_LABEL[tab]} items`}>
+              <ul data-inbox-list="" className="m-0 p-1 list-none max-h-[420px] overflow-y-auto" aria-label={`${TAB_LABEL[tab]} items`}>
                 {list.map((item, index) => {
                   const tone = STATUS_TONE[item.status];
                   const actions = actionsFor(item);

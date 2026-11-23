@@ -1,0 +1,24 @@
+[
+  {
+    "id": "citation_graph",
+    "kind": "citation_graph",
+    "status": "failed",
+    "title": "Building the citation graph",
+    "detail": "Stopped when Shodh closed before it finished.",
+    "link": { "view": "library" },
+    "data": {},
+    "createdAt": "2026-11-23T09:00:00.000Z",
+    "updatedAt": "2026-11-23T09:05:00.000Z"
+  },
+  {
+    "id": "indexing:s1",
+    "kind": "indexing",
+    "status": "failed",
+    "title": "Indexing Papers",
+    "detail": "Stopped when Shodh closed before it finished.",
+    "link": { "view": "library", "target": { "kind": "source", "sourceId": "s1" } },
+    "data": {},
+    "createdAt": "2026-11-23T09:00:00.000Z",
+    "updatedAt": "2026-11-23T09:05:00.000Z"
+  }
+]

@@ -26,7 +26,7 @@ import { showInFolder } from '../library/fileActions';
 import { useChatSession } from '../ask/ChatSessionContext';
 import { isLive } from '../agent/reducer';
 import { creationsApi, errorText, onCreationsChanged } from './api';
-import { EmbeddedPreview } from './EmbeddedPreview';
+import { COMPACT_LABEL, EmbeddedPreview } from './EmbeddedPreview';
 import {
   ARTIFACT_PANES,
   PANE_LABELS,
@@ -71,6 +71,13 @@ const DANGER_BUTTON = cn(
   FOCUS_RING,
 );
 
+/**
+ * Below this width (CSS pixels) the page's header and toolbar keep to icons for their
+ * secondary actions, so each stays one row with every control on screen (a pane docked
+ * beside the page narrows it).
+ */
+const COMPACT_BELOW = 860;
+
 /** Reloads of the live preview while a build writes files, at most this often. */
 const LIVE_RELOAD_MS = 1500;
 
@@ -105,6 +112,17 @@ export function ArtifactPage({ selection, onBack, onOpenChat, onChange, onDelete
   const [busy, setBusy] = useState<null | 'keep' | 'export' | 'delete'>(null);
   const id = selection.id;
   const networkNoteId = useId();
+  // The page's width, for the compact header and toolbar.
+  const [root, setRoot] = useState<HTMLDivElement | null>(null);
+  const [compact, setCompact] = useState(false);
+  useEffect(() => {
+    if (!root) return;
+    const measure = () => setCompact(root.clientWidth < COMPACT_BELOW);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(root);
+    return () => observer.disconnect();
+  }, [root]);
 
   // A later request (the assistant opening another version or pane) applies at once.
   const firstSeq = useRef(selection.seq);
@@ -307,7 +325,7 @@ export function ArtifactPage({ selection, onBack, onOpenChat, onChange, onDelete
         <select
           value={version === null ? 'now' : String(version)}
           onChange={e => setVersion(e.target.value === 'now' ? null : Number(e.target.value))}
-          className={cn('h-8 max-w-[220px] px-2 rounded-lg border border-shodh-border bg-shodh-surface text-small text-shodh-text', FOCUS_RING)}
+          className={cn('h-8 max-w-[220px] group-data-[compact=true]/artifact:max-w-[120px] px-2 rounded-lg border border-shodh-border bg-shodh-surface text-small text-shodh-text', FOCUS_RING)}
         >
           <option value="now">The folder now</option>
           {[...creation.versions].reverse().map(v => (
@@ -332,13 +350,13 @@ export function ArtifactPage({ selection, onBack, onOpenChat, onChange, onDelete
         className={cn('accent-shodh-accent', FOCUS_RING)}
       />
       <Globe className="w-3.5 h-3.5" aria-hidden="true" />
-      Internet
+      <span className={COMPACT_LABEL}>Internet</span>
       <span id={networkNoteId} className="sr-only">{networkText}</span>
     </label>
   );
 
   return (
-    <div className="h-full flex flex-col min-h-0">
+    <div ref={setRoot} data-compact={compact} className="group/artifact h-full flex flex-col min-h-0">
       <div className="flex-1 min-h-0 flex flex-col gap-2 px-5 pt-3 pb-3">
         <header className="flex items-center gap-2 flex-nowrap min-w-0">
           <button type="button" onClick={onBack} aria-label="All artifacts" title="All artifacts" className={cn(QUIET_BUTTON, 'px-2 -ml-2')}>
@@ -362,7 +380,7 @@ export function ArtifactPage({ selection, onBack, onOpenChat, onChange, onDelete
             </button>
             <button type="button" onClick={() => onChange(creation.conversationId)} title="Change something: the chat that built it, with your request started" className={OUTLINE_BUTTON}>
               <Pencil className="w-3.5 h-3.5" aria-hidden="true" />
-              Change
+              <span className={COMPACT_LABEL}>Change</span>
             </button>
             <ArtifactActionsMenu
               items={[
@@ -720,7 +738,7 @@ function DesignBadge({ design }: { design: ArtifactDesign }) {
         : check && totalIssues(check.report) === 0
           ? <CheckCircle2 className="w-3.5 h-3.5 text-shodh-success" aria-hidden="true" />
           : <Palette className="w-3.5 h-3.5" aria-hidden="true" />}
-      {check ? badgeText(check) : 'Design check'}
+      <span className={COMPACT_LABEL}>{check ? badgeText(check) : 'Design check'}</span>
     </button>
   );
 }

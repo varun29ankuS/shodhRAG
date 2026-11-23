@@ -53,7 +53,7 @@ import {
 import type { CoalescerState, Counted, GateState } from '../../lib/navigationGate';
 import { announce } from '../../lib/announcer';
 import { creationsApi, errorText } from '../artifacts/api';
-import { hasEntryPage, startsBuilding } from '../artifacts/model';
+import { hasEntryPage, showsBuiltPage, startsBuilding } from '../artifacts/model';
 import type { ModelOverride } from '../modelPicker/modelTypes';
 import type { ChatMessage, SendOptions } from './types';
 import { creatorConfirmed, resolveAgentMode, suggestionIgnored } from '../agent/agentModes';
@@ -666,7 +666,10 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
         // The assistant showing a creation's page (open_artifact on the preview pane): the chat
         // floats over the page, open, so the user sees what it did and can steer.
         const openDock = nav.target?.kind === 'artifact' && nav.target.pane === 'preview';
-        offer({ view: tab, focus: nav.focus, target: nav.target, label: nav.label, openDock });
+        // The page this Creator answer builds (its design check, open_artifact on it): shown by
+        // itself only to a user watching the build, as when it first opened.
+        const ownPage = showsBuiltPage(nav.target, live.creationId ?? null);
+        offer({ view: tab, focus: nav.focus, target: nav.target, label: nav.label, openDock, ...(ownPage ? { whenWatching: true, fromConversation: live.conversationId } : {}) });
       }
     }
     // A Creator answer's page exists: Artifacts opens on its creation (the page live, files

@@ -246,6 +246,15 @@ export function hasEntryPage(files: readonly FileEntry[] | null): boolean {
   return (files ?? []).some(f => f.path === ENTRY_PAGE);
 }
 
+/**
+ * Whether an assistant's move shows the creation this answer builds (`creationId`): its
+ * design check or open_artifact on it. Such a move opens by itself only for a user watching
+ * the build (`navigationGate.followsBuildOpen`).
+ */
+export function showsBuiltPage(target: { kind: string; artifactId?: string } | null, creationId: string | null): boolean {
+  return creationId !== null && target !== null && target.kind === 'artifact' && target.artifactId === creationId;
+}
+
 /** What Artifacts opens on for a request (the assistant's, or a Creator build starting). */
 export interface ArtifactSelection {
   id: string;

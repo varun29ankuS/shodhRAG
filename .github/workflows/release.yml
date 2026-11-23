@@ -1440,7 +1440,10 @@ jobs:
           overlap=$(at_point overlap); outside=$(at_point outside); page=$(at_point preview); main=$(at_point main)
           summary="Pixels: overlap=$overlap outside=$outside preview=$page main=$main"
           # The second part: a Creator finish with a design check, through the app's own frontend.
+          # Should it fail first, the screen as it was, to see what covered the page.
+          trap 'screencapture -x "$EVIDENCE/creator-finish-failed.png" || true' EXIT
           wait_line 'Launch probe: creator screen points' 120
+          trap - EXIT
           shot="$EVIDENCE/creator-finish.bmp"
           screencapture -x -t bmp "$shot"
           touch "$PROBE_DATA/launch-probe-captured-creator"
@@ -1668,6 +1671,10 @@ jobs:
             if ($points) {
               $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
               $bitmap.Save((Join-Path $evidence 'creator-finish.png'), [System.Drawing.Imaging.ImageFormat]::Png)
+            } else {
+              # The probe failed first: the screen as it was, to see what covered the page.
+              $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+              $bitmap.Save((Join-Path $evidence 'creator-finish-failed.png'), [System.Drawing.Imaging.ImageFormat]::Png)
             }
             New-Item -ItemType File -Force (Join-Path $data 'launch-probe-captured-creator') | Out-Null
             $creatorPage = & $colour 'preview'

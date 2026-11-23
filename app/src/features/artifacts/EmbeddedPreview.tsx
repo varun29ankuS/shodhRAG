@@ -37,6 +37,12 @@ const OUTLINE_BUTTON = cn(
   FOCUS_RING,
 );
 
+/**
+ * In compact width (the artifact page's `data-compact`, set when it is narrow): a button's
+ * words are for screen readers only; its icon and title still show, and the row stays one row.
+ */
+export const COMPACT_LABEL = 'group-data-[compact=true]/artifact:sr-only';
+
 /** Labels whose reports are kept while the pane does not know its label yet, at most. */
 const MAX_EARLY_LABELS = 4;
 
@@ -342,25 +348,31 @@ export function EmbeddedPreview({ creationId, version, network, reloadSeq, focus
         )}
         <div className="ml-auto flex items-center gap-1 shrink-0">
           {networkControl}
-          <button type="button" onClick={() => void reload()} className={QUIET_BUTTON}>
+          <button type="button" onClick={() => void reload()} title={status === 'stopped' || end ? 'Open again' : 'Reload'} className={QUIET_BUTTON}>
             <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
-            {status === 'stopped' || end ? 'Open again' : 'Reload'}
+            <span className={COMPACT_LABEL}>{status === 'stopped' || end ? 'Open again' : 'Reload'}</span>
           </button>
           {poppedOut ? (
             <>
-              <button type="button" onClick={() => label && void creationsApi.focusPreview(label).catch(e => setError(errorText(e)))} className={QUIET_BUTTON}>
+              <button type="button" onClick={() => label && void creationsApi.focusPreview(label).catch(e => setError(errorText(e)))} title="Bring to front" className={QUIET_BUTTON}>
                 <AppWindow className="w-3.5 h-3.5" aria-hidden="true" />
-                Bring to front
+                <span className={COMPACT_LABEL}>
+                  Bring to front
+                </span>
               </button>
-              <button type="button" onClick={() => void showHere()} className={OUTLINE_BUTTON}>
+              <button type="button" onClick={() => void showHere()} title="Show here" className={OUTLINE_BUTTON}>
                 <PanelBottomOpen className="w-3.5 h-3.5" aria-hidden="true" />
-                Show here
+                <span className={COMPACT_LABEL}>
+                  Show here
+                </span>
               </button>
             </>
           ) : (
             <button type="button" onClick={() => void popOut()} disabled={!label} title="Open in its own window" className={QUIET_BUTTON}>
               <ExternalLink className="w-3.5 h-3.5" aria-hidden="true" />
-              Pop out
+              <span className={COMPACT_LABEL}>
+                Pop out
+              </span>
             </button>
           )}
         </div>

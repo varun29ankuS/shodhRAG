@@ -14,7 +14,14 @@
 //!    (the page) and above it (the app); and logs the screen points, which
 //!    the launch job reads the screen's pixels at;
 //! 4. waits for the job to say it took its screenshot, then reports the pane
-//!    gone, as leaving Artifacts does, and checks both layers hid.
+//!    gone, as leaving Artifacts does, and checks both layers hid;
+//! 5. then, through the main window's own frontend ([`creator_finish`]): a
+//!    Creator build's moves as the assistant sends them (the page opening in
+//!    Artifacts, then the design check Creator runs before finishing, a real
+//!    one of the sample page). The page must come back and stay shown, with
+//!    no pane opened over it. Then the user opens the check's findings: they
+//!    dock beside the page, which narrows and stays on top where it is, and
+//!    the job reads the pixels of both.
 //!
 //! Each fact is one `Launch probe:` log line, then `Launch probe: PASS` or
 //! `Launch probe: FAIL <what>`.
@@ -313,6 +320,28 @@ fn navigated(
     }))
 }
 
+/// A point on the page clear of the floating chat over it (`dock`): near the
+/// page's top left, or in the strip of the page above the chat when it
+/// reaches up there.
+pub fn page_point(page: CssRect, dock: Option<CssRect>) -> Result<(f64, f64), String> {
+    let inside = |p: (f64, f64), r: CssRect| {
+        p.0 >= r.x && p.0 <= r.x + r.width && p.1 >= r.y && p.1 <= r.y + r.height
+    };
+    let corner = (page.x + 20.0, page.y + 20.0);
+    let Some(dock) = dock.filter(|d| inside(corner, *d)) else {
+        return Ok(corner);
+    };
+    // The strip of the page above the chat, at its middle.
+    let strip = dock.y - page.y;
+    if strip >= 8.0 {
+        Ok((corner.0, page.y + strip / 2.0))
+    } else {
+        Err(format!(
+            "the chat {dock:?} leaves no strip of the page {page:?} to check"
+        ))
+    }
+}
+
 /// The embedded page now: its rectangle while shown.
 fn shown_now(label: &str) -> Option<CssRect> {
     match preview_embed::current() {
@@ -386,7 +415,7 @@ async fn creator_finish(
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     let page = shown_now(&label).ok_or("the page hid after the design check")?;
-    let at_page = (page.x + 20.0, page.y + 20.0);
+    let at_page = page_point(page, crate::dock_layer::shown_at())?;
     let hits = hit_test(
         app,
         window,
@@ -435,7 +464,7 @@ async fn creator_finish(
             "the page {page:?} runs under the findings pane ({inset} wide)"
         ));
     }
-    let at_page = (page.x + 20.0, page.y + 20.0);
+    let at_page = page_point(page, crate::dock_layer::shown_at())?;
     let at_pane = (width - inset / 2.0, page.y + 20.0);
     let hits = hit_test(
         app,
@@ -674,6 +703,37 @@ mod tests {
         assert!(!probe_requested(Some(OsStr::new("")), &separate));
         assert!(!probe_requested(None, &separate));
         assert!(!probe_requested(None, &normal));
+    }
+
+    #[test]
+    fn the_creator_finish_checks_the_page_clear_of_the_chat() {
+        let page = CssRect {
+            x: 280.,
+            y: 150.,
+            width: 250.,
+            height: 530.,
+        };
+        // No chat, or a chat away from the corner: near the page's top left.
+        assert_eq!(page_point(page, None), Ok((300., 170.)));
+        // The open chat left of a 450 px docked pane in the probe's window
+        // spans the narrowed page: the point goes just above it.
+        let dock = crate::dock_layer::dock_bounds_beside(
+            (380., 470.),
+            WINDOW,
+            crate::dock_layer::DOCK_EDGE,
+            450.,
+        );
+        let high = CssRect { y: 200., ..page };
+        assert_eq!(
+            page_point(high, Some(dock)),
+            Ok((300., 200. + (dock.y - 200.) / 2.))
+        );
+        // A chat over the whole page leaves nothing to check: said, not guessed.
+        let low = CssRect {
+            y: dock.y + 10.,
+            ..page
+        };
+        assert!(page_point(low, Some(dock)).is_err());
     }
 
     #[test]

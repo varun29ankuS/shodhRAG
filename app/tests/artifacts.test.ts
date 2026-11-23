@@ -31,6 +31,7 @@ import {
   previewShowingText,
   previewStateLine,
   selectionFor,
+  showsBuiltPage,
   previousVersion,
   progressLine,
   sizeLabel,
@@ -461,4 +462,17 @@ test('the page is the main thing on screen: one header row, the page fills the r
   // What hides the page is said, by name.
   assert.match(embedded, /previewStateLine\(\{/);
   assert.match(embedded, /coveringOverlay\(/);
+});
+
+test('the assistant showing the page it builds moves only a user watching the build', () => {
+  // design_check of a creation and open_artifact on it point at the creation's page.
+  const page = { kind: 'artifact', artifactId: 'cr_a', version: null, pane: 'preview' };
+  assert.equal(showsBuiltPage(page, 'cr_a'), true);
+  assert.equal(showsBuiltPage(page, 'cr_b'), false);
+  assert.equal(showsBuiltPage(page, null), false);
+  assert.equal(showsBuiltPage({ kind: 'design_check' }, 'cr_a'), false);
+  assert.equal(showsBuiltPage(null, 'cr_a'), false);
+  const session = read('../src/features/ask/ChatSessionContext.tsx');
+  assert.ok(session.includes('showsBuiltPage(nav.target, live.creationId ?? null)'));
+  assert.ok(session.includes('ownPage ? { whenWatching: true, fromConversation: live.conversationId }'));
 });

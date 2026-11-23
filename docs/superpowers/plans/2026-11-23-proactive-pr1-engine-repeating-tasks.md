@@ -218,7 +218,7 @@ The engine writes its own SQL against `engine_run` using the moved constants.
 **Schema (migration 19).** As §5.2, with these changes:
 - `engine_job` gains `input_json TEXT NOT NULL DEFAULT '{}'` (departure D5).
 - No `REFERENCES ... ON DELETE CASCADE`, because cascades are inert here (D5).
-- `engine_step`, `engine_approval` and `engine_cache` are created as specified, unless the user takes D6.
+- `engine_step`, `engine_approval` and `engine_cache` are **not** created here (D6, ruled): they arrive with PR 4's migration.
 
 ```
 engine_job(id PK, kind CHECK IN ('task_repeat','folder_watch','paper_alert','playbook','daily_review','system'),
@@ -377,7 +377,7 @@ inbox_items rebuilt (as 18 did) with kinds + 'model', 'automation', 'whats_new',
   3. `calendar_changed(TaskSaved(copy))`, so it is indexed and views refresh.
 
   The order of these steps is what makes a crash between them harmless.
-- **The target occurrence** is the pending decision's `scheduled_for` when one waits. Otherwise it is the newest occurrence ≤ now after the completed copy's due, and if there is none, the first occurrence after it (D9).
+- **The target occurrence** of every copy is the next upcoming one: `next_after(max(now, planned_through))` (D9, ruled). A new copy is never overdue when it appears. The run that made it records the copy's occurrence as `scheduled_for`.
 - **Deleting:** `TaskRemoved` of the subject deletes the job (stop the series) and resolves `repeat:<job>`. `TaskRemoved` of an older copy does nothing.
 - **The decision.** The run waits as `decision`. The Inbox item is posted:
   - id `repeat:<job>`, kind `reminder`, status `needs_you`;
@@ -387,7 +387,7 @@ inbox_items rebuilt (as 18 did) with kinds + 'model', 'automation', 'whats_new',
 
   The reminder alert then rings (`REMINDER_FIRED_EVENT` with `repeat: {jobId, occurrence}`), plus `notifications::notify(Reminders, …)`. On a fold, the item is updated ("due again twice since") and rings once.
 - **Answers** (`task_repeat_decide`):
-  - `make`: make the copy for `scheduled_for`; run `succeeded` "You chose Make the next one (the one before wasn't done)".
+  - `make`: make the copy for the next upcoming occurrence (D9); run `succeeded` "You chose Make the next one (the one before wasn't done)".
   - `skip`: run `skipped` "Skipped by you"; the series waits for the next occurrence.
   - `mark_done`: complete the open copy through `update_task`'s path, so it is recorded like any completion; the event answers the run with "Made when last week's was done (…)".
   - **Every way the decision ends resolves `repeat:<job>`:** make, skip, completion, the series stopped or cleared, and a hold.
@@ -410,9 +410,10 @@ inbox_items rebuilt (as 18 did) with kinds + 'model', 'automation', 'whats_new',
   - `completing_the_latest_copy_makes_exactly_one_next_copy_at_the_following_occurrence`;
   - `completing_twice_ui_then_phone_change_makes_one_copy`: also asserts no decision item and exactly one new History row;
   - `an_occurrence_with_the_last_copy_open_makes_no_copy_and_one_decision`;
-  - `make_the_next_one_creates_the_copy_for_this_occurrence`;
+  - `make_the_next_one_creates_the_copy_for_the_next_upcoming_occurrence`;
+  - `a_copy_completed_late_is_due_at_the_next_upcoming_occurrence`: never overdue when it appears;
   - `skip_this_one_records_skipped_and_waits_for_the_next`;
-  - `mark_last_done_completes_it_and_makes_this_occurrences_copy`;
+  - `mark_last_done_completes_it_and_makes_the_next_upcoming_copy`;
   - each of the three answer tests also asserts that `repeat:<job>` is gone from the Inbox;
   - `a_failing_engine_still_lets_the_missed_reminder_summary_through`;
   - `an_ignored_decision_across_two_more_occurrences_stays_one_item_and_one_possible_copy`;
@@ -637,13 +638,11 @@ The plan follows the option marked **(plan)**. Each one needs the user's yes or 
   - (a) `engine_job` has no column for §6's snapshot, so the plan adds `input_json`.
   - (b) §5.2's `ON DELETE CASCADE` would do nothing: `shodh.db` never enables `PRAGMA foreign_keys` (`open_connection`), and `research/tables/store.rs` already deletes children by hand. The plan drops the clause and deletes runs explicitly.
 - **D6. `engine_step`, `engine_approval` and `engine_cache` in migration 19.** PR 1 writes none of them, and migrations are append-only, so a shape PR 4 needs to change would then cost a rebuild.
-  - **(plan)** create them as §5.2 says.
-  - Alternative: create them in PR 4's migration, which PR 4 needs anyway for `model_calls`.
+  - **Ruled (2026-11-23):** they are not created in migration 19. They belong to PR 4's migration (minimal first). The Inbox rebuild still adds all four kinds now.
 - **D7. No one-minute coalescing for `task_completed`.** §5.3 says "events within one minute make one run", but §6 says "the next copy is made at once". The plan handles `task_completed` at once; coalescing stays for `files_added`/`paper_found` (PR 3).
 - **D8. The `skip` overlap would write a row every occurrence while a decision waits.** §5.3's `skip` would add a "previous run was still going" row each time. §6 wants the same item updated. The plan adds the fold as an engine rule for `waiting/decision` runs: `scheduled_for` moves to the newest, `missed` grows, and no row is added. The overlap policy applies to `queued`/`running` only.
 - **D9. Target occurrence when a copy is completed late.** §6 says "due at the next occurrence after the completed copy's due time". If that occurrence is already past (the app was closed, so no decision exists yet), the copy would be born overdue for an old date.
-  - **(plan)** the newest occurrence ≤ now after the completed due (the one a decision would name), else the first future one.
-  - Alternative: §6 literally (the earliest occurrence after the due, even if past).
+  - **Ruled (user, 2026-11-23):** the next copy is due at the next *upcoming* occurrence after the completion time, never a past one. A new copy is never overdue when it appears. The plan applies this to every copy the series makes (completion, Mark done and Make the next one): the target is `schedule.next_after(max(now, planned_through))`, where `planned_through` is the occurrence of the latest copy or the latest handled occurrence. The run that made the copy records the copy's occurrence as its `scheduled_for`, so the next decision comes only when the occurrence after the copy's passes.
 - **D10. Hold has no one-click fix among the five commands.**
   - **(plan)** Resume is `task_repeat_set` re-saving the same schedule, which clears the hold and the streak.
   - Alternative: a sixth command `task_repeat_resume`, which also needs a coverage entry.

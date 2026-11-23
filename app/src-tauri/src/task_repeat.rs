@@ -1096,6 +1096,75 @@ impl Repeats {
     }
 }
 
+// ── Commands ─────────────────────────────────────────────────────
+
+/// The series of a task (any of its copies), or `None` when it does not repeat.
+#[tauri::command]
+pub async fn task_repeat_get(
+    app: tauri::AppHandle,
+    task_id: String,
+) -> Result<Option<RepeatView>, String> {
+    crate::engine_commands::repeats_for_command(&app)
+        .await?
+        .get(&task_id)
+        .await
+}
+
+/// Repeats a task on `schedule`, or changes its series (from any copy). Saving a series
+/// that is on hold resumes it.
+#[tauri::command]
+pub async fn task_repeat_set(
+    app: tauri::AppHandle,
+    task_id: String,
+    schedule: Schedule,
+) -> Result<RepeatView, String> {
+    let view = crate::engine_commands::repeats_for_command(&app)
+        .await?
+        .set(&task_id, schedule, CreatedBy::User)
+        .await?;
+    crate::engine_commands::wake(&app);
+    Ok(view)
+}
+
+/// Stops a task's series; every copy stays. True when it repeated.
+#[tauri::command]
+pub async fn task_repeat_clear(app: tauri::AppHandle, task_id: String) -> Result<bool, String> {
+    let cleared = crate::engine_commands::repeats_for_command(&app)
+        .await?
+        .clear(&task_id)
+        .await?;
+    crate::engine_commands::wake(&app);
+    Ok(cleared)
+}
+
+/// The history of a task's series, newest first (at most [`MAX_HISTORY`]).
+#[tauri::command]
+pub async fn task_repeat_runs(
+    app: tauri::AppHandle,
+    task_id: String,
+    limit: Option<usize>,
+) -> Result<Vec<RunView>, String> {
+    crate::engine_commands::repeats_for_command(&app)
+        .await?
+        .runs(&task_id, limit.unwrap_or(MAX_HISTORY))
+        .await
+}
+
+/// The user's answer to a series' question.
+#[tauri::command]
+pub async fn task_repeat_decide(
+    app: tauri::AppHandle,
+    job_id: String,
+    choice: Choice,
+) -> Result<(), String> {
+    crate::engine_commands::repeats_for_command(&app)
+        .await?
+        .decide(&job_id, choice)
+        .await?;
+    crate::engine_commands::wake(&app);
+    Ok(())
+}
+
 /// Every task change (the UI, the assistant, the phone) reaches the repeats here, from
 /// [`crate::agent_tools::TauriEffects::calendar_changed`].
 pub fn on_calendar_change(app: &tauri::AppHandle, change: &CalendarChange) {

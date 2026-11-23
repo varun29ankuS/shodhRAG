@@ -1078,6 +1078,12 @@ pub fn run() {
             reminders::snooze_reminder,
             reminders::list_missed_reminders,
             reminders::dismiss_missed_reminders,
+            // Repeating tasks
+            task_repeat::task_repeat_get,
+            task_repeat::task_repeat_set,
+            task_repeat::task_repeat_clear,
+            task_repeat::task_repeat_runs,
+            task_repeat::task_repeat_decide,
             // Background mode (tray, start with Windows)
             background::get_background_status,
             background::set_close_to_tray,

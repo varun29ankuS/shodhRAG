@@ -49,7 +49,7 @@ test('items from the backend are parsed; unknown kinds and malformed rows are sk
   assert.deepEqual(parseItems(null), []);
 });
 
-test('automation items are parsed, not skipped as a newer build's kind', () => {
+test('automation items are parsed, not skipped as a newer build kind', () => {
   const items = parseItems([
     { id: 'repeat-hold:j1', kind: 'automation', status: 'needs_you', title: 'Submit timesheet stopped repeating' },
   ]);

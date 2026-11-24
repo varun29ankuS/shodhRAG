@@ -17,6 +17,7 @@ mod graph_commands;
 mod image_upload_commands;
 mod inbox_commands;
 mod indexing_control;
+mod launch_probe;
 mod library_profile;
 mod llm_bootstrap;
 mod llm_commands;
@@ -69,6 +70,7 @@ mod code_review_commands;
 mod conversation_commands;
 mod conversation_turns;
 mod design_check_commands;
+mod dock_layer;
 mod engine_commands;
 mod event_emitter;
 
@@ -217,6 +219,9 @@ pub fn run() {
             // A (re)load of the main window starts with no conversation shown:
             // the code map leases of the page before it are given back.
             if payload.event() == tauri::webview::PageLoadEvent::Started && webview.label() == "main" {
+                // Nothing reports the Artifacts pane for the page before it:
+                // the embedded preview hides until the new page does.
+                creations::preview_embed::main_reloaded(webview.app_handle());
                 if let Some(maps) = webview.app_handle().try_state::<code_map_commands::CodeMapState>() {
                     let released = maps.release_all();
                     if released > 0 {
@@ -662,7 +667,7 @@ pub fn run() {
                 tracing::error!("Tray icon unavailable: {e}");
             }
             if tray.is_ok() && background::started_in_background() {
-                if let Some(window) = app.get_webview_window(background::MAIN_WINDOW) {
+                if let Some(window) = background::main_window(app.handle()) {
                     if let Err(e) = window.hide() {
                         tracing::warn!("Could not start hidden: {e}");
                     }
@@ -1003,6 +1008,13 @@ pub fn run() {
             creation_commands::creation_preview_focus,
             creation_commands::creation_preview_reload,
             creation_commands::creation_preview_close,
+            creation_commands::creation_preview_embed,
+            creation_commands::creation_preview_place,
+            creation_commands::creation_preview_pop_out,
+            // The floating chat over the embedded preview (dock_layer.rs)
+            dock_layer::dock_layer_publish,
+            dock_layer::dock_layer_action,
+            dock_layer::dock_layer_size,
             creation_commands::creation_keep,
             creation_commands::creation_export,
             creation_commands::creation_delete,

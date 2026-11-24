@@ -1,0 +1,14 @@
+{
+  "permission": [
+    {
+      "identifier": "dock-window",
+      "description": "The app commands the floating chat (webview dock, over the embedded Artifacts preview) calls: it sends the user's clicks and keys to the main window and reports the size of its box (dock_layer.rs). It reads nothing and changes nothing itself; the main window acts on what it relays.",
+      "commands": {
+        "allow": [
+          "dock_layer_action",
+          "dock_layer_size"
+        ]
+      }
+    }
+  ]
+}

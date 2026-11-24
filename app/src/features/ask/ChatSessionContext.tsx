@@ -15,9 +15,10 @@ import {
   reduceAll,
 } from '../agent/reducer';
 import type { TranscriptAction, TranscriptState } from '../agent/reducer';
-import { toAgentError, useAgentSession } from '../agent/useAgentSession';
-import { useRuntimeSetup } from '../setup/RuntimeSetupContext';
-import type { HistoryTurn } from '../agent/useAgentSession';
+import { toAgentError } from '../agent/agentApi';
+import { useAgentSession } from '../agent/useAgentSession';
+import { useRuntimeSetup } from '../setup/runtimeSetupHost';
+import type { HistoryTurn } from '../agent/agentApi';
 import type { FocusThread } from '../focus/focusTypes';
 import { metadataWithThreads, threadsFromMetadata } from '../focus/threadStore';
 import { summaryPrompt } from '../focus/summary';
@@ -40,6 +41,7 @@ import {
   arrive,
   dropHeld,
   flush as flushMoves,
+  followsBuildOpen,
   goThere,
   heldNavigationText,
   initialCoalescer,
@@ -51,7 +53,7 @@ import {
 import type { CoalescerState, Counted, GateState } from '../../lib/navigationGate';
 import { announce } from '../../lib/announcer';
 import { creationsApi, errorText } from '../artifacts/api';
-import { startsBuilding } from '../artifacts/model';
+import { hasEntryPage, showsBuiltPage, startsBuilding } from '../artifacts/model';
 import type { ModelOverride } from '../modelPicker/modelTypes';
 import type { ChatMessage, SendOptions } from './types';
 import { creatorConfirmed, resolveAgentMode, suggestionIgnored } from '../agent/agentModes';
@@ -107,8 +109,12 @@ interface LiveRun {
   settled: boolean;
   /** A Creator answer's creation: the Artifacts tab opens on it when building starts. */
   creationId?: string | null;
-  /** The Artifacts tab was opened for this answer. */
+  /** Its title, for the chip that offers its page to a user who is not watching. */
+  creationTitle?: string;
+  /** The Artifacts tab was opened (or offered) for this answer. */
   creationShown?: boolean;
+  /** Its building steps (writes, edits, commands) so far: after each one the folder is checked for its page. */
+  buildingSteps?: Set<string>;
 }
 
 /** The visible chat and what of it is still to be saved (see ./chatPersistence). */
@@ -195,6 +201,12 @@ export interface HeldNavigation {
   target: NavigationTarget | null;
   label: string | null;
   openDock?: boolean;
+  /**
+   * Followed only for a user watching `fromConversation` (`followsBuildOpen`): the page Creator
+   * builds. Anyone else gets the chip, as when typing.
+   */
+  whenWatching?: boolean;
+  fromConversation?: string;
 }
 
 export interface ChatSessionValue {
@@ -333,6 +345,10 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   // A navigation held while the user types ("The assistant opened X · Go there").
   const [heldNavigation, setHeldNavigation] = useState<Counted<HeldNavigation> | null>(null);
   const gateRef = useRef<GateState<HeldNavigation>>(initialGate());
+  // The view on screen and the conversation shown, for the gate's build-open rule.
+  const currentViewRef = useRef<ViewTab | null>(null);
+  const activeConversationIdRef = useRef<string | null>(null);
+  activeConversationIdRef.current = activeConversationId;
   const coalescerRef = useRef<CoalescerState<HeldNavigation>>(initialCoalescer());
   const flushTimerRef = useRef<number | null>(null);
   // Shared with first-run setup and the setup card (one status, one install).
@@ -561,7 +577,14 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
    */
   const deliver = useCallback((move: Counted<HeldNavigation>) => {
     const focused = typeof document === 'undefined' ? null : (document.activeElement as HTMLElement | null);
-    const result = offerNavigation(gateRef.current, move, typingActivity.isTyping(focused, Date.now()));
+    const typing = typingActivity.isTyping(focused, Date.now());
+    // The page Creator builds opens by itself only for a user watching it being made.
+    const hold = typing || (move.nav.whenWatching === true && !followsBuildOpen({
+      view: currentViewRef.current,
+      watchingConversation: move.nav.fromConversation === activeConversationIdRef.current,
+      typing,
+    }));
+    const result = offerNavigation(gateRef.current, move, hold);
     gateRef.current = result.state;
     setHeldNavigation(result.state.held);
     if (result.appeared && result.state.held) {
@@ -609,6 +632,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
 
   /** The user opened `view` themselves: a move held for it is spent. */
   const noteViewOpened = useCallback((view: ViewTab) => {
+    currentViewRef.current = view;
     const next = viewOpened(gateRef.current, view);
     if (next === gateRef.current) return;
     gateRef.current = next;
@@ -639,17 +663,33 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
         // The System status panel opens over whatever view is shown.
         offer({ view: null, focus: null, target: nav.target, label: nav.label });
       } else if (tab) {
-        offer({ view: tab, focus: nav.focus, target: nav.target, label: nav.label });
+        // The assistant showing a creation's page (open_artifact on the preview pane): the chat
+        // floats over the page, open, so the user sees what it did and can steer.
+        const openDock = nav.target?.kind === 'artifact' && nav.target.pane === 'preview';
+        // The page this Creator answer builds (its design check, open_artifact on it): shown by
+        // itself only to a user watching the build, as when it first opened.
+        const ownPage = showsBuiltPage(nav.target, live.creationId ?? null);
+        offer({ view: tab, focus: nav.focus, target: nav.target, label: nav.label, openDock, ...(ownPage ? { whenWatching: true, fromConversation: live.conversationId } : {}) });
       }
     }
-    // A Creator answer started building: the Artifacts tab opens on its creation
-    // (preview pane, files filling in, progress), with the chat alongside in the dock. The
-    // pane opens without the preview window (pane null): the user opens it, and nothing
-    // takes the focus from the chat.
+    // A Creator answer's page exists: Artifacts opens on its creation (the page live, files
+    // filling in, progress), with the chat floating over it, for a user watching the build;
+    // anyone else (another view, another conversation, typing) gets the chip, Go there. The
+    // folder is checked after each finished building step, until its page is there.
     if (event.type === 'step_started' && live.creationId && !live.creationShown && startsBuilding(event.tool)) {
-      live.creationShown = true;
-      const target: NavigationTarget = { kind: 'artifact', artifactId: live.creationId, version: null, pane: null };
-      offer({ view: 'artifacts', focus: null, target, label: null, openDock: true });
+      (live.buildingSteps ??= new Set()).add(event.stepId);
+    }
+    if (event.type === 'step_finished' && event.ok && live.creationId && !live.creationShown && live.buildingSteps?.has(event.stepId)) {
+      const creationId = live.creationId;
+      creationsApi
+        .files(creationId, null)
+        .then(files => {
+          if (live.creationShown || live.creationId !== creationId || !hasEntryPage(files)) return;
+          const target: NavigationTarget = { kind: 'artifact', artifactId: live.creationId, version: null, pane: null };
+          live.creationShown = true;
+          offer({ view: 'artifacts', focus: null, target, label: live.creationTitle ?? null, openDock: true, whenWatching: true, fromConversation: live.conversationId });
+        })
+        .catch(error => console.error('The creation files could not be listed:', error));
     }
     // Lifecycle changes and the start of the answer's check are applied at
     // once; streamed content waits for the frame.
@@ -782,6 +822,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
         });
         if (live.settled) return;
         live.creationId = creation.id;
+        live.creationTitle = creation.title;
       }
       const sessionId = await api.start(conversationId, conversationInstructions, null, fallback?.override ?? null, mode);
       if (live.settled) return;

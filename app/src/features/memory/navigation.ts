@@ -3,8 +3,10 @@
  * Settings → Memory). The request is kept until Settings takes it, so it works whether
  * Settings is already mounted (event) or mounts after the navigation (initial state).
  */
-import type { SettingsSection } from '../../components/shell/SettingsView';
 import { OneShot } from '../../lib/oneShot.ts';
+
+/** A section of Settings (`components/shell/SettingsView`), as other views ask to open one. */
+export type SettingsSection = 'models' | 'search' | 'tools' | 'code' | 'tables' | 'general' | 'appearance' | 'notifications' | 'phone' | 'privacy' | 'memory' | 'data';
 
 export const OPEN_SETTINGS_SECTION = 'shodh:open-settings-section';
 

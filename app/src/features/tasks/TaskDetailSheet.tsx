@@ -7,7 +7,7 @@ import { ReminderField } from './ReminderField';
 import { RepeatField, RepeatHistory, useRepeat } from './RepeatField';
 import { useTasksStore } from './TasksStore';
 import { useChatSession } from '../ask/ChatSessionContext';
-import { useFocus } from '../focus/FocusContext';
+import { useFocus } from '../focus/focusHost';
 import { taskTarget } from '../focus/targets';
 import { isTempSubtaskId } from './taskStore';
 import { workspaceChoices, workspaceName } from './board';

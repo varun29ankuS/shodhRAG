@@ -3,8 +3,8 @@ import { Code2, GitBranch, Search } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { notify } from '../../lib/notify';
 import type { ConversationMode } from '../../hooks/useConversations';
-import { agentApi, toAgentError } from './useAgentSession';
-import type { CodeStatus } from './useAgentSession';
+import { agentApi, toAgentError } from './agentApi';
+import type { CodeStatus } from './agentApi';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-shodh-surface';

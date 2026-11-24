@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "dock-view",
+  "description": "The floating chat's webview (label dock), a child webview of the main window above the embedded Artifacts preview, only on the app's own pages (local: true, no remote URLs). App commands: the dock-window permission (permissions/dock-window.json), which relays the user's actions to the main window and reports its size. Plugins: listen/unlisten only (it hears the snapshot the main window publishes). No file system, dialog, opener, clipboard, notification or window-management permissions, and no device: Rust denies its every permission request (microphone included); dictation runs in the main window.",
+  "local": true,
+  "webviews": ["dock"],
+  "permissions": [
+    "dock-window",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten"
+  ]
+}

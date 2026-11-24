@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use sha2::{Digest, Sha256};
-use tauri::webview::WebviewWindowBuilder;
+use tauri::webview::{WebviewBuilder, WebviewWindowBuilder};
 use tauri::{Manager, Runtime};
 
 /// Environment variable naming a separate profile's data folder.
@@ -278,6 +278,32 @@ pub fn webview_defaults<'a, R: Runtime, M: Manager<R>>(
     }
 }
 
+/// What a child webview in the main window shares with that window's own
+/// webview: its browser arguments and, for a separate profile, its storage
+/// folder (WebView2 runs one browser per data folder and refuses a second
+/// environment on it with other arguments).
+fn child_defaults_for(profile: &Profile) -> (String, Option<PathBuf>) {
+    (
+        process_browser_args().to_string(),
+        profile.webview_data_dir(),
+    )
+}
+
+/// [`webview_defaults`] for a child webview the app adds to the main window
+/// (the floating chat over an embedded preview): the main window's own
+/// environment, so it runs in main's browser process.
+pub fn child_webview_defaults<R: Runtime>(builder: WebviewBuilder<R>) -> WebviewBuilder<R> {
+    let profile = active();
+    let (args, data_dir) = child_defaults_for(profile);
+    let builder = builder.additional_browser_args(&args);
+    match data_dir {
+        Some(dir) => builder
+            .data_directory(dir)
+            .data_store_identifier(profile.folder_id()),
+        None => builder,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -437,5 +463,20 @@ mod tests {
         assert!(NORMAL.uses_single_instance());
         let demo = Profile::from_env_value(Some(absolute("shodh-demo").as_os_str())).unwrap();
         assert!(!demo.uses_single_instance());
+    }
+
+    #[test]
+    fn child_webviews_get_the_main_windows_environment() {
+        // The normal profile: main's arguments and the platform's storage.
+        assert_eq!(
+            child_defaults_for(&NORMAL),
+            (process_browser_args().to_string(), None)
+        );
+        // A separate profile: the same storage folder as its main window.
+        let demo = Profile::from_env_value(Some(absolute("shodh-demo").as_os_str())).unwrap();
+        let (args, dir) = child_defaults_for(&demo);
+        assert_eq!(args, process_browser_args());
+        assert_eq!(dir, demo.webview_data_dir());
+        assert_eq!(dir, Some(absolute("shodh-demo").join("webview")));
     }
 }

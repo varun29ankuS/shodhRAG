@@ -8,6 +8,8 @@ import { readFileSync } from 'node:fs';
 import { RETIRED_DOCK_STORAGE_KEYS, dockLayout } from '../src/lib/dockMode.ts';
 
 const dock = readFileSync(new URL('../src/components/shell/ConversationDock.tsx', import.meta.url), 'utf8');
+// The pill and the panel's markup, shared with the floating chat over the embedded preview.
+const panel = readFileSync(new URL('../src/components/shell/DockPanel.tsx', import.meta.url), 'utf8');
 
 test('closed it is a pill; open it floats', () => {
   assert.equal(dockLayout(false), 'pill');
@@ -15,16 +17,22 @@ test('closed it is a pill; open it floats', () => {
 });
 
 test('the dock never renders a side panel the page reflows around', () => {
-  assert.doesNotMatch(dock, /layout === 'panel'/);
-  assert.doesNotMatch(dock, /role="separator"/);
-  assert.doesNotMatch(dock, /Pin as side panel/);
+  for (const source of [dock, panel]) {
+    assert.doesNotMatch(source, /layout === 'panel'/);
+    assert.doesNotMatch(source, /role="separator"/);
+    assert.doesNotMatch(source, /Pin as side panel/);
+  }
   // Pill and chat both sit fixed in the bottom-right corner, over the page.
-  const corner = dock.match(/fixed bottom-4 right-4/g) ?? [];
+  assert.match(panel, /const CORNER = 'fixed bottom-4 right-4 z-40';/);
+  const corner = panel.match(/fixed \? cn\(CORNER, /g) ?? [];
   assert.equal(corner.length, 2);
+  // The in-page chat is the fixed one.
+  assert.match(dock, /<DockPanel[\s\S]*?\n\s+fixed\n/);
 });
 
 test('pressing the page does not collapse the floating chat', () => {
   assert.doesNotMatch(dock, /addEventListener\('pointerdown'/);
+  assert.doesNotMatch(panel, /addEventListener\('pointerdown'/);
 });
 
 test('the side-panel records of earlier versions are removed, not read', () => {

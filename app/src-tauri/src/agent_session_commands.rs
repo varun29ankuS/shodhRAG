@@ -1595,7 +1595,8 @@ pub(crate) const CREATOR_NEEDS_CODE_MODE: &str =
 /// work shows.
 const CREATOR_CODE_NOTE: &str = "\n\nGitHub and other accounts are not available in Creator mode: \
      what you build stays in the creation folder. The user watches the build in the Artifacts \
-     tab (a live preview of index.html, the files and the versions); open_artifact shows them a \
+     tab (index.html running live inside it, with this chat floating over the page, the files \
+     and the versions); open_artifact shows them a \
      version or a pane there, and list_artifacts finds earlier creations. design_check runs \
      Shodh's deterministic design check (no model) on the creation and shows its findings in \
      the code pane; Shodh also runs it after you write files. Before finish_creation, run it: \

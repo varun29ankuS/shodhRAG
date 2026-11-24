@@ -2,7 +2,7 @@ import { useCallback } from 'react';
 import { notify } from '../../lib/notify';
 import { useNavigationTarget } from '../agent/useNavigationTarget';
 import type { VisualTarget } from '../agent/events';
-import { useFocus } from '../focus/FocusContext';
+import { useFocus } from '../focus/focusHost';
 import { toVisualError, visualsApi } from './api';
 import { recordTarget, visualRef } from './model';
 import { agentItemKey, revealAgentItem } from '../../lib/agentHighlight';

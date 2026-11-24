@@ -6,25 +6,13 @@ import { VisualGallery } from '../visuals/VisualGallery';
 import { useNavigationTarget } from '../agent/useNavigationTarget';
 import { creationsApi, errorText, onCreationsChanged } from './api';
 import { ArtifactPage } from './ArtifactPage';
-import { STATUS_LABELS, filterCreations, isArtifactPane } from './model';
-import type { ArtifactPane, CodeChange, Creation } from './model';
+import { STATUS_LABELS, filterCreations, selectionFor } from './model';
+import type { ArtifactSelection, CodeChange, Creation } from './model';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
 
-/** What the page opens on: a creation, at a version (the folder now when null) and a pane. */
-export interface ArtifactSelection {
-  id: string;
-  version: number | null;
-  pane: ArtifactPane;
-  /**
-   * Open the preview window too: the request named the preview pane (the assistant's
-   * open_artifact, or the user's "see it"). A build that starts opens the page only.
-   */
-  showPreview: boolean;
-  /** Increases with each request, so repeating one re-applies it. */
-  seq: number;
-}
+export type { ArtifactSelection } from './model';
 
 interface ArtifactsViewProps {
   /** Open the chat that made a creation. */
@@ -82,13 +70,7 @@ export default function ArtifactsView({ onOpenChat, onChange }: ArtifactsViewPro
 
   // The assistant showed a creation (open_artifact), or a Creator answer started building.
   useNavigationTarget('artifact', target => {
-    setSelection(prev => ({
-      id: target.artifactId,
-      version: target.version,
-      pane: isArtifactPane(target.pane) ? target.pane : 'preview',
-      showPreview: target.pane === 'preview',
-      seq: (prev?.seq ?? 0) + 1,
-    }));
+    setSelection(prev => selectionFor(target, prev));
   });
 
   const shown = useMemo(() => filterCreations(creations ?? [], text), [creations, text]);

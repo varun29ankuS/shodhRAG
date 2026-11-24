@@ -1,9 +1,9 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
-  AppWindow,
   ArrowLeft,
   Check,
   CheckCircle2,
+  ChevronRight,
   Download,
   FileText,
   Folder,
@@ -11,34 +11,30 @@ import {
   Globe,
   Loader2,
   MessageCircle,
+  MoreHorizontal,
   Palette,
   Pencil,
-  RefreshCw,
-  ShieldAlert,
   Trash2,
-  X,
 } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import { cn } from '../../lib/utils';
 import { notify } from '../../lib/notify';
 import { relativeTime } from '../../utils/time';
 import { IS_MAC } from '../../components/ui/Kbd';
-import { useTheme } from '../../contexts/ThemeContext';
 import { showInFolder } from '../library/fileActions';
 import { useChatSession } from '../ask/ChatSessionContext';
 import { isLive } from '../agent/reducer';
-import { creationsApi, errorText, onCreationsChanged, onPreviewEvent } from './api';
+import { creationsApi, errorText, onCreationsChanged } from './api';
+import { COMPACT_LABEL, EmbeddedPreview } from './EmbeddedPreview';
 import {
   ARTIFACT_PANES,
   PANE_LABELS,
-  PREVIEW_BLOCKED_TEXT,
-  PREVIEW_END_TEXT,
   STATUS_LABELS,
   buildProgress,
   fileRows,
-  previewEndFor,
+  hasEntryPage,
   previewNetworkText,
-  previewShowingText,
   previousVersion,
   progressLine,
   sizeLabel,
@@ -49,9 +45,6 @@ import type {
   FileChange,
   FileContent,
   FileEntry,
-  PreviewEnd,
-  PreviewEvent,
-  PreviewShown,
 } from './model';
 import type { ArtifactSelection } from './ArtifactsView';
 import { CodeDiff, CodeFileView } from '../code/CodeDiff';
@@ -66,17 +59,24 @@ import type { StoredDesignCheck } from '../code/designModel';
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
 const QUIET_BUTTON = cn(
-  'h-8 px-2.5 inline-flex items-center gap-1.5 rounded-lg text-small text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro disabled:opacity-40',
+  'h-8 px-2.5 shrink-0 inline-flex items-center gap-1.5 rounded-lg text-small text-shodh-text-secondary whitespace-nowrap hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro disabled:opacity-40',
   FOCUS_RING,
 );
 const OUTLINE_BUTTON = cn(
-  'h-8 px-3 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border text-small font-medium text-shodh-text hover:bg-shodh-raised transition-colors duration-micro disabled:opacity-40',
+  'h-8 px-3 shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border text-small font-medium text-shodh-text whitespace-nowrap hover:bg-shodh-raised transition-colors duration-micro disabled:opacity-40',
   FOCUS_RING,
 );
 const DANGER_BUTTON = cn(
-  'h-8 px-3 inline-flex items-center gap-1.5 rounded-lg bg-shodh-error text-white text-small font-semibold hover:opacity-90 transition-opacity duration-micro disabled:opacity-40',
+  'h-8 px-3 shrink-0 inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg bg-shodh-error text-white text-small font-semibold hover:opacity-90 transition-opacity duration-micro disabled:opacity-40',
   FOCUS_RING,
 );
+
+/**
+ * Below this width (CSS pixels) the page's header and toolbar keep to icons for their
+ * secondary actions, so each stays one row with every control on screen (a pane docked
+ * beside the page narrows it).
+ */
+const COMPACT_BELOW = 860;
 
 /** Reloads of the live preview while a build writes files, at most this often. */
 const LIVE_RELOAD_MS = 1500;
@@ -90,8 +90,8 @@ interface ArtifactPageProps {
 }
 
 /**
- * One creation: its live preview (agent-built code in a normal window of its own, which the
- * preview pane's card opens, with no access to the app, its files or the network unless the
+ * One creation: its live preview (agent-built code in a locked webview over the preview pane,
+ * or popped out to a window of its own, with no access to the app, its files or the network unless the
  * user allows it), its files, its saved versions with what changed, and Keep · Change something ·
  * Delete it, Open folder and Export.
  */
@@ -111,6 +111,18 @@ export function ArtifactPage({ selection, onBack, onOpenChat, onChange, onDelete
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [busy, setBusy] = useState<null | 'keep' | 'export' | 'delete'>(null);
   const id = selection.id;
+  const networkNoteId = useId();
+  // The page's width, for the compact header and toolbar.
+  const [root, setRoot] = useState<HTMLDivElement | null>(null);
+  const [compact, setCompact] = useState(false);
+  useEffect(() => {
+    if (!root) return;
+    const measure = () => setCompact(root.clientWidth < COMPACT_BELOW);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(root);
+    return () => observer.disconnect();
+  }, [root]);
 
   // A later request (the assistant opening another version or pane) applies at once.
   const firstSeq = useRef(selection.seq);
@@ -157,6 +169,8 @@ export function ArtifactPage({ selection, onBack, onOpenChat, onChange, onDelete
     [live],
   );
   const progress = useMemo(() => buildProgress(steps), [steps]);
+  // The design check of its files: a badge in the header, never a pane over the page.
+  const design = useArtifactDesignCheck(id, creation?.conversationId ?? null);
   const doneChanges = steps.filter(s => (s.tool === 'write' || s.tool === 'edit' || s.tool === 'run_command') && s.status === 'done').length;
 
   // The files of the version shown (the folder now while building).
@@ -275,177 +289,181 @@ export function ArtifactPage({ selection, onBack, onOpenChat, onChange, onDelete
     );
   }
 
-  const hasPage = (files ?? []).some(f => f.path === 'index.html');
+  const hasPage = hasEntryPage(files);
   const versionLabel = version === null ? 'Now' : `Version ${version}`;
+  const statusText = live
+    ? running ? progressLine(progress, running) : `Finished · ${progressLine(progress, false)}`
+    : `${STATUS_LABELS[creation.status]} · ${creation.versions.length} ${creation.versions.length === 1 ? 'version' : 'versions'} · changed ${relativeTime(creation.updatedAt)}`;
+
+  // The panes and the version shown: the start of the toolbar row, beside the page's own controls.
+  const panesAndVersion = (
+    <div className="flex items-center gap-2 shrink-0">
+      <div role="tablist" aria-label="Artifact" className="flex items-center gap-0.5 rounded-lg bg-shodh-raised p-0.5">
+        {ARTIFACT_PANES.map(name => (
+          <button
+            key={name}
+            type="button"
+            role="tab"
+            aria-selected={pane === name}
+            onClick={() => {
+              setPane(name);
+              // Clicking Preview shows the page (a popped-out window comes to the front).
+              if (name === 'preview') setOpenSeq(seq => seq + 1);
+            }}
+            className={cn(
+              'h-7 px-2.5 rounded-md text-small font-medium whitespace-nowrap transition-colors duration-micro',
+              pane === name ? 'bg-shodh-surface text-shodh-text shadow-sm' : 'text-shodh-text-muted hover:text-shodh-text',
+              FOCUS_RING,
+            )}
+          >
+            {PANE_LABELS[name]}
+          </button>
+        ))}
+      </div>
+      <label className="inline-flex items-center gap-1.5 text-small text-shodh-text-secondary whitespace-nowrap">
+        <span className="sr-only">Showing</span>
+        <select
+          value={version === null ? 'now' : String(version)}
+          onChange={e => setVersion(e.target.value === 'now' ? null : Number(e.target.value))}
+          className={cn('h-8 max-w-[220px] group-data-[compact=true]/artifact:max-w-[120px] px-2 rounded-lg border border-shodh-border bg-shodh-surface text-small text-shodh-text', FOCUS_RING)}
+        >
+          <option value="now">The folder now</option>
+          {[...creation.versions].reverse().map(v => (
+            <option key={v.number} value={v.number}>
+              Version {v.number} · {relativeTime(v.createdAt)}
+            </option>
+          ))}
+        </select>
+      </label>
+    </div>
+  );
+
+  // The internet switch, compact: what it means is its tooltip and its description.
+  const networkText = previewNetworkText(network, IS_MAC);
+  const networkControl = (
+    <label title={networkText} className="h-8 px-2 shrink-0 inline-flex items-center gap-1.5 rounded-lg text-small text-shodh-text-secondary whitespace-nowrap hover:bg-shodh-raised">
+      <input
+        type="checkbox"
+        checked={network}
+        onChange={e => setNetwork(e.target.checked)}
+        aria-describedby={networkNoteId}
+        className={cn('accent-shodh-accent', FOCUS_RING)}
+      />
+      <Globe className="w-3.5 h-3.5" aria-hidden="true" />
+      <span className={COMPACT_LABEL}>Internet</span>
+      <span id={networkNoteId} className="sr-only">{networkText}</span>
+    </label>
+  );
 
   return (
-    <div className="h-full overflow-y-auto scrollbar-thin">
-      <div className="max-w-6xl mx-auto px-8 py-6 flex flex-col gap-4">
-        <button type="button" onClick={onBack} className={cn(QUIET_BUTTON, 'self-start -ml-2.5')}>
-          <ArrowLeft className="w-3.5 h-3.5" aria-hidden="true" />
-          All artifacts
-        </button>
-
-        <header className="flex items-start justify-between gap-4 flex-wrap">
-          <div className="flex flex-col gap-1 min-w-0">
-            <h1 className="m-0 text-xl font-bold text-shodh-text truncate">{creation.title}</h1>
-            <p className="m-0 text-small text-shodh-text-muted">
-              {STATUS_LABELS[creation.status]} · {creation.versions.length} {creation.versions.length === 1 ? 'version' : 'versions'} ·
-              changed {relativeTime(creation.updatedAt)}
-            </p>
-          </div>
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <ArtifactDesignCheck creationId={creation.id} conversationId={creation.conversationId} />
-            <button type="button" onClick={() => onOpenChat(creation.conversationId)} className={QUIET_BUTTON}>
-              <MessageCircle className="w-3.5 h-3.5" aria-hidden="true" />
-              Open chat
-            </button>
-            <button type="button" onClick={() => void showInFolder(creation.folder)} className={QUIET_BUTTON}>
-              <FolderOpen className="w-3.5 h-3.5" aria-hidden="true" />
-              Open folder
-            </button>
+    <div ref={setRoot} data-compact={compact} className="group/artifact h-full flex flex-col min-h-0">
+      <div className="flex-1 min-h-0 flex flex-col gap-2 px-5 pt-3 pb-3">
+        <header className="flex items-center gap-2 flex-nowrap min-w-0">
+          <button type="button" onClick={onBack} aria-label="All artifacts" title="All artifacts" className={cn(QUIET_BUTTON, 'px-2 -ml-2')}>
+            <ArrowLeft className="w-4 h-4" aria-hidden="true" />
+          </button>
+          <h1 className="m-0 min-w-[6rem] shrink truncate text-lg font-bold text-shodh-text" title={creation.title}>{creation.title}</h1>
+          <p role="status" aria-live="polite" className="m-0 min-w-0 truncate inline-flex items-center gap-1.5 text-small text-shodh-text-muted" title={statusText}>
+            {running && <Loader2 className="w-3.5 h-3.5 shrink-0 animate-spin" aria-hidden="true" />}
+            <span className="truncate">{statusText}</span>
+          </p>
+          <div className="ml-auto flex items-center gap-1.5 shrink-0">
+            <DesignBadge design={design} />
             <button
               type="button"
-              onClick={() => void exportZip()}
-              disabled={busy !== null || creation.versions.length === 0}
-              title={creation.versions.length === 0 ? 'A version is saved when the answer ends' : `Export ${versionLabel === 'Now' ? 'the latest version' : versionLabel.toLowerCase()} as a zip file in Documents/Shodh exports`}
-              className={QUIET_BUTTON}
+              onClick={() => void keep()}
+              disabled={busy !== null || creation.status === 'kept' || running}
+              className={OUTLINE_BUTTON}
             >
-              <Download className="w-3.5 h-3.5" aria-hidden="true" />
-              Export
+              <Check className="w-3.5 h-3.5" aria-hidden="true" />
+              {creation.status === 'kept' ? 'Kept' : 'Keep'}
             </button>
+            <button type="button" onClick={() => onChange(creation.conversationId)} title="Change something: the chat that built it, with your request started" className={OUTLINE_BUTTON}>
+              <Pencil className="w-3.5 h-3.5" aria-hidden="true" />
+              <span className={COMPACT_LABEL}>Change</span>
+            </button>
+            <ArtifactActionsMenu
+              items={[
+                { label: 'Open chat', icon: MessageCircle, onSelect: () => onOpenChat(creation.conversationId) },
+                { label: 'Open folder', icon: FolderOpen, onSelect: () => void showInFolder(creation.folder) },
+                {
+                  label: 'Export',
+                  icon: Download,
+                  onSelect: () => void exportZip(),
+                  disabled: busy !== null || creation.versions.length === 0,
+                  title: creation.versions.length === 0 ? 'A version is saved when the answer ends' : `Export ${versionLabel === 'Now' ? 'the latest version' : versionLabel.toLowerCase()} as a zip file in Documents/Shodh exports`,
+                },
+                {
+                  label: design.check ? 'Check the design again' : 'Design check',
+                  icon: Palette,
+                  onSelect: () => void design.run(),
+                  disabled: design.busy,
+                  title: "Check this artifact's HTML, CSS and components with Shodh's design rules (no model): contrast, text size, labels, alt text, focus, generated-UI tells.",
+                },
+                {
+                  label: 'Delete it',
+                  icon: Trash2,
+                  onSelect: () => setConfirmingDelete(true),
+                  disabled: busy !== null || running,
+                  title: running ? 'Stop the answer first: it is still building' : undefined,
+                },
+              ]}
+            />
           </div>
         </header>
+
+        {confirmingDelete && (
+          <div role="alertdialog" aria-label="Delete this creation" className="flex items-center gap-3 flex-nowrap rounded-xl border border-shodh-error/40 bg-shodh-error/5 px-4 py-2">
+            <p className="m-0 min-w-0 flex-1 text-small text-shodh-text">
+              Delete {creation.title}? Its folder ({creation.folder}) and every saved version are removed. This cannot be undone.
+            </p>
+            <button type="button" onClick={() => void remove()} disabled={busy !== null} className={DANGER_BUTTON}>
+              <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+              Delete it
+            </button>
+            <button type="button" onClick={() => setConfirmingDelete(false)} disabled={busy === 'delete'} className={QUIET_BUTTON}>
+              Cancel
+            </button>
+          </div>
+        )}
 
         {(creation.summary || creation.choices.length > 0) && (
           <FinishSummary summary={creation.summary} choices={creation.choices} />
         )}
 
-        <div className="flex items-center gap-2 flex-wrap">
-          <button
-            type="button"
-            onClick={() => void keep()}
-            disabled={busy !== null || creation.status === 'kept' || running}
-            className={OUTLINE_BUTTON}
-          >
-            <Check className="w-3.5 h-3.5" aria-hidden="true" />
-            {creation.status === 'kept' ? 'Kept' : 'Keep'}
-          </button>
-          <button type="button" onClick={() => onChange(creation.conversationId)} className={OUTLINE_BUTTON}>
-            <Pencil className="w-3.5 h-3.5" aria-hidden="true" />
-            Change something
-          </button>
-          <button
-            type="button"
-            onClick={() => setConfirmingDelete(true)}
-            disabled={busy !== null || running}
-            title={running ? 'Stop the answer first: it is still building' : undefined}
-            className={OUTLINE_BUTTON}
-          >
-            <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
-            Delete it
-          </button>
-        </div>
-        {confirmingDelete && (
-          <div role="alertdialog" aria-label="Delete this creation" className="flex flex-col gap-2 rounded-xl border border-shodh-error/40 bg-shodh-error/5 px-4 py-3">
-            <p className="m-0 text-small text-shodh-text">
-              Delete {creation.title}? Its folder ({creation.folder}) and every saved version are removed. This cannot be undone.
-            </p>
-            <div className="flex items-center gap-2">
-              <button type="button" onClick={() => void remove()} disabled={busy !== null} className={DANGER_BUTTON}>
-                <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
-                Delete it
-              </button>
-              <button type="button" onClick={() => setConfirmingDelete(false)} disabled={busy === 'delete'} className={QUIET_BUTTON}>
-                Cancel
-              </button>
-            </div>
-          </div>
-        )}
-
-        {live && (
-          <p role="status" aria-live="polite" className="m-0 inline-flex items-center gap-2 text-small text-shodh-text-secondary">
-            {running && <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />}
-            {running ? progressLine(progress, running) : `Finished · ${progressLine(progress, false)}`}
-          </p>
-        )}
-
-        <div className="flex items-center justify-between gap-3 flex-wrap border-b border-shodh-border-subtle">
-          <div role="tablist" aria-label="Artifact" className="flex items-center gap-1">
-            {ARTIFACT_PANES.map(name => (
-              <button
-                key={name}
-                type="button"
-                role="tab"
-                aria-selected={pane === name}
-                onClick={() => {
-                  setPane(name);
-                  // Clicking Preview opens the preview window (or brings it to the front).
-                  if (name === 'preview') setOpenSeq(seq => seq + 1);
-                }}
-                className={cn(
-                  'h-9 px-3 text-small font-medium border-b-2 -mb-px transition-colors duration-micro',
-                  pane === name ? 'border-shodh-accent text-shodh-text' : 'border-transparent text-shodh-text-muted hover:text-shodh-text',
-                  FOCUS_RING,
-                )}
-              >
-                {PANE_LABELS[name]}
-              </button>
-            ))}
-          </div>
-          <label className="inline-flex items-center gap-2 text-small text-shodh-text-secondary pb-1.5">
-            Showing
-            <select
-              value={version === null ? 'now' : String(version)}
-              onChange={e => setVersion(e.target.value === 'now' ? null : Number(e.target.value))}
-              className={cn('h-8 px-2 rounded-lg border border-shodh-border bg-shodh-surface text-small text-shodh-text', FOCUS_RING)}
-            >
-              <option value="now">The folder now</option>
-              {[...creation.versions].reverse().map(v => (
-                <option key={v.number} value={v.number}>
-                  Version {v.number} · {relativeTime(v.createdAt)}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-
         {pane === 'preview' && (
-          <div className="flex flex-col gap-2">
-            <label className="self-start inline-flex items-center gap-2 text-small text-shodh-text-secondary">
-              <input
-                type="checkbox"
-                checked={network}
-                onChange={e => setNetwork(e.target.checked)}
-                className={cn('accent-shodh-accent', FOCUS_RING)}
-              />
-              <Globe className="w-3.5 h-3.5" aria-hidden="true" />
-              Let this preview reach the internet
-            </label>
-            <p className="m-0 text-caption text-shodh-text-muted">
-              {previewNetworkText(network, IS_MAC)}
-            </p>
-            {!hasPage ? (
-              <div className="flex items-center justify-center h-[420px] rounded-xl border border-dashed border-shodh-border text-small text-shodh-text-muted px-6 text-center">
+          !hasPage ? (
+            <div className="flex-1 min-h-0 flex flex-col gap-2">
+              <div className="flex items-center gap-2 flex-nowrap min-w-0">
+                {panesAndVersion}
+                <div className="ml-auto">{networkControl}</div>
+              </div>
+              <div className="flex-1 min-h-0 flex items-center justify-center rounded-xl border border-dashed border-shodh-border text-small text-shodh-text-muted px-6 text-center">
                 {files === null
                   ? 'Looking for the page'
                   : running
                     ? 'The preview appears once the build writes index.html.'
                     : 'There is no index.html at the top of this folder, so there is no page to show. Its files are in Files.'}
               </div>
-            ) : (
-              <PreviewCard
-                creationId={id}
-                title={creation.title}
-                version={version}
-                network={network}
-                reloadSeq={reloadSeq}
-                openSeq={openSeq}
-              />
-            )}
-          </div>
+            </div>
+          ) : (
+            <EmbeddedPreview
+              creationId={id}
+              version={version}
+              network={network}
+              reloadSeq={reloadSeq}
+              focusSeq={openSeq}
+              leading={panesAndVersion}
+              networkControl={networkControl}
+            />
+          )
         )}
 
+        {pane !== 'preview' && (
+          <div className="flex items-center gap-2 flex-nowrap min-w-0">{panesAndVersion}</div>
+        )}
+        {pane !== 'preview' && (
+          <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin flex flex-col gap-4">
         {pane === 'files' && (
           <div className="grid gap-4 grid-cols-[minmax(220px,300px)_1fr] min-h-[360px]">
             <ul aria-label="Files" className="list-none m-0 p-0 flex flex-col gap-0.5 overflow-y-auto max-h-[70vh] rounded-xl border border-shodh-border-subtle py-2">
@@ -549,295 +567,45 @@ export function ArtifactPage({ selection, onBack, onOpenChat, onChange, onDelete
             </div>
           </div>
         )}
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-type PreviewStatus = 'opening' | 'loaded' | 'blocked';
-
-interface PreviewCardProps {
-  creationId: string;
-  title: string;
-  version: number | null;
-  network: boolean;
-  /** Increases when the files changed and the preview should load again. */
-  reloadSeq: number;
-  /** Increases each time the preview window should open (or come to the front). */
-  openSeq: number;
-}
-
 /**
- * The preview pane's card. The page runs in a normal window of its own
- * (`creations/preview_window.rs`) that the user moves, sizes and switches to like any
- * other; this card says what it shows and offers Bring to front · Reload · Close. The
- * window stays open across dialogs and tab changes, and closes when the user closes it,
- * when another version or internet setting is picked here (with a note), when the creation
- * is deleted, and when Shodh quits.
+ * "Here's what I chose": the agent's summary and its choices, as plain text, folded to one line
+ * under the header so the page keeps the height. Opening it shows the choices.
  */
-function PreviewCard({ creationId, title, version, network, reloadSeq, openSeq }: PreviewCardProps) {
-  const { theme } = useTheme();
-  const [shown, setShown] = useState<PreviewShown | null>(null);
-  const [status, setStatus] = useState<PreviewStatus>('opening');
-  const [stopped, setStopped] = useState(false);
-  const [end, setEnd] = useState<PreviewEnd | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const shownRef = useRef<PreviewShown | null>(null);
-  // Windows this card closed itself (their "closed" report needs no note).
-  const closing = useRef(new Set<string>());
-  // What Rust said about each window, kept so a report that comes before the window's
-  // label is known still counts.
-  const reports = useRef(new Map<string, PreviewEvent['state']>());
-  const openedAt = useRef(0);
-  const reloadedAt = useRef(reloadSeq);
-  const ours = shown !== null && shown.creationId === creationId ? shown : null;
-
-  const show = useCallback((next: PreviewShown | null) => {
-    shownRef.current = next;
-    setShown(next);
-  }, []);
-
-  const applyReport = useCallback((state: PreviewEvent['state']) => {
-    if (state === 'loaded') setStatus(prev => (prev === 'blocked' ? prev : 'loaded'));
-    else if (state === 'blocked') setStatus('blocked');
-    else if (state === 'stopped') setStopped(true);
-  }, []);
-
-  // The preview open now, if any (it outlives this page).
-  useEffect(() => {
-    let active = true;
-    creationsApi
-      .previewStatus()
-      .then(found => {
-        if (!active || shownRef.current) return;
-        show(found);
-        if (found) setStatus('loaded');
-      })
-      .catch(e => console.error('The preview window could not be found:', e));
-    return () => {
-      active = false;
-    };
-  }, [show]);
-
-  // Rust's reports on the preview window.
-  useEffect(() => {
-    let disposed = false;
-    let unlisten: UnlistenFn | null = null;
-    const known = reports.current;
-    const closed = closing.current;
-    onPreviewEvent(event => {
-      const current = shownRef.current;
-      if (event.state === 'closed') {
-        known.delete(event.label);
-        const ourClose = closed.delete(event.label);
-        if (current?.label === event.label) {
-          show(null);
-          setStopped(false);
-          if (!ourClose) setEnd('closed');
-        }
-        return;
-      }
-      known.set(event.label, known.get(event.label) === 'blocked' ? 'blocked' : event.state);
-      if (current?.label === event.label) applyReport(event.state);
-    })
-      .then(fn => {
-        if (disposed) fn();
-        else unlisten = fn;
-      })
-      .catch(e => console.error('Failed to listen for the preview window:', e));
-    return () => {
-      disposed = true;
-      unlisten?.();
-      known.clear();
-      closed.clear();
-    };
-  }, [show, applyReport]);
-
-  const close = useCallback(
-    async (why: PreviewEnd | null) => {
-      const current = shownRef.current;
-      if (!current) return;
-      closing.current.add(current.label);
-      show(null);
-      setStopped(false);
-      setEnd(why);
-      try {
-        await creationsApi.closePreview(current.label);
-      } catch (e) {
-        notify.error('The preview could not close', { description: errorText(e) });
-      }
-    },
-    [show],
-  );
-
-  const open = useCallback(async () => {
-    setBusy(true);
-    setError(null);
-    setEnd(null);
-    try {
-      // A stopped page is a dead window: a new one replaces it.
-      if (stopped) await close(null);
-      const info = await creationsApi.preview(creationId, version, network, theme === 'dark');
-      const already = shownRef.current?.label === info.label;
-      show({ label: info.label, creationId, version, network });
-      if (!already) {
-        setStopped(false);
-        setStatus('opening');
-        const early = reports.current.get(info.label);
-        if (early) applyReport(early);
-      }
-    } catch (e) {
-      setError(errorText(e));
-    } finally {
-      setBusy(false);
-    }
-  }, [creationId, version, network, theme, stopped, close, show, applyReport]);
-
-  // Clicking Preview, or the assistant showing the preview, opens it.
-  useEffect(() => {
-    if (openSeq === 0 || openSeq === openedAt.current) return;
-    openedAt.current = openSeq;
-    void open();
-  }, [openSeq, open]);
-
-  // Another version or internet setting picked here (a change, not this page opening on
-  // its defaults): the window showing the old one closes, and the card says why.
-  const picked = useRef({ version, network });
-  useEffect(() => {
-    const before = picked.current;
-    picked.current = { version, network };
-    if (before.version === version && before.network === network) return;
-    const current = shownRef.current;
-    if (!current) return;
-    const why = previewEndFor(current, creationId, version, network);
-    if (why) void close(why);
-  }, [creationId, version, network, close]);
-
-  // While the folder is being built, its preview loads again as files change.
-  useEffect(() => {
-    if (reloadSeq === reloadedAt.current) return;
-    reloadedAt.current = reloadSeq;
-    const current = shownRef.current;
-    if (!current || current.creationId !== creationId || current.version !== null) return;
-    creationsApi.reloadPreview(current.label).catch(e => console.error('The preview could not reload:', e));
-  }, [reloadSeq, creationId]);
-
-  const focus = async () => {
-    if (!ours) return;
-    try {
-      await creationsApi.focusPreview(ours.label);
-    } catch (e) {
-      setError(errorText(e));
-    }
-  };
-
-  const reload = async () => {
-    if (!ours) return;
-    if (stopped) {
-      await open();
-      return;
-    }
-    try {
-      setStatus('opening');
-      await creationsApi.reloadPreview(ours.label);
-      setStatus('loaded');
-    } catch (e) {
-      setError(errorText(e));
-    }
-  };
-
-  const headingId = `preview-card-${creationId}`;
+export function FinishSummary({ summary, choices }: { summary: string | null; choices: string[] }) {
   return (
-    <section
-      aria-labelledby={headingId}
-      className="flex flex-col gap-3 rounded-xl border border-shodh-border bg-shodh-surface px-4 py-4"
-    >
-      <div className="flex items-start gap-3">
-        <AppWindow className="w-4 h-4 mt-0.5 shrink-0 text-shodh-text-secondary" aria-hidden="true" />
-        <div className="flex flex-col gap-1 min-w-0">
-          <h2 id={headingId} className="m-0 text-small font-semibold text-shodh-text">
-            Preview of {title}
-          </h2>
-          <p role="status" aria-live="polite" className="m-0 text-small text-shodh-text-secondary">
-            {ours
-              ? stopped
-                ? 'The page stopped working. Open it again to restart it.'
-                : status === 'opening'
-                  ? 'Opening the preview window'
-                  : previewShowingText(ours.version)
-              : end
-                ? PREVIEW_END_TEXT[end]
-                : 'The page opens in a window of its own, which you can move, resize and switch to like any other.'}
-          </p>
-          {ours && status === 'blocked' && (
-            <p role="status" className="m-0 inline-flex items-center gap-1.5 text-caption text-shodh-warning">
-              <ShieldAlert className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-              {PREVIEW_BLOCKED_TEXT}
-            </p>
-          )}
-          {error && (
-            <p role="alert" className="m-0 text-small text-shodh-error">
-              The preview could not open: {error}
-            </p>
-          )}
-        </div>
-      </div>
-      <div className="flex items-center gap-2 flex-wrap">
-        {ours && !stopped ? (
+    <details aria-label="Here's what I chose" className="group shrink-0 rounded-lg border border-shodh-border-subtle bg-shodh-surface">
+      <summary className={cn('flex items-center gap-2 px-3 h-8 cursor-pointer list-none text-small text-shodh-text-secondary [&::-webkit-details-marker]:hidden', FOCUS_RING)}>
+        <ChevronRight className="w-3.5 h-3.5 shrink-0 transition-transform duration-micro group-open:rotate-90" aria-hidden="true" />
+        <span className="min-w-0 truncate">
+          {summary ?? 'Here’s what I chose'}
+        </span>
+        {choices.length > 0 && (
+          <span className="ml-auto shrink-0 text-caption text-shodh-text-muted whitespace-nowrap">
+            {choices.length} {choices.length === 1 ? 'choice' : 'choices'}
+          </span>
+        )}
+      </summary>
+      <div className="flex flex-col gap-1.5 px-4 pb-3 pt-1 max-h-[40vh] overflow-y-auto scrollbar-thin">
+        {summary && <p className="m-0 text-small text-shodh-text">{summary}</p>}
+        {choices.length > 0 && (
           <>
-            <button type="button" onClick={() => void focus()} className={OUTLINE_BUTTON}>
-              <AppWindow className="w-3.5 h-3.5" aria-hidden="true" />
-              Bring to front
-            </button>
-            <button type="button" onClick={() => void reload()} className={QUIET_BUTTON}>
-              <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
-              Reload
-            </button>
-            <button type="button" onClick={() => void close(null)} className={QUIET_BUTTON}>
-              <X className="w-3.5 h-3.5" aria-hidden="true" />
-              Close
-            </button>
-          </>
-        ) : (
-          <>
-            <button type="button" onClick={() => void open()} disabled={busy} className={OUTLINE_BUTTON}>
-              {busy ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
-              ) : (
-                <AppWindow className="w-3.5 h-3.5" aria-hidden="true" />
-              )}
-              {stopped || end !== null ? 'Open it again' : 'Open preview'}
-            </button>
-            {ours && stopped && (
-              <button type="button" onClick={() => void close(null)} className={QUIET_BUTTON}>
-                <X className="w-3.5 h-3.5" aria-hidden="true" />
-                Close
-              </button>
-            )}
+            <p className="m-0 text-caption font-semibold text-shodh-text-secondary">Here&apos;s what I chose</p>
+            <ul className="m-0 pl-5 flex flex-col gap-0.5 text-small text-shodh-text-secondary list-disc">
+              {choices.map(choice => (
+                <li key={choice}>{choice}</li>
+              ))}
+            </ul>
           </>
         )}
       </div>
-    </section>
-  );
-}
-
-/** "Here's what I chose": the agent's summary and its choices, as plain text. */
-export function FinishSummary({ summary, choices }: { summary: string | null; choices: string[] }) {
-  return (
-    <section aria-label="Here's what I chose" className="flex flex-col gap-1.5 rounded-xl border border-shodh-border-subtle bg-shodh-surface px-4 py-3">
-      {summary && <p className="m-0 text-small text-shodh-text">{summary}</p>}
-      {choices.length > 0 && (
-        <>
-          <p className="m-0 text-caption font-semibold text-shodh-text-secondary">Here&apos;s what I chose</p>
-          <ul className="m-0 pl-5 flex flex-col gap-0.5 text-small text-shodh-text-secondary list-disc">
-            {choices.map(choice => (
-              <li key={choice}>{choice}</li>
-            ))}
-          </ul>
-        </>
-      )}
-    </section>
+    </details>
   );
 }
 
@@ -878,12 +646,22 @@ function ArtifactFile({ path, text, title }: { path: string; text: string; title
   );
 }
 
+/** The artifact's latest design check, kept up to date, and running one now. */
+interface ArtifactDesign {
+  check: StoredDesignCheck | null;
+  busy: boolean;
+  /** Check its files now, then show the findings (the pane docks beside the page). */
+  run: () => Promise<void>;
+  /** Show the latest check's findings. */
+  open: () => void;
+}
+
 /**
- * The artifact's design badge ("Design check: 3 issues", "No issues"), which opens the
- * findings in the code pane, and "Design check", which checks its files now. Shodh also
- * checks them after each round of writes while it builds. No model is used.
+ * The design check of a creation's files. Shodh also checks them after each round of writes
+ * while it builds, and the assistant may run one: each new check updates the header's badge
+ * and nothing else, so the live page is never covered. No model is used.
  */
-function ArtifactDesignCheck({ creationId, conversationId }: { creationId: string; conversationId: string }) {
+function useArtifactDesignCheck(creationId: string, conversationId: string | null): ArtifactDesign {
   const pane = useCodeReview();
   const [check, setCheck] = useState<StoredDesignCheck | null>(null);
   const [busy, setBusy] = useState(false);
@@ -918,7 +696,8 @@ function ArtifactDesignCheck({ creationId, conversationId }: { creationId: strin
     };
   }, [creationId, load]);
 
-  const run = async () => {
+  const run = useCallback(async () => {
+    if (!conversationId) return;
     setBusy(true);
     try {
       const found = await designApi.run({ creationId, conversationId });
@@ -930,39 +709,135 @@ function ArtifactDesignCheck({ creationId, conversationId }: { creationId: strin
     } finally {
       setBusy(false);
     }
-  };
+  }, [creationId, conversationId, pane]);
 
+  const open = useCallback(() => {
+    if (check) pane?.openDesign(check);
+  }, [check, pane]);
+
+  return { check, busy, run, open };
+}
+
+/**
+ * The header's design badge ("Design check: 3 issues", "No issues"): one line, and the
+ * findings open beside the page when clicked. Before any check, it runs one.
+ */
+function DesignBadge({ design }: { design: ArtifactDesign }) {
+  const { check, busy } = design;
   const errors = check?.report.counts.error ?? 0;
   return (
-    <>
-      {check && (
-        <button
-          type="button"
-          onClick={() => pane?.openDesign(check)}
-          title={`${badgeDetail(check)} Click to see the findings.`}
-          className={cn(QUIET_BUTTON, errors > 0 && 'text-shodh-text')}
-        >
-          {totalIssues(check.report) === 0
-            ? <CheckCircle2 className="w-3.5 h-3.5 text-shodh-success" aria-hidden="true" />
-            : <Palette className="w-3.5 h-3.5" aria-hidden="true" />}
-          {badgeText(check)}
-        </button>
-      )}
+    <button
+      type="button"
+      onClick={() => (check ? design.open() : void design.run())}
+      disabled={busy}
+      title={check ? `${badgeDetail(check)} Click to see the findings beside the page.` : "Check this artifact's HTML, CSS and components with Shodh's design rules (no model)."}
+      className={cn(QUIET_BUTTON, 'whitespace-nowrap', errors > 0 && 'text-shodh-text')}
+    >
+      {busy
+        ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+        : check && totalIssues(check.report) === 0
+          ? <CheckCircle2 className="w-3.5 h-3.5 text-shodh-success" aria-hidden="true" />
+          : <Palette className="w-3.5 h-3.5" aria-hidden="true" />}
+      <span className={COMPACT_LABEL}>{check ? badgeText(check) : 'Design check'}</span>
+    </button>
+  );
+}
+
+/** One action of the header's "More" menu. */
+interface ActionItem {
+  label: string;
+  icon: LucideIcon;
+  onSelect: () => void;
+  disabled?: boolean;
+  title?: string;
+}
+
+const MENU_ITEM =
+  'w-full flex items-center gap-2 px-3 py-1.5 text-small text-left text-shodh-text-secondary whitespace-nowrap hover:bg-shodh-raised-2 focus-visible:bg-shodh-raised-2 focus-visible:outline-none disabled:opacity-40 disabled:hover:bg-transparent';
+
+/** "⋯" at the header's end: the artifact's other actions, so the header stays one row. */
+function ArtifactActionsMenu({ items }: { items: readonly ActionItem[] }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const menuId = useId();
+
+  useEffect(() => {
+    if (!open) return;
+    menuRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')?.focus();
+    const onPointer = (e: PointerEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('pointerdown', onPointer);
+    return () => document.removeEventListener('pointerdown', onPointer);
+  }, [open]);
+
+  const close = (restore: boolean) => {
+    setOpen(false);
+    if (restore) buttonRef.current?.focus();
+  };
+
+  const onMenuKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const buttons = Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)') ?? []);
+    const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      close(true);
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      buttons[(index + 1) % buttons.length]?.focus();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      buttons[(index - 1 + buttons.length) % buttons.length]?.focus();
+    } else if (e.key === 'Home' || e.key === 'End') {
+      e.preventDefault();
+      buttons[e.key === 'Home' ? 0 : buttons.length - 1]?.focus();
+    } else if (e.key === 'Tab') {
+      close(false);
+    }
+  };
+
+  return (
+    <div ref={rootRef} className="relative shrink-0">
       <button
+        ref={buttonRef}
         type="button"
-        onClick={() => void run()}
-        disabled={busy}
-        title="Check this artifact's HTML, CSS and components with Shodh's design rules (no model): contrast, text size, labels, alt text, focus, generated-UI tells."
-        className={QUIET_BUTTON}
+        onClick={() => setOpen(o => !o)}
+        aria-label="More actions"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-controls={open ? menuId : undefined}
+        title="More actions"
+        className={cn(QUIET_BUTTON, 'px-2')}
       >
-        {busy
-          ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
-          : check
-            ? <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
-            : <Palette className="w-3.5 h-3.5" aria-hidden="true" />}
-        {check ? 'Check again' : 'Design check'}
+        <MoreHorizontal className="w-4 h-4" aria-hidden="true" />
       </button>
-    </>
+      {open && (
+        <div className="shell-pop absolute right-0 top-9 z-50 min-w-[220px] rounded-lg border border-shodh-border-strong bg-shodh-raised shadow-lg overflow-hidden">
+          <div id={menuId} ref={menuRef} role="menu" aria-label="More actions" onKeyDown={onMenuKeyDown} className="py-1">
+            {items.map(({ label, icon: Icon, onSelect, disabled, title }) => (
+              <button
+                key={label}
+                type="button"
+                role="menuitem"
+                disabled={disabled}
+                title={title}
+                onClick={() => {
+                  close(true);
+                  onSelect();
+                }}
+                className={MENU_ITEM}
+              >
+                <Icon className="w-3.5 h-3.5" aria-hidden="true" />
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 

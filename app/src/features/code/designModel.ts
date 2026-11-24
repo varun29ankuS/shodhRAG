@@ -66,6 +66,15 @@ export interface DesignCheckUpdate {
   total: number;
 }
 
+/**
+ * Whether a check the assistant shows opens the findings pane. A creation's never does: its
+ * result is the badge on the creation's page in Artifacts, where its live page is the thing
+ * on screen, and the user opens the findings from the badge.
+ */
+export function opensPaneForAssistant(check: StoredDesignCheck): boolean {
+  return check.creationId === null;
+}
+
 /** Every finding of a report, listed or not. */
 export function totalIssues(report: DesignReport): number {
   return report.counts.error + report.counts.warning + report.counts.advisory;

@@ -1,0 +1,392 @@
+/**
+ * Thin client for the agent session commands (`agent_session_commands.rs`): the
+ * commands, their types and errors, and the runtime and session-count streams. The
+ * `agent_event` stream itself is subscribed in `useAgentSession.ts`, which only the
+ * main window's session uses, so modules that only call or describe the agent (the
+ * transcript, the runtime card, the floating chat) never pull in a subscription to it.
+ */
+import { useEffect, useRef, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+import type { UnlistenFn } from '@tauri-apps/api/event';
+import type { FailureCode } from './reducer';
+import { AGENT_SESSIONS_EVENT, isSessionCounts } from './sessionCounts';
+import type { SessionCounts } from './sessionCounts';
+import type { ModelOverride, ProviderError } from '../modelPicker/modelTypes';
+import { readProviderError } from '../modelPicker/modelTypes';
+import type { AgentMode } from './agentModes';
+import type { ConversationMessage, ConversationMode } from '../../hooks/useConversations';
+import type { CarriedPassageWire } from '../focus/carriedPassages';
+import type { AttachedContext } from '../ask/imageAttachments';
+
+export const RUNTIME_PROGRESS_EVENT = 'agent_runtime_progress';
+
+/** `AgentCommandError` from the backend. */
+export interface AgentError {
+  code: FailureCode;
+  message: string;
+  /** For `model_cooling`: the model (as runs name it) and how it failed moments ago. */
+  cooling?: { model: string; providerError: ProviderError };
+  /**
+   * `agent_send` took the question with its turn and saved the failed answer itself.
+   * Absent otherwise: the window saves the question and the failed answer.
+   */
+  turnSaved?: boolean;
+}
+
+const CODES: readonly FailureCode[] = [
+  'runtime_missing',
+  'offline',
+  'runtime_invalid',
+  'model_config',
+  'model_cooling',
+  'busy',
+  'invalid_request',
+  'session_closed',
+  'runtime_error',
+];
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** Normalise anything a command rejected with. */
+export function toAgentError(error: unknown): AgentError {
+  if (isRecord(error) && typeof error.message === 'string') {
+    const code = CODES.includes(error.code as FailureCode) ? (error.code as FailureCode) : 'runtime_error';
+    const cooling = isRecord(error.cooling) && typeof error.cooling.model === 'string' ? error.cooling : null;
+    const providerError = cooling ? readProviderError(cooling.providerError) : null;
+    const saved = error.turnSaved === true ? { turnSaved: true } : {};
+    return cooling && providerError
+      ? { code, message: error.message, cooling: { model: cooling.model as string, providerError }, ...saved }
+      : { code, message: error.message, ...saved };
+  }
+  if (error instanceof Error) return { code: 'runtime_error', message: error.message };
+  if (typeof error === 'string') return { code: 'runtime_error', message: error };
+  return { code: 'runtime_error', message: 'The agent did not respond.' };
+}
+
+/** What one answer may search; empty lists mean everything indexed. */
+export interface AnswerScope {
+  sourceIds: string[];
+  sourceFiles: string[];
+  /** 1-based pages of `sourceFiles` (only with files); absent means every page. */
+  pages?: number[];
+  /**
+   * The conversation's workspace: the backend limits search to its sources (unless
+   * `searchAll`), puts its instructions in front of the question and scopes memories.
+   */
+  workspaceId?: string;
+  /** "Search all my library" for this one question (only with `workspaceId`). */
+  searchAll?: boolean;
+  /**
+   * Passages of the answers a side question continues, under their numbers
+   * (`features/focus/carriedPassages`): the run starts with them.
+   */
+  passages?: CarriedPassageWire[];
+}
+
+/** How a conversation's answers work, sent with `agent_start`. */
+export interface AnswerMode {
+  mode: ConversationMode;
+  /** The conversation's workspace: Code mode works in its one folder. */
+  workspaceId: string | null;
+  /** The mode the user picked (`agentModes`); null follows the default in Settings. */
+  agentMode: AgentMode | null;
+}
+
+/** The branch a conversation's Code changes are on (`CodeBranch`). */
+export interface CodeBranch {
+  folder: string;
+  branch: string;
+  /** The branch (or commit) the work started from. */
+  base: string;
+  baseIsCommit: boolean;
+  createdAt: string;
+}
+
+/** `agent_code_status`. */
+export interface CodeStatus {
+  /** The code folder, when Code mode can be used. */
+  folder: string | null;
+  /** Why Code mode cannot be used, and how to fix it. */
+  problem: string | null;
+  /** The conversation's branch, while it is checked out. */
+  branch: CodeBranch | null;
+}
+
+/** A workspace's Code settings. */
+export interface CodeSettings {
+  /**
+   * Commands Auto mode also runs (each exactly), like a build or test: by themselves only
+   * where commands are sandboxed or in a workspace the user trusts.
+   */
+  allowlist: string[];
+  /** A list an earlier version kept while the workspace asked for everything: never run. */
+  parkedAllowlist?: string[];
+  /** The approval level an earlier version saved, until the one-time notice is dismissed. */
+  formerLevel?: string | null;
+  /** Kept by the backend as it is on disk; set only by `trustBuilds`. */
+  buildTrust?: unknown;
+  /** Wall-clock limit of one command, in seconds (10..=3600). */
+  commandTimeoutSecs: number;
+  /** Memory a command and everything it starts may use, in MB (256..=65536). */
+  memoryLimitMb: number;
+  /** CPU a command may use, in percent of the whole machine (10..=100). */
+  cpuPercent: number;
+}
+
+/** `code_build_trust`: whether a workspace's builds and tests may run without asking in Auto. */
+export interface BuildTrustStatus {
+  /** Commands are sandboxed on this system: builds and tests run by themselves anyway. */
+  sandboxed: boolean;
+  /** The user trusts the workspace, and its build files are as they were then. */
+  trusted: boolean;
+  /** Trust was given, but the project changed since (what changed). */
+  lapsed: string | null;
+  /** Why trust cannot be given (no code folder, not a git repository). */
+  problem: string | null;
+}
+
+/** The optional parts of `agentApi.send`. */
+export interface SendExtras {
+  /** What the answer may search (selected sources, or files for "Ask about this file"). */
+  scope?: AnswerScope | null;
+  /**
+   * `typed` only when `text` is exactly what the user typed in the main conversation;
+   * default `composed`. Only the user's own words may be learned from (Settings → Memory)
+   * or kept when they ask Shodh to remember something.
+   */
+  textOrigin?: 'typed' | 'composed';
+  /** The question the user typed when `text` is a side-thread message composed around it. */
+  typedText?: string | null;
+  /**
+   * Text the user attached (read from images): the backend appends it, fenced, to the
+   * message to the model only, never to what is learned or recorded as the question.
+   */
+  attachedContext?: AttachedContext[] | null;
+  /**
+   * Run ids of the earlier tries of this question (Retry): a memory one of them already
+   * reinforced is not reinforced again.
+   */
+  priorRunIds?: string[];
+  /**
+   * Sent from the code review pane (a fix or a check): every edit and write of the
+   * answer asks, in every mode (`agent_send`'s `reviewAction`).
+   */
+  reviewAction?: boolean;
+  /**
+   * The user went on without a mode the agent suggested earlier in this conversation
+   * (`suggestionIgnored` in agentModes): the agent suggests none again.
+   */
+  suggestionIgnored?: boolean;
+  /**
+   * The turn the backend saves (`agent_send`'s `turn`): with it the conversation is
+   * saved by the app, not the window, from the moment the question is sent.
+   */
+  turn?: SendTurn | null;
+}
+
+/**
+ * A question and its answer as the window stores them, saved by the backend once
+ * `agent_send` takes the question (and its answer as it is checked and when it ends).
+ */
+export interface SendTurn {
+  conversationId: string;
+  /** The question as stored (`toStored`); absent for a retry of the latest answer. */
+  question: ConversationMessage | null;
+  /** The answer as it starts (`startedAnswer`), with its starting transcript. */
+  answer: ConversationMessage;
+  /** The answer a retry replaces, removed when this one is saved. */
+  replaces: string | null;
+}
+
+/** The ids of the turn a steer becomes when the answer ended before it arrived. */
+export interface SteerTurn {
+  questionId: string;
+  answerId: string;
+}
+
+export interface HistoryTurn {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export interface RuntimeStatus {
+  installed: boolean;
+  path: string;
+  version: string;
+  /** Size of the pinned download on this platform, when it is pinned. */
+  downloadBytes: number | null;
+  /** Where it is downloaded from ("GitHub"). */
+  source: string;
+  /**
+   * Its checksum is built into Shodh (Windows). Otherwise it is checked against the
+   * checksum published with the release.
+   */
+  pinned: boolean;
+}
+
+export interface RuntimeInstall {
+  path: string;
+  version: string;
+  sha256: string;
+}
+
+export interface RuntimeProgress {
+  downloaded: number;
+  total: number | null;
+}
+
+async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  try {
+    return await invoke<T>(command, args);
+  } catch (error) {
+    throw toAgentError(error);
+  }
+}
+
+export const agentApi = {
+  /**
+   * Start or reuse the conversation's session. Rejects with `AgentError`.
+   * `parentConversationId` marks a focus side-thread session: its work is
+   * audited under that conversation and it is evicted before ordinary ones.
+   * `modelOverride` runs this one answer with a fallback model; the next start
+   * without it returns to the chosen model.
+   */
+  start: (
+    conversationId: string,
+    instructions: string | null,
+    parentConversationId: string | null = null,
+    modelOverride: ModelOverride | null = null,
+    mode: AnswerMode | null = null,
+  ) => call<string>('agent_start', {
+    conversationId,
+    profileId: null,
+    instructions,
+    parentConversationId,
+    modelOverride,
+    mode: mode?.mode ?? null,
+    workspaceId: mode?.workspaceId ?? null,
+    agentMode: mode?.agentMode ?? null,
+  }),
+  /** Whether Code mode can work in the conversation's workspace, and its branch. */
+  codeStatus: (conversationId: string, workspaceId: string | null) =>
+    call<CodeStatus>('agent_code_status', { conversationId, workspaceId }),
+  /** Commit the conversation's Code changes on their branch and return to the original branch. */
+  discardCodeChanges: (conversationId: string) => call<CodeBranch>('agent_code_discard', { conversationId }),
+  /** Which of `paths` exist in the workspace's code folder (their absolute paths; null when not). */
+  codePaths: (workspaceId: string, paths: string[]) =>
+    call<(string | null)[]>('agent_code_paths', { workspaceId, paths }),
+  codeSettings: (workspaceId: string) => call<CodeSettings>('code_settings_get', { workspaceId }),
+  /** Whether Auto mode may run the workspace's own builds and tests without asking. */
+  buildTrust: (workspaceId: string) => call<BuildTrustStatus>('code_build_trust', { workspaceId }),
+  /** Trust (or stop trusting) the workspace's builds and tests, as its build files are now. */
+  trustBuilds: (workspaceId: string, trusted: boolean) =>
+    call<BuildTrustStatus>('code_trust_builds', { workspaceId, trusted }),
+  /** Save a workspace's Code settings; returns them as saved. */
+  setCodeSettings: (workspaceId: string, settings: CodeSettings) =>
+    call<CodeSettings>('code_settings_set', { workspaceId, settings }),
+  /**
+   * Ask a question in `sessionId`. The optional parts (`SendExtras`) are named, never
+   * positional: `scope`, `textOrigin`, `typedText` and `attachedContext`.
+   */
+  send: (
+    sessionId: string,
+    text: string,
+    requestId: string,
+    history: HistoryTurn[],
+    extras: SendExtras = {},
+  ) => call<string>('agent_send', {
+    sessionId,
+    text,
+    requestId,
+    history,
+    scope: extras.scope ?? null,
+    textOrigin: extras.textOrigin ?? 'composed',
+    typedText: extras.typedText ?? null,
+    attachedContext: extras.attachedContext && extras.attachedContext.length > 0 ? extras.attachedContext : null,
+    priorRunIds: extras.priorRunIds && extras.priorRunIds.length > 0 ? extras.priorRunIds : null,
+    reviewAction: extras.reviewAction === true ? true : null,
+    suggestionIgnored: extras.suggestionIgnored === true ? true : null,
+    turn: extras.turn ?? null,
+  }),
+  /**
+   * Stop a running Code-mode command now (its process and everything it
+   * started). Resolves whether a running command was found; its end still
+   * arrives as a `command_finished` event.
+   */
+  stopCommand: (commandId: string) => call<boolean>('run_command_stop', { commandId }),
+  /**
+   * Redirect the running answer. `steerId` names it in the saved answer; `turn` gives the
+   * ids of the new question and answer it becomes if the answer already ended.
+   */
+  steer: (sessionId: string, text: string, steerId: string | null = null, turn: SteerTurn | null = null) =>
+    call<string>('agent_steer', { sessionId, text, steerId, turn }),
+  abort: (sessionId: string) => call<void>('agent_abort', { sessionId }),
+  /**
+   * `forConversation`: also allow what the prompt offered for the rest of the session.
+   * `reviewToken`: from the Code command prompt that showed every file it marks reviewed.
+   */
+  approve: (sessionId: string, stepId: string, approved: boolean, forConversation = false, reviewToken?: string) =>
+    call<void>('agent_approve', { sessionId, stepId, approved, forConversation, reviewToken: reviewToken ?? null }),
+  /**
+   * Stop the session of a conversation (a closed pop-out's side threads). Resolves
+   * `false` when there was none or its answer is still running (it stops once idle).
+   */
+  closeSession: (conversationId: string) => call<boolean>('agent_close_session', { conversationId }),
+  /** Live sessions by kind, for the activity tray. */
+  sessionCounts: () => call<SessionCounts>('agent_session_counts'),
+  runtimeStatus: () => call<RuntimeStatus>('agent_runtime_status'),
+  installRuntime: () => call<RuntimeInstall>('agent_install_runtime'),
+};
+
+/** Subscribe to a Tauri event for the component's lifetime. */
+export function useTauriEvent<T>(event: string, guard: (value: unknown) => value is T, handler: (payload: T) => void) {
+  const handlerRef = useRef(handler);
+  handlerRef.current = handler;
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: UnlistenFn | null = null;
+    listen<unknown>(event, e => {
+      if (guard(e.payload)) handlerRef.current(e.payload);
+    })
+      .then(fn => {
+        if (disposed) fn();
+        else unlisten = fn;
+      })
+      .catch(err => console.error(`Failed to listen for ${event}:`, err));
+    return () => {
+      disposed = true;
+      if (unlisten) unlisten();
+    };
+  }, [event, guard]);
+}
+
+function isProgress(value: unknown): value is RuntimeProgress {
+  return isRecord(value) && typeof value.downloaded === 'number';
+}
+
+/** Live session counts: read once, then kept current from `agent_sessions_changed`. */
+export function useSessionCounts(): SessionCounts | null {
+  const [counts, setCounts] = useState<SessionCounts | null>(null);
+  useEffect(() => {
+    let active = true;
+    agentApi
+      .sessionCounts()
+      .then(value => {
+        if (active) setCounts(value);
+      })
+      .catch(error => console.error('Session counts unavailable:', error));
+    return () => {
+      active = false;
+    };
+  }, []);
+  useTauriEvent(AGENT_SESSIONS_EVENT, isSessionCounts, setCounts);
+  return counts;
+}
+
+/** Runtime download progress while `agentApi.installRuntime` runs. */
+export function useRuntimeProgress(onProgress: (progress: RuntimeProgress) => void) {
+  useTauriEvent(RUNTIME_PROGRESS_EVENT, isProgress, onProgress);
+}

@@ -1,7 +1,7 @@
 {
   "about": "Every Tauri command the frontend uses must either map to the agent tool(s) that give the assistant the same ability, or be excluded with the reason the assistant must not (or need not) have it. Checked by agent_coverage::tests (cargo test -p shodh-rag-app --lib). A new UI command without an entry here fails CI.",
   "dynamicInvokeFiles": {
-    "features/agent/useAgentSession.ts": "Wraps invoke as call(command, args) to normalise agent errors; every command it sends is a string literal in the same file.",
+    "features/agent/agentApi.ts": "Wraps invoke as call(command, args) to normalise agent errors; every command it sends is a string literal in the same file.",
     "features/modelPicker/modelApi.ts": "Wraps invoke as call(command, args) to normalise model picker errors; every command it sends is a string literal in the same file.",
     "features/ask/viewer/sourceAccess.ts": "Wraps invoke as call(command, filePath) to normalise file access errors; every command it sends is a string literal in the same file."
   },
@@ -179,6 +179,12 @@
     "creation_preview_focus": { "excluded": "Brings the preview window to the front with the keyboard focus when the user clicks Bring to front; taking the focus from the user is never the agent's to do (open_artifact shows a preview visibly when asked)." },
     "creation_preview_reload": { "tool": "open_artifact" },
     "creation_preview_close": { "excluded": "Closes the preview window when the user clicks Close; closing what the user is looking at is the user's decision, and the agent changes what is shown with open_artifact." },
+    "creation_preview_embed": { "tool": "open_artifact" },
+    "creation_preview_place": { "excluded": "Geometry the Artifacts pane reports while it is on screen; the agent shows a preview with open_artifact and never places one." },
+    "creation_preview_pop_out": { "excluded": "Moving the page to a separate window is the user's screen layout; open_artifact shows the preview in Artifacts." },
+    "dock_layer_publish": { "excluded": "Mirrors the chat into the floating layer over the preview; the agent's own actions already show in that chat." },
+    "dock_layer_action": { "excluded": "The floating layer's relay of the user's own clicks and keys to the main window; never the agent's." },
+    "dock_layer_size": { "excluded": "The floating layer's size follows its pill or panel; layout, not an action." },
     "creation_file": { "excluded": "Reads one file of a creation for the viewer. The Creator session that builds it reads its own folder with its read tool; another conversation's creation is shown to the user with open_artifact (files pane), never read into this conversation, so one conversation's work cannot steer another." },
     "creation_keep": { "excluded": "Keep on the finish card is the user's verdict on what was built; an agent that could keep its own work would answer for the user." },
     "creation_export": { "excluded": "Writes a zip of a creation into Documents/Shodh exports; what leaves the creation folder is the user's decision (export_document covers documents, not creations)." },

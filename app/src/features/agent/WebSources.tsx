@@ -1,6 +1,6 @@
 import React from 'react';
 import { Globe } from 'lucide-react';
-import { openUrl } from '@tauri-apps/plugin-opener';
+import { MAIN_TRANSCRIPT_EFFECTS, useTranscriptEffects } from './transcriptEffects';
 import { cn } from '../../lib/utils';
 import { notify } from '../../lib/notify';
 import type { WebSource } from './reducer';
@@ -16,10 +16,13 @@ function hostOf(url: string): string {
   }
 }
 
-/** Open a web source in the system browser (never inside the app). */
-export async function openExternal(url: string): Promise<void> {
+/**
+ * Open a web source in the system browser (never inside the app): from this window by
+ * default, or through the transcript's host (`useTranscriptEffects`).
+ */
+export async function openExternal(url: string, open: (url: string) => Promise<void> = MAIN_TRANSCRIPT_EFFECTS.openUrl): Promise<void> {
   try {
-    await openUrl(url);
+    await open(url);
   } catch (error) {
     notify.error('Could not open the link', {
       description: error instanceof Error ? error.message : String(error),
@@ -39,6 +42,7 @@ interface WebSourcesProps {
  * system browser.
  */
 export function WebSources({ sources, provider }: WebSourcesProps) {
+  const effects = useTranscriptEffects();
   return (
     <div className="mt-1.5 flex flex-col gap-1 font-sans">
       <p className="flex items-center gap-1.5 text-caption text-shodh-text-faint">
@@ -50,7 +54,7 @@ export function WebSources({ sources, provider }: WebSourcesProps) {
           <li key={s.n} className="min-w-0">
             <button
               type="button"
-              onClick={() => void openExternal(s.url)}
+              onClick={() => void openExternal(s.url, effects.openUrl)}
               title={s.url}
               className={cn('flex items-baseline gap-1.5 min-w-0 text-left rounded-sm hover:underline', FOCUS_RING)}
             >

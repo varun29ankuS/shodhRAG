@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { AlertTriangle, FileText, Loader2, MessageSquare, MessageSquareText } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { useChatSession } from '../ask/ChatSessionContext';
-import { useFocus } from '../focus/FocusContext';
+import { useFocus } from '../focus/focusHost';
 import { figureTarget } from '../focus/targets';
 import { FigureImage } from './FigureImage';
 import { figureRegion } from './paperObjects';

@@ -20,12 +20,18 @@ import {
   fileRows,
   filterCreations,
   finishCard,
+  hasEntryPage,
   isArtifactPane,
   parsePreviewEvent,
   parsePreviewShown,
   previewEndFor,
+  previewLoadAfter,
+  previewLoadAtEmbed,
   previewNetworkText,
   previewShowingText,
+  previewStateLine,
+  selectionFor,
+  showsBuiltPage,
   previousVersion,
   progressLine,
   sizeLabel,
@@ -72,34 +78,59 @@ test('the app frames only blobs, in release and in development', () => {
 });
 
 
-test('the preview is a normal window the user opens; the pane holds its card', () => {
+test('the page shows inside Artifacts, placed by its pane, and pops out to a window of its own', () => {
   const page = read('../src/features/artifacts/ArtifactPage.tsx');
-  // No overlay: nothing measures the pane, tracks layers or follows the main window.
-  for (const gone of ['requestAnimationFrame', 'getBoundingClientRect', 'previewPlacement', 'data-floating-layer', 'placePreview']) {
+  const embedded = read('../src/features/artifacts/EmbeddedPreview.tsx');
+  // The page itself never measures or frames anything: its preview pane holds EmbeddedPreview.
+  for (const gone of ['getBoundingClientRect', 'placePreview', '<iframe']) {
     assert.doesNotMatch(page, new RegExp(gone), gone);
   }
-  assert.doesNotMatch(read('../src/components/shell/ConversationDock.tsx'), /data-floating-layer/);
-  // The card: Bring to front, Reload and Close, a heading and a live status line.
-  for (const label of ['Bring to front', 'Reload', 'Close', 'Open preview', 'Open it again']) {
-    assert.ok(page.includes(`${label}\n`) || page.includes(`'${label}'`), label);
+  assert.match(page, /<EmbeddedPreview\b/);
+  // EmbeddedPreview reports its box once a frame, and hides the page when it goes.
+  assert.match(embedded, /window\.requestAnimationFrame\(report\)/);
+  assert.match(embedded, /coveredBy\(pane, overlays, modalOpen, dockCorner\(\)\)/);
+  assert.match(embedded, /layerVisible\(\{/);
+  assert.doesNotMatch(embedded, /<iframe/);
+  // Its toolbar: Reload, Pop out; popped out: Bring to front and Show here.
+  for (const label of ['Reload', 'Pop out', 'Bring to front', 'Show here']) {
+    assert.ok(embedded.includes(`${label}\n`) || embedded.includes(`'${label}'`), label);
   }
-  assert.match(page, /aria-labelledby=\{headingId\}/);
-  assert.match(page, /role="status" aria-live="polite"/);
-  // It opens on a click of Preview or when the assistant shows the preview, never on its own
-  // when a build starts (that request names no pane).
-  assert.match(page, /if \(name === 'preview'\) setOpenSeq\(seq => seq \+ 1\)/);
-  assert.match(read('../src/features/artifacts/ArtifactsView.tsx'), /showPreview: target\.pane === 'preview'/);
+  assert.match(embedded, /role="status" aria-live="polite"/);
+  // A build starting opens the pane, so the page shows: its request names no pane.
+  assert.match(read('../src/features/artifacts/ArtifactsView.tsx'), /setSelection\(prev => selectionFor\(target, prev\)\)/);
   assert.match(read('../src/features/ask/ChatSessionContext.tsx'), /artifactId: live\.creationId, version: null, pane: null \}/);
-  // The window is a normal one: titled, resizable, decorated, its own close keys honoured.
+  // The popped-out window is a normal one: titled, resizable, decorated, its own close keys honoured.
   const rust = read('../src-tauri/src/creations/preview_window.rs');
   for (const part of ['.decorations(true)', '.resizable(true)', '.title(window_title(']) assert.ok(rust.includes(part), part);
   assert.doesNotMatch(rust, /prevent_close\(|skip_taskbar\(true\)|\.parent\(/);
 });
 
-test('the card says what the window shows and why it closed', () => {
-  assert.equal(previewShowingText(null), 'Showing the folder as it is now, in its own window.');
-  assert.equal(previewShowingText(3), 'Showing version 3, in its own window.');
-  const shown = { label: 'preview-0123456789abcdef0123456789abcdef', creationId: 'cr_a', version: 2, network: false };
+test('a build start opens the page itself, not just the pane', () => {
+  const build = selectionFor({ artifactId: 'cr_a', version: null, pane: null }, null);
+  assert.deepEqual(build, { id: 'cr_a', version: null, pane: 'preview', showPreview: true, seq: 1 });
+  assert.equal(selectionFor({ artifactId: 'cr_a', version: 2, pane: 'preview' }, build).showPreview, true);
+  assert.equal(selectionFor({ artifactId: 'cr_a', version: 2, pane: 'preview' }, build).seq, 2);
+  // Another pane opens that pane only.
+  const files = selectionFor({ artifactId: 'cr_a', version: null, pane: 'files' }, build);
+  assert.equal(files.pane, 'files');
+  assert.equal(files.showPreview, false);
+});
+
+test('the embedded preview reports hidden when it unmounts', () => {
+  const embedded = read('../src/features/artifacts/EmbeddedPreview.tsx');
+  assert.match(embedded, /creationsApi\.placePreview\(label, \{ rect: null, covered: true \}\)/);
+  assert.match(embedded, /dockLayer\.set\(false\);\s*creationsApi\.placePreview\(label, \{ rect: null, covered: true \}\)/);
+});
+
+test('pop out leaves a way back, and the pane says where the page is', () => {
+  assert.equal(previewShowingText(null, 'embedded'), 'Now · live');
+  assert.equal(previewShowingText(3, 'embedded'), 'Version 3 · live');
+  assert.equal(previewShowingText(null, 'window'), 'Now · in its own window');
+  assert.equal(previewShowingText(3), 'Version 3 · in its own window');
+  const embedded = read('../src/features/artifacts/EmbeddedPreview.tsx');
+  // Popped out, the pane offers Show here, which brings the page back.
+  assert.match(embedded, /\{poppedOut \? \([\s\S]*?onClick=\{\(\) => void showHere\(\)\}[\s\S]*?Show here/);
+  const shown = { label: 'preview-0123456789abcdef0123456789abcdef', creationId: 'cr_a', version: 2, network: false, place: 'window' as const };
   assert.equal(previewEndFor(shown, 'cr_a', 2, false), null);
   assert.equal(previewEndFor(shown, 'cr_a', null, false), 'version');
   assert.equal(previewEndFor(shown, 'cr_a', 2, true), 'network');
@@ -111,18 +142,21 @@ test('the card says what the window shows and why it closed', () => {
   assert.match(PREVIEW_END_TEXT.version, /another version/);
   assert.match(PREVIEW_END_TEXT.network, /internet switch/);
   assert.deepEqual(parsePreviewShown(shown), shown);
+  assert.deepEqual(parsePreviewShown({ ...shown, place: 'embedded' }), { ...shown, place: 'embedded' });
   assert.deepEqual(parsePreviewShown({ ...shown, version: null }), { ...shown, version: null });
   for (const bad of [null, 'x', { ...shown, label: 7 }, { ...shown, network: 'no' }]) {
     assert.equal(parsePreviewShown(bad), null, JSON.stringify(bad));
   }
 });
 
-test('only Rust reports on the preview window, in four plain states', () => {
+test('only Rust reports on the preview, in four plain states, saying where it is', () => {
   assert.equal(PREVIEW_EVENT, 'creation-preview');
   assert.match(read('../src-tauri/src/creations/preview_window.rs'), /pub const PREVIEW_EVENT: &str = "creation-preview";/);
   const label = 'preview-0123456789abcdef0123456789abcdef';
   for (const state of ['loaded', 'blocked', 'closed', 'stopped'] as const) {
-    assert.deepEqual(parsePreviewEvent({ label, state }), { label, state });
+    for (const place of ['window', 'embedded'] as const) {
+      assert.deepEqual(parsePreviewEvent({ label, state, place }), { label, state, place });
+    }
   }
   for (const bad of [null, 'loaded', { label }, { label, state: 'navigated' }, { label: 7, state: 'loaded' }]) {
     assert.equal(parsePreviewEvent(bad), null, JSON.stringify(bad));
@@ -364,4 +398,81 @@ test('the preview says exactly what the internet switch does, on each system', (
   for (const file of ['../src-tauri/src/creations/preview.rs', '../src-tauri/src/creations/preview_window.rs', '../src/features/artifacts/model.ts']) {
     assert.doesNotMatch(read(file), /WebRTC (and DNS look-ahead )?(is|are) off/, file);
   }
+});
+
+test('the pane says the page is live once it loaded, even when the load came first or long ago', () => {
+  // A page kept from before (the pane opened again on the same preview): Rust says it loaded.
+  assert.equal(previewLoadAtEmbed(true, []), 'loaded');
+  // A fresh page that finished before the embed answered: its early report counts.
+  assert.equal(previewLoadAtEmbed(false, ['loaded']), 'loaded');
+  assert.equal(previewLoadAtEmbed(false, []), 'opening');
+  // Blocked stays blocked (it is shown with the page), a stop wins.
+  assert.equal(previewLoadAtEmbed(true, ['blocked']), 'blocked');
+  assert.equal(previewLoadAtEmbed(false, ['blocked', 'loaded']), 'blocked');
+  assert.equal(previewLoadAtEmbed(true, ['stopped']), 'stopped');
+  assert.equal(previewLoadAfter('opening', 'loaded'), 'loaded');
+  assert.equal(previewLoadAfter('blocked', 'loaded'), 'blocked');
+  assert.equal(previewLoadAfter('loaded', 'blocked'), 'blocked');
+  assert.equal(previewLoadAfter('loaded', 'stopped'), 'stopped');
+  // A reload that loads again: live again.
+  assert.equal(previewLoadAfter('opening', 'loaded'), 'loaded');
+});
+
+test('the status line says why the page is not on screen, never Opening over a shown page', () => {
+  const base = { error: null, end: null, load: 'loaded' as const, hiddenBy: null, version: null, poppedOut: false };
+  assert.equal(previewStateLine(base), 'Now · live');
+  assert.equal(previewStateLine({ ...base, version: 2 }), 'Version 2 · live');
+  assert.equal(previewStateLine({ ...base, hiddenBy: 'Design check' }), 'Hidden while Design check is open');
+  // Hidden says so even before the first load is reported.
+  assert.equal(previewStateLine({ ...base, load: 'opening', hiddenBy: 'a menu' }), 'Hidden while a menu is open');
+  assert.equal(previewStateLine({ ...base, load: 'opening' }), 'Opening');
+  assert.equal(previewStateLine({ ...base, load: 'stopped' }), 'Stopped');
+  assert.equal(previewStateLine({ ...base, end: 'closed' }), PREVIEW_END_TEXT.closed);
+  assert.equal(previewStateLine({ ...base, error: 'boom' }), 'Could not open');
+  // Popped out, nothing in this window hides it.
+  assert.equal(previewStateLine({ ...base, poppedOut: true, hiddenBy: 'a menu' }), 'Now · in its own window');
+});
+
+test('the page opens itself once the folder has its entry page', () => {
+  assert.equal(hasEntryPage(null), false);
+  assert.equal(hasEntryPage([]), false);
+  assert.equal(hasEntryPage([{ path: 'style.css', size: 1 }, { path: 'src/index.html', size: 1 }]), false);
+  assert.equal(hasEntryPage([{ path: 'style.css', size: 1 }, { path: 'index.html', size: 12 }]), true);
+  // The session checks the folder after each finished building step and offers the page once.
+  const session = read('../src/features/ask/ChatSessionContext.tsx');
+  assert.match(session, /hasEntryPage\(files\)/);
+  assert.match(session, /event\.type === 'step_finished'/);
+  assert.match(session, /whenWatching: true/);
+  // Rust says whether the page loaded already, so a pane opened again is not stuck on Opening.
+  const rust = read('../src-tauri/src/creation_commands.rs');
+  assert.match(rust, /loaded: preview_window::has_loaded\(&/);
+});
+
+test('the page is the main thing on screen: one header row, the page fills the rest', () => {
+  const page = read('../src/features/artifacts/ArtifactPage.tsx');
+  const embedded = read('../src/features/artifacts/EmbeddedPreview.tsx');
+  // The header never wraps; its title gives way first.
+  assert.match(page, /<header className="[^"]*flex-nowrap[^"]*"/);
+  assert.doesNotMatch(page, /<header className="[^"]*flex-wrap/);
+  // What was built and chosen is folded away under the header, not stacked above the page.
+  assert.match(page, /<details\b/);
+  // The preview's box takes the height that is left, not a fixed share of the window.
+  assert.match(embedded, /ref=\{boxRef\}[\s\S]*?className="[^"]*flex-1 min-h-0/);
+  assert.doesNotMatch(embedded, /h-\[min\(72vh/);
+  // What hides the page is said, by name.
+  assert.match(embedded, /previewStateLine\(\{/);
+  assert.match(embedded, /coveringOverlay\(/);
+});
+
+test('the assistant showing the page it builds moves only a user watching the build', () => {
+  // design_check of a creation and open_artifact on it point at the creation's page.
+  const page = { kind: 'artifact', artifactId: 'cr_a', version: null, pane: 'preview' };
+  assert.equal(showsBuiltPage(page, 'cr_a'), true);
+  assert.equal(showsBuiltPage(page, 'cr_b'), false);
+  assert.equal(showsBuiltPage(page, null), false);
+  assert.equal(showsBuiltPage({ kind: 'design_check' }, 'cr_a'), false);
+  assert.equal(showsBuiltPage(null, 'cr_a'), false);
+  const session = read('../src/features/ask/ChatSessionContext.tsx');
+  assert.ok(session.includes('showsBuiltPage(nav.target, live.creationId ?? null)'));
+  assert.ok(session.includes('ownPage ? { whenWatching: true, fromConversation: live.conversationId }'));
 });

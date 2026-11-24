@@ -3,8 +3,8 @@ import { CornerDownRight, Download, Loader2, Pencil, Pin, PinOff, Sparkles, Squa
 import { cn } from '../../lib/utils';
 import { notify } from '../../lib/notify';
 import { useChatSession } from '../ask/ChatSessionContext';
-import { useFocus } from '../focus/FocusContext';
-import type { OpenFocus } from '../focus/FocusContext';
+import { useFocus } from '../focus/focusHost';
+import type { OpenFocus } from '../focus/focusHost';
 import { deleteWithUndo, goToMessage, runExport } from './actions';
 import { onVisualsChanged, toVisualError, visualsApi } from './api';
 import { EditVisualDialog } from './EditVisualDialog';

@@ -15,7 +15,7 @@ mod calendar;
 mod code_intel;
 mod code_map;
 mod code_review;
-mod design_check;
+pub(crate) mod design_check;
 pub(crate) mod export;
 mod figures;
 pub(crate) mod files;

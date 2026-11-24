@@ -1,8 +1,8 @@
 import React, { useEffect, useRef } from 'react';
 import { ScanEye } from 'lucide-react';
 import { cn } from '../../lib/utils';
-import { snippetSelection, useCodeReview } from './CodeReviewContext';
-import type { ReviewSubject } from './CodeReviewContext';
+import { snippetSelection, useCodeReview } from './codeReviewHost';
+import type { ReviewSubject } from './codeReviewHost';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-shodh-surface';

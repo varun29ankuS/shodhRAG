@@ -946,19 +946,6 @@ impl PaperAlerts {
         self.core.sink.changed();
         Ok(saved)
     }
-
-    /// Records that the paper row `item_id` was saved at `path`: the folder's sync then
-    /// does not list it again as a new file.
-    pub fn added_to_library(&self, item: &FeedItem, path: &Path) -> Result<(), String> {
-        let mut data = item.data.clone();
-        data["addedPath"] = json!(path.display().to_string());
-        self.core
-            .feed
-            .set_data(&item.id, &data)
-            .map_err(|e| e.to_string())?;
-        self.core.sink.changed();
-        Ok(())
-    }
 }
 
 /// The app's side of paper alerts: the policy, the web client, the library.
@@ -1405,6 +1392,7 @@ mod tests {
     use super::testing::*;
     use super::*;
     use crate::task_repeat::testing::{local, TestClock};
+    use shodh_rag::engine::clock::Clock;
     use shodh_rag::engine::store::RunState;
     use std::sync::Mutex;
 
@@ -1929,9 +1917,9 @@ mod tests {
         assert!(e.alerts.pdf_of("missing").is_err());
         // Saved: the folder's next sync does not list it as a new file.
         e.block(None);
-        e.alerts
-            .added_to_library(with, Path::new("C:/library/Papers/gla.pdf"))
-            .unwrap();
+        let mut data = with.data.clone();
+        data["addedPath"] = json!("C:/library/Papers/gla.pdf");
+        assert!(e.alerts.core.feed.set_data(&with.id, &data).unwrap());
         let saved = e.alerts.core.feed.item(&with.id).unwrap().unwrap();
         assert_eq!(saved.data["addedPath"], "C:/library/Papers/gla.pdf");
         assert!(

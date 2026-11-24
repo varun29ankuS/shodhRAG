@@ -26,6 +26,7 @@ mod memory;
 mod papers;
 mod recall;
 mod research;
+pub(crate) use research::download_into;
 mod settings;
 mod sources;
 mod tauri_host;
@@ -160,6 +161,10 @@ pub trait HostEffects: Send + Sync {
     }
     /// What's new (the scheduler engine and its feed), when the app database can be opened.
     async fn whats_new(&self) -> Option<Arc<crate::whats_new::WhatsNew>> {
+        None
+    }
+    /// Paper alerts, when the app database can be opened.
+    async fn paper_alerts(&self) -> Option<Arc<crate::paper_alerts::PaperAlerts>> {
         None
     }
     /// The Library's folders kept in sync now, as `(source id, folder)`.
@@ -393,6 +398,9 @@ pub(crate) mod testing {
         pub repeat_clock: Arc<crate::task_repeat::testing::TestClock>,
         /// What's new over this host's `shodh.db`, on the same clock.
         pub whats_new: Arc<crate::whats_new::WhatsNew>,
+        /// Paper alerts over this host's `shodh.db`, with no network.
+        pub paper_alerts: Arc<crate::paper_alerts::PaperAlerts>,
+        pub alert_env: Arc<crate::paper_alerts::testing::TestEnv>,
     }
 
     #[async_trait::async_trait]
@@ -446,6 +454,9 @@ pub(crate) mod testing {
         }
         async fn whats_new(&self) -> Option<Arc<crate::whats_new::WhatsNew>> {
             Some(self.whats_new.clone())
+        }
+        async fn paper_alerts(&self) -> Option<Arc<crate::paper_alerts::PaperAlerts>> {
+            Some(self.paper_alerts.clone())
         }
         fn watched_folders(&self) -> Vec<(String, String)> {
             crate::whats_new::watched_folders(&self.folder_sync)
@@ -570,6 +581,8 @@ pub(crate) mod testing {
             dir.path(),
             repeat_clock.clone(),
         ));
+        let alert_env =
+            crate::paper_alerts::testing::env(crate::paper_alerts::testing::offline_client());
         let effects = Arc::new(Recorder {
             documents: dir.path().join("Documents"),
             calendar: Mutex::default(),
@@ -591,6 +604,23 @@ pub(crate) mod testing {
                 dir.path(),
                 repeat_clock.clone(),
             )),
+            paper_alerts: Arc::new(crate::paper_alerts::testing::alerts(
+                dir.path(),
+                Arc::new(shodh_rag::engine::runner::Engine::with_clock(
+                    Arc::new(
+                        shodh_rag::engine::store::EngineStore::open(
+                            &dir.path().join("shodh.db"),
+                            None,
+                        )
+                        .unwrap(),
+                    ),
+                    repeat_clock.clone(),
+                    "agent-alerts-test",
+                )),
+                alert_env.clone(),
+                Arc::new(crate::whats_new::testing::QuietSink),
+            )),
+            alert_env,
             repeats,
             repeat_clock,
         });

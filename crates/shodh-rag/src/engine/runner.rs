@@ -43,6 +43,15 @@ pub enum Handled {
         code: String,
         detail: String,
     },
+    /// Worth trying again at `at`, waiting as `reason` (`Backoff` or `Offline`): a rate
+    /// limit's reset, a retry an hour later, the computer offline. Counts as an attempt
+    /// like [`Handled::Transient`]; past `max_attempts` the run fails.
+    RetryAt {
+        at: DateTime<Utc>,
+        reason: WaitReason,
+        code: String,
+        detail: String,
+    },
     /// Trying again would not help.
     Permanent {
         code: String,
@@ -464,6 +473,29 @@ impl Engine {
                     self.fail(handler, job, run, code, detail).await
                 }
             }
+            Handled::RetryAt {
+                at,
+                reason,
+                code,
+                detail,
+            } => {
+                let attempt = run.attempt.saturating_add(1);
+                if attempt < job.max_attempts {
+                    blocking(&self.store, move |s| {
+                        s.wait(
+                            &id,
+                            &token,
+                            reason,
+                            Some(at),
+                            attempt,
+                            Some((code.as_str(), detail.as_str())),
+                        )
+                    })
+                    .await
+                } else {
+                    self.fail(handler, job, run, code, detail).await
+                }
+            }
             Handled::Permanent { code, detail } => self.fail(handler, job, run, code, detail).await,
         }
     }
@@ -862,6 +894,73 @@ mod tests {
         assert_eq!(runs[0].state, RunState::Failed);
         assert_eq!(runs[0].error_code.as_deref(), Some("calendar_unreadable"));
         assert_eq!(e.store.job("j").unwrap().unwrap().failure_streak, 1);
+    }
+
+    #[tokio::test]
+    async fn retry_at_waits_until_the_time_given_then_fails_past_its_attempts() {
+        let e = env(local(2026, 11, 20, 10, 0));
+        add_job(&e, "j", Some(daily_at(9)), Overlap::Skip, CatchUp::Once);
+        let start = local(2026, 11, 21, 9, 0);
+        let retry = |at: DateTime<Utc>| Handled::RetryAt {
+            at,
+            reason: WaitReason::Backoff,
+            code: "api_unavailable".into(),
+            detail: "Semantic Scholar answered 503".into(),
+        };
+        let first = start + TimeDelta::hours(1);
+        let second = first + TimeDelta::hours(1);
+        e.recording.script(vec![
+            retry(first),
+            retry(second),
+            retry(second + TimeDelta::hours(1)),
+        ]);
+        e.clock.set(start);
+        e.engine.tick(&e.handler).await.unwrap();
+        let run = e.store.active_run("j").unwrap().unwrap();
+        assert_eq!(run.wait_reason, Some(WaitReason::Backoff));
+        assert_eq!(run.attempt, 1);
+        assert_eq!(
+            run.next_attempt_at.as_deref().and_then(parse_instant),
+            Some(first)
+        );
+        // Not a minute before its time, though the ladder's first rung has passed.
+        e.clock.set(first - TimeDelta::minutes(1));
+        e.engine.tick(&e.handler).await.unwrap();
+        assert_eq!(e.recording.calls().len(), 1);
+        e.clock.set(first);
+        e.engine.tick(&e.handler).await.unwrap();
+        assert_eq!(e.recording.calls().len(), 2);
+        let run = e.store.active_run("j").unwrap().unwrap();
+        assert_eq!(run.attempt, 2);
+        assert_eq!(
+            run.next_attempt_at.as_deref().and_then(parse_instant),
+            Some(second)
+        );
+        // The third attempt is the job's last (max_attempts 3): the run fails.
+        e.clock.set(second);
+        e.engine.tick(&e.handler).await.unwrap();
+        assert!(e.store.active_run("j").unwrap().is_none());
+        let runs = e.store.runs("j", 10).unwrap();
+        assert_eq!(runs[0].state, RunState::Failed);
+        assert_eq!(runs[0].error_code.as_deref(), Some("api_unavailable"));
+    }
+
+    #[tokio::test]
+    async fn an_offline_wait_reads_as_offline() {
+        let e = env(local(2026, 11, 20, 10, 0));
+        add_job(&e, "j", Some(daily_at(9)), Overlap::Skip, CatchUp::Once);
+        let start = local(2026, 11, 21, 9, 0);
+        e.recording.script(vec![Handled::RetryAt {
+            at: start + TimeDelta::minutes(15),
+            reason: WaitReason::Offline,
+            code: "offline".into(),
+            detail: "no connection".into(),
+        }]);
+        e.clock.set(start);
+        e.engine.tick(&e.handler).await.unwrap();
+        let run = e.store.active_run("j").unwrap().unwrap();
+        assert_eq!(run.wait_reason, Some(WaitReason::Offline));
+        assert_eq!(run.error_code.as_deref(), Some("offline"));
     }
 
     #[tokio::test]

@@ -29,6 +29,7 @@ use tokio::sync::{Notify, OnceCell};
 use crate::agent_tools::{CalendarChange, HostEffects, TauriEffects};
 use crate::audit_commands::AuditState;
 use crate::calendar_store::{CalendarStore, TodoItem};
+use crate::paper_alerts::PaperAlerts;
 use crate::reminders::{DueReminder, LaunchPart, REMINDER_FIRED_EVENT};
 use crate::task_repeat::{RepeatSink, Repeats, REPEAT_CHANGED_EVENT};
 use crate::whats_new::WhatsNew;
@@ -48,6 +49,7 @@ struct Inner {
     engine: OnceCell<Arc<Engine>>,
     repeats: OnceCell<Arc<Repeats>>,
     whats_new: OnceCell<Arc<WhatsNew>>,
+    paper_alerts: OnceCell<Arc<PaperAlerts>>,
     wake: Notify,
 }
 
@@ -64,6 +66,7 @@ impl EngineState {
                 engine: OnceCell::new(),
                 repeats: OnceCell::new(),
                 whats_new: OnceCell::new(),
+                paper_alerts: OnceCell::new(),
                 wake: Notify::new(),
             }),
         }
@@ -106,6 +109,33 @@ impl EngineState {
                         .map_err(|e| e.to_string())?;
                 let sink = Arc::new(crate::whats_new::TauriSink { app: app.clone() });
                 Ok(Arc::new(WhatsNew::new(engine, Arc::new(feed), sink)))
+            })
+            .await
+            .cloned()
+    }
+
+    async fn feed(&self) -> Result<Arc<FeedStore>, String> {
+        let (path, key) = self
+            .inner
+            .database
+            .clone()
+            .ok_or_else(|| DATABASE_UNAVAILABLE.to_string())?;
+        let feed = tokio::task::spawn_blocking(move || FeedStore::open(&path, key.as_ref()))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+        Ok(Arc::new(feed))
+    }
+
+    async fn paper_alerts(&self, app: &AppHandle) -> Result<Arc<PaperAlerts>, String> {
+        self.inner
+            .paper_alerts
+            .get_or_try_init(|| async {
+                let engine = self.engine().await?;
+                let feed = self.feed().await?;
+                let env = Arc::new(crate::paper_alerts::TauriAlertEnv { app: app.clone() });
+                let sink = Arc::new(crate::whats_new::TauriSink { app: app.clone() });
+                Ok(Arc::new(PaperAlerts::new(engine, feed, env, sink)))
             })
             .await
             .cloned()
@@ -172,6 +202,28 @@ pub async fn whats_new_for_command(app: &AppHandle) -> Result<Arc<WhatsNew>, Str
         .inner()
         .clone();
     state.whats_new(app).await
+}
+
+/// Paper alerts, or `None` (logged) when the engine or its feed cannot be opened.
+pub async fn paper_alerts(app: &AppHandle) -> Option<Arc<PaperAlerts>> {
+    let state = app.try_state::<EngineState>()?.inner().clone();
+    match state.paper_alerts(app).await {
+        Ok(alerts) => Some(alerts),
+        Err(e) => {
+            tracing::debug!(error = %e, "paper alerts are unavailable");
+            None
+        }
+    }
+}
+
+/// Paper alerts for a command: an error the UI can show when they are unavailable.
+pub async fn paper_alerts_for_command(app: &AppHandle) -> Result<Arc<PaperAlerts>, String> {
+    let state = app
+        .try_state::<EngineState>()
+        .ok_or_else(|| "Paper alerts are not ready yet.".to_string())?
+        .inner()
+        .clone();
+    state.paper_alerts(app).await
 }
 
 /// One tick for every kind of job, in turn. A kind that fails does not keep the others
@@ -257,6 +309,10 @@ pub fn spawn(app: AppHandle) {
                 handlers.push(whats_new.handler());
             }
             Err(e) => tracing::warn!(error = %e, "What's new is off"),
+        }
+        match state.paper_alerts(&app).await {
+            Ok(alerts) => handlers.push(alerts.handler()),
+            Err(e) => tracing::warn!(error = %e, "paper alerts are off"),
         }
         let kinds: Vec<JobKind> = handlers.iter().map(|h| h.kind()).collect();
         loop {

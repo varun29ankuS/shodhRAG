@@ -4,7 +4,7 @@
  * strip-types runner tests it directly (`app/tests/whatsNew.test.ts`).
  */
 
-import type { FeedItem } from './types';
+import type { AlertView, FeedItem } from './types';
 
 /** Rows the section shows before "Show all"; the list always reserves their height. */
 export const VISIBLE_ROWS = 5;
@@ -12,7 +12,20 @@ export const VISIBLE_ROWS = 5;
 /** More files than this from one folder on one day become one row. */
 export const GROUP_AFTER = 3;
 
-export const EMPTY_COPY = 'Nothing new yet. New files in your Library folders show up here.';
+export const EMPTY_COPY =
+  'Nothing new yet. New files in your Library folders show up here. You can also turn on alerts for new papers on a topic.';
+
+/** Shown in place of the alert controls while nothing may leave the computer. */
+export const LOCAL_ONLY_COPY = 'Paper alerts are paused: Local-only mode is on, so nothing leaves this computer.';
+
+/** The same, when it is the web-access switch that is off. */
+export const WEB_OFF_COPY = 'Paper alerts are paused: web access is off, so nothing leaves this computer.';
+
+/** Why alerts are paused, in one line, from the backend's reason. */
+export function blockedCopy(reason: string | null): string | null {
+  if (!reason) return null;
+  return reason.startsWith('Local-only') ? LOCAL_ONLY_COPY : WEB_OFF_COPY;
+}
 
 export type SectionState = 'loading' | 'error' | 'empty' | 'list';
 
@@ -77,10 +90,10 @@ export function digestTitle(count: number, folder: string): string {
   return count === 1 ? `1 new file in ${folder}` : `${count} new files in ${folder}`;
 }
 
-/** A row of the section: one file, or a folder's busy day. */
+/** A row of the section: one file, a folder's busy day, or one paper. */
 export interface Row {
   key: string;
-  kind: 'file' | 'file_group';
+  kind: 'file' | 'file_group' | 'paper';
   title: string;
   /** Folder and time, on one line. */
   meta: string;
@@ -120,6 +133,7 @@ export type MoreOf = (sourceId: string, day: string) => number;
 export function rowsOf(items: readonly FeedItem[], now: Date, moreOf: MoreOf = () => 0): { bucket: Bucket; rows: Row[] }[] {
   const groups = new Map<string, FeedItem[]>();
   for (const item of items) {
+    if (item.kind === 'paper') continue;
     const key = `${sourceOf(item)}|${localDayKey(item.foundAt)}`;
     const list = groups.get(key);
     if (list) list.push(item);
@@ -133,6 +147,18 @@ export function rowsOf(items: readonly FeedItem[], now: Date, moreOf: MoreOf = (
     else out.push({ bucket, rows: [row] });
   };
   for (const item of items) {
+    if (item.kind === 'paper') {
+      push(bucketOf(item.foundAt, now), {
+        key: item.id,
+        kind: 'paper',
+        title: item.title,
+        meta: paperMeta(item),
+        isNew: !item.seenAt,
+        items: [item],
+        more: 0,
+      });
+      continue;
+    }
     const key = `${sourceOf(item)}|${localDayKey(item.foundAt)}`;
     const group = groups.get(key) ?? [item];
     const more = Math.max(0, moreOf(sourceOf(item), localDayKey(item.foundAt)));
@@ -163,6 +189,68 @@ export function rowsOf(items: readonly FeedItem[], now: Date, moreOf: MoreOf = (
     });
   }
   return out;
+}
+
+/** A paper's line: year, the APIs that found it, the alert. */
+export function paperMeta(item: FeedItem): string {
+  const parts: string[] = [];
+  if (typeof item.data.year === 'number') parts.push(String(item.data.year));
+  const sources = Array.isArray(item.data.sources) ? item.data.sources.filter((s): s is string => typeof s === 'string') : [];
+  if (sources.length > 0) parts.push(sources.join(', '));
+  if (typeof item.data.words === 'string') parts.push(`alert: ${item.data.words}`);
+  return parts.join(' · ');
+}
+
+/** A paper's open-access PDF, when the API reported one. */
+export function pdfOf(item: FeedItem): string | null {
+  return typeof item.data.pdfUrl === 'string' && item.data.pdfUrl.startsWith('https://') ? item.data.pdfUrl : null;
+}
+
+/** Where a paper's title links: its landing page. */
+export function landingOf(item: FeedItem): string | null {
+  return typeof item.data.landingUrl === 'string' && /^https?:\/\//.test(item.data.landingUrl) ? item.data.landingUrl : null;
+}
+
+/** A paper saved to the library from What's new. */
+export function savedPathOf(item: FeedItem): string | null {
+  return typeof item.data.addedPath === 'string' ? item.data.addedPath : null;
+}
+
+function clockOf(at: string): string {
+  const d = new Date(at);
+  return Number.isNaN(d.getTime()) ? '' : `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+function dayOf(at: string): string {
+  const d = new Date(at);
+  return Number.isNaN(d.getTime()) ? '' : `${WEEKDAYS[d.getDay()]} ${d.getDate()} ${MONTHS[d.getMonth()]}, ${clockOf(at)}`;
+}
+
+/** An alert's state in a word, its fact in one line, and its one fix. */
+export function alertLine(alert: AlertView): { word: string; fact: string; fix: 'resume' | 'privacy' | 'turn_on' | null } {
+  switch (alert.state) {
+    case 'checking':
+      return { word: 'Checking', fact: 'Checking now…', fix: null };
+    case 'waiting_retry': {
+      const who = alert.failedApis.join(' and ') || 'An API';
+      const when = alert.retryAt ? ` at ${clockOf(alert.retryAt)}` : ' later';
+      return { word: 'Retrying', fact: `${who} didn't answer; trying again${when}`, fix: null };
+    }
+    case 'offline':
+      return { word: 'Waiting', fact: "No internet connection; Shodh checks again when it's back", fix: null };
+    case 'active':
+      return {
+        word: 'On',
+        fact: alert.nextCheckAt ? `Next check ${dayOf(alert.nextCheckAt)}` : 'Checks every Monday at 09:00',
+        fix: null,
+      };
+    case 'off':
+      return { word: 'Off', fact: 'Nothing is sent for it', fix: 'turn_on' };
+    case 'held':
+      return { word: 'Stopped', fact: 'Stopped after failing 3 weeks in a row', fix: 'resume' };
+    case 'blocked':
+      return { word: 'Paused', fact: blockedCopy(alert.blockedReason) ?? LOCAL_ONLY_COPY, fix: 'privacy' };
+  }
 }
 
 /** How many rows there are in all. */

@@ -13,7 +13,7 @@
 use std::path::Path;
 
 use chrono::{DateTime, TimeDelta, Utc};
-use rusqlite::{params, params_from_iter, Row};
+use rusqlite::{params, params_from_iter, OptionalExtension, Row};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -239,6 +239,28 @@ impl FeedStore {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
+    /// The row `id`, dismissed or not.
+    pub fn item(&self, id: &str) -> FeedResult<Option<FeedItem>> {
+        let conn = self.conn.read()?;
+        Ok(conn
+            .query_row(
+                &format!("SELECT {COLS} FROM feed_item WHERE id = ?1"),
+                params![id],
+                item_from,
+            )
+            .optional()?)
+    }
+
+    /// Every paper row, dismissed ones included: what a paper alert has found before.
+    pub fn papers(&self) -> FeedResult<Vec<FeedItem>> {
+        let conn = self.conn.read()?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {COLS} FROM feed_item WHERE kind = 'paper' ORDER BY found_at, rowid"
+        ))?;
+        let rows = stmt.query_map([], item_from)?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
     /// At most `limit` rows not dismissed, newest first.
     pub fn list(&self, limit: usize) -> FeedResult<Vec<FeedItem>> {
         let conn = self.conn.read()?;
@@ -274,6 +296,17 @@ impl FeedStore {
             Ok(tx.execute(
                 "UPDATE feed_item SET dismissed_at = ?2 WHERE id = ?1",
                 params![id, at],
+            )? > 0)
+        })
+    }
+
+    /// Replaces the data of the row `id`; returns whether there is such a row.
+    pub fn set_data(&self, id: &str, data: &Value) -> FeedResult<bool> {
+        let text = data.to_string();
+        self.conn.write(|tx| -> FeedResult<bool> {
+            Ok(tx.execute(
+                "UPDATE feed_item SET data_json = ?2 WHERE id = ?1",
+                params![id, text],
             )? > 0)
         })
     }
@@ -443,6 +476,38 @@ mod tests {
             feed.list(1).unwrap()[0].seen_at.as_deref(),
             Some(timestamp(at(23, 10)).as_str())
         );
+    }
+
+    #[test]
+    fn papers_and_single_rows_are_read_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let feed = store(&dir);
+        let paper = NewFeedItem {
+            kind: FeedKind::Paper,
+            source_ref: "doi:10.1234/abc".into(),
+            job_id: "alert-1".into(),
+            title: "Gated Linear Attention".into(),
+            detail: None,
+            link: serde_json::json!({}),
+            data: serde_json::json!({ "doi": "10.1234/abc" }),
+        };
+        let rows = feed
+            .insert_if_absent(&[paper, file("j1", "c:/r/a.pdf")], at(23, 9))
+            .unwrap();
+        assert!(feed.set_dismissed(&rows[0].id, true, at(23, 10)).unwrap());
+        let papers = feed.papers().unwrap();
+        assert_eq!(papers.len(), 1, "dismissed papers still count as found");
+        assert_eq!(papers[0].data["doi"], "10.1234/abc");
+        assert_eq!(feed.item(&rows[1].id).unwrap().unwrap().title, "a.pdf");
+        assert!(feed
+            .set_data(
+                &rows[0].id,
+                &serde_json::json!({ "addedPath": "c:/r/gla.pdf" })
+            )
+            .unwrap());
+        assert_eq!(feed.papers().unwrap()[0].data["addedPath"], "c:/r/gla.pdf");
+        assert!(!feed.set_data("missing", &serde_json::json!({})).unwrap());
+        assert!(feed.item("missing").unwrap().is_none());
     }
 
     #[test]

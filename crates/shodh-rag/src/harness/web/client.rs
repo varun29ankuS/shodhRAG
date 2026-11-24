@@ -54,6 +54,15 @@ pub enum WebError {
     },
     #[error("{0} could not be resolved")]
     Unresolvable(String),
+    /// No connection could be made (refused, no route): the network or the host is down.
+    #[error("{0}")]
+    Unreachable(String),
+    /// A client that fetches only https met another address (the first, or a redirect).
+    #[error("{0} is not an https address; only https is fetched here")]
+    NotHttps(String),
+    /// A client that follows no redirects was redirected.
+    #[error("{0} answered with a redirect, which is not followed here")]
+    Redirected(String),
     #[error("More than {MAX_REDIRECTS} redirects")]
     TooManyRedirects,
     #[error("A redirect had no valid Location")]
@@ -165,6 +174,8 @@ impl HttpTransport for ReqwestTransport {
         let response = call.send().await.map_err(|e| {
             if e.is_timeout() {
                 WebError::Timeout
+            } else if e.is_connect() {
+                WebError::Unreachable(format!("No connection to {host}: {e}"))
             } else {
                 WebError::Http(format!("Request to {host} failed: {e}"))
             }
@@ -252,6 +263,10 @@ pub struct SafeClient {
     /// model supplies can add to this set.
     trusted_origins: Arc<HashSet<String>>,
     timeout: Duration,
+    /// Every address, the first and each redirect hop, must be https.
+    https_only: bool,
+    /// Redirects followed per request ([`MAX_REDIRECTS`] unless lowered).
+    max_redirects: usize,
 }
 
 impl SafeClient {
@@ -261,7 +276,28 @@ impl SafeClient {
             transport,
             trusted_origins: Arc::new(HashSet::new()),
             timeout: Duration::from_secs(20),
+            https_only: false,
+            max_redirects: MAX_REDIRECTS,
         }
+    }
+
+    /// A client that fetches only https: the first address and every redirect hop.
+    pub fn https_only(mut self) -> Self {
+        self.https_only = true;
+        self
+    }
+
+    /// A client that follows no redirect: each request is one hop.
+    pub fn without_redirects(mut self) -> Self {
+        self.max_redirects = 0;
+        self
+    }
+
+    fn check_hop(&self, url: Url) -> Result<Url, WebError> {
+        if self.https_only && url.scheme() != "https" {
+            return Err(WebError::NotHttps(url.to_string()));
+        }
+        Ok(url)
     }
 
     /// The production client: system DNS and reqwest.
@@ -347,10 +383,10 @@ impl SafeClient {
         headers: Vec<(String, String)>,
         body: Option<Vec<u8>>,
     ) -> Result<Fetched, WebError> {
-        let mut url = check_url(url)?;
+        let mut url = self.check_hop(check_url(url)?)?;
         let mut method = method;
         let mut body = body;
-        for _ in 0..=MAX_REDIRECTS {
+        for hop in 0..=self.max_redirects {
             let connect_to = self.checked_addresses(&url).await?;
             let response = self
                 .transport
@@ -364,9 +400,12 @@ impl SafeClient {
                 })
                 .await?;
             if matches!(response.status, 301 | 302 | 303 | 307 | 308) {
+                if hop == self.max_redirects && self.max_redirects == 0 {
+                    return Err(WebError::Redirected(url.to_string()));
+                }
                 let location = response.header("location").ok_or(WebError::BadRedirect)?;
                 let next = url.join(location).map_err(|_| WebError::BadRedirect)?;
-                url = check_url(next.as_str())?;
+                url = self.check_hop(check_url(next.as_str())?)?;
                 if !matches!(response.status, 307 | 308) {
                     method = Method::Get;
                     body = None;
@@ -549,6 +588,91 @@ pub(crate) mod testing {
 mod tests {
     use super::testing::*;
     use super::*;
+
+    fn pdf_host() -> FakeResolver {
+        FakeResolver::default()
+            .with("papers.example", &["93.184.216.34"])
+            .with("mirror.example", &["93.184.216.35"])
+    }
+
+    #[tokio::test]
+    async fn an_https_only_client_refuses_http_first_and_on_any_hop() {
+        let (http, _) = client(pdf_host(), FakeTransport::default());
+        let http = http.https_only();
+        let err = http.get("http://papers.example/a.pdf", vec![]).await.err();
+        assert!(matches!(err, Some(WebError::NotHttps(_))), "{err:?}");
+
+        let (secure, transport) = client(
+            pdf_host(),
+            FakeTransport::default()
+                .route(
+                    "https://papers.example/a.pdf",
+                    Canned::redirect("http://mirror.example/a.pdf"),
+                )
+                .route(
+                    "http://mirror.example/a.pdf",
+                    Canned::ok("application/pdf", b"%PDF-1.7".to_vec()),
+                )
+                .route(
+                    "https://papers.example/b.pdf",
+                    Canned::redirect("https://mirror.example/b.pdf"),
+                )
+                .route(
+                    "https://mirror.example/b.pdf",
+                    Canned::ok("application/pdf", b"%PDF-1.7".to_vec()),
+                ),
+        );
+        let secure = secure.https_only();
+        let err = secure
+            .get("https://papers.example/a.pdf", vec![])
+            .await
+            .err();
+        assert!(matches!(err, Some(WebError::NotHttps(_))), "{err:?}");
+        assert!(
+            !transport
+                .sent
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .any(|r| r.url.scheme() == "http"),
+            "the http hop is never asked"
+        );
+        let ok = secure
+            .get("https://papers.example/b.pdf", vec![])
+            .await
+            .unwrap();
+        assert_eq!(ok.final_url.as_str(), "https://mirror.example/b.pdf");
+    }
+
+    #[tokio::test]
+    async fn a_client_without_redirects_follows_none() {
+        let (c, transport) = client(
+            pdf_host(),
+            FakeTransport::default()
+                .route(
+                    "https://papers.example/a",
+                    Canned::redirect("https://papers.example/b"),
+                )
+                .route(
+                    "https://papers.example/b",
+                    Canned::ok("text/plain", b"b".to_vec()),
+                ),
+        );
+        let err = c
+            .without_redirects()
+            .get("https://papers.example/a", vec![])
+            .await
+            .err();
+        assert!(matches!(err, Some(WebError::Redirected(_))), "{err:?}");
+        assert_eq!(
+            transport
+                .sent
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .len(),
+            1
+        );
+    }
 
     #[test]
     fn urls_must_be_http_without_credentials() {

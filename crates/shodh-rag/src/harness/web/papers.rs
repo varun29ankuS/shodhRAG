@@ -78,6 +78,9 @@ pub struct Paper {
     /// The API's own relevance score (OpenAlex), for ordering only.
     #[serde(skip)]
     pub source_score: Option<f64>,
+    /// When it was first published (arXiv's submission day), when the API says.
+    #[serde(skip)]
+    pub published: Option<NaiveDate>,
 }
 
 impl Paper {
@@ -121,21 +124,58 @@ fn snippet(text: &str) -> Option<String> {
     Some(out)
 }
 
-/// `10.1234/abc` from a DOI or DOI URL, lower-cased.
+/// `10.1234/abc` from a DOI or DOI URL (`doi.org`, `dx.doi.org`, `www.doi.org`,
+/// `doi:`), lower-cased, percent-decoded, without a trailing `.pdf` or punctuation
+/// (`10.1234/abc.` at the end of a sentence).
 pub fn normalize_doi(raw: &str) -> Option<String> {
-    let lower = raw.trim().to_ascii_lowercase();
-    let doi = [
-        "https://doi.org/",
-        "http://doi.org/",
-        "https://dx.doi.org/",
-        "http://dx.doi.org/",
-        "doi:",
-    ]
-    .iter()
-    .find_map(|p| lower.strip_prefix(p))
-    .unwrap_or(&lower)
-    .trim();
-    doi.starts_with("10.").then(|| doi.to_string())
+    let decoded = percent_decode(raw.trim());
+    let lower = decoded.to_ascii_lowercase();
+    let rest = lower
+        .strip_prefix("https://")
+        .or_else(|| lower.strip_prefix("http://"))
+        .unwrap_or(&lower);
+    let rest = ["www.doi.org/", "dx.doi.org/", "doi.org/", "doi:"]
+        .iter()
+        .find_map(|p| rest.strip_prefix(p))
+        .unwrap_or(rest)
+        .trim();
+    let mut doi = rest.split(['?', '#']).next().unwrap_or("");
+    loop {
+        let mut trimmed = doi
+            .trim_end_matches(['.', ',', ';', ':', ']', '}', '"', '\'', '/'])
+            .trim_end_matches(".pdf");
+        // A closing parenthesis is part of the DOI when it closes one of its own.
+        if trimmed.ends_with(')') && trimmed.matches(')').count() > trimmed.matches('(').count() {
+            trimmed = &trimmed[..trimmed.len() - 1];
+        }
+        if trimmed == doi {
+            break;
+        }
+        doi = trimmed;
+    }
+    (doi.starts_with("10.") && doi.contains('/')).then(|| doi.to_string())
+}
+
+/// `%XX` escapes decoded (invalid ones kept as they are).
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let byte = std::str::from_utf8(&bytes[i + 1..i + 3])
+                .ok()
+                .and_then(|hex| u8::from_str_radix(hex, 16).ok());
+            if let Some(byte) = byte {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn is_new_style_arxiv_id(id: &str) -> bool {
@@ -188,7 +228,9 @@ pub fn normalize_arxiv_id(raw: &str) -> Option<String> {
     (is_new_style_arxiv_id(id) || is_old_style_arxiv_id(id)).then(|| id.to_string())
 }
 
-fn https_only(url: &str) -> Option<String> {
+/// `url` when it is a web address (http or https). Landing pages may be either; a PDF
+/// saved to the library must be https, which its download enforces.
+fn web_url(url: &str) -> Option<String> {
     let url = url.trim();
     Url::parse(url)
         .ok()
@@ -211,6 +253,7 @@ fn new_paper(title: String, source: &'static str) -> Paper {
         relevance: None,
         title_match: false,
         source_score: None,
+        published: None,
     }
 }
 
@@ -508,13 +551,19 @@ pub fn parse_arxiv(xml: &str) -> Result<Vec<Paper>, WebError> {
             .filter_map(|a| child_text(a, "name"))
             .take(MAX_AUTHORS)
             .collect();
-        p.year =
-            child_text(entry, "published").and_then(|d| d.get(0..4).and_then(|y| y.parse().ok()));
+        let published = child_text(entry, "published");
+        p.year = published
+            .as_deref()
+            .and_then(|d| d.get(0..4).and_then(|y| y.parse().ok()));
+        p.published = published
+            .as_deref()
+            .and_then(|d| d.get(0..10))
+            .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok());
         for link in entry
             .children()
             .filter(|c| c.is_element() && c.tag_name().name() == "link")
         {
-            let href = link.attribute("href").and_then(https_only);
+            let href = link.attribute("href").and_then(web_url);
             match (link.attribute("title"), link.attribute("rel")) {
                 (Some("pdf"), _) => p.pdf_url = href,
                 (_, Some("alternate")) => p.landing_url = href,
@@ -523,7 +572,7 @@ pub fn parse_arxiv(xml: &str) -> Result<Vec<Paper>, WebError> {
         }
         let id = child_text(entry, "id");
         if p.landing_url.is_none() {
-            p.landing_url = id.as_deref().and_then(https_only);
+            p.landing_url = id.as_deref().and_then(web_url);
         }
         p.arxiv_id = id.as_deref().and_then(normalize_arxiv_id);
         p.venue = child_text(entry, "journal_ref").or_else(|| Some(ARXIV.to_string()));
@@ -581,7 +630,7 @@ pub fn parse_openalex(response: &Value) -> Result<Vec<Paper>, WebError> {
                 .unwrap_or_default();
             p.pdf_url = s(w, "/best_oa_location/pdf_url")
                 .or_else(|| s(w, "/open_access/oa_url"))
-                .and_then(|u| https_only(&u));
+                .and_then(|u| web_url(&u));
             p.year = w
                 .get("publication_year")
                 .and_then(Value::as_i64)
@@ -591,7 +640,7 @@ pub fn parse_openalex(response: &Value) -> Result<Vec<Paper>, WebError> {
             p.doi = s(w, "/doi").and_then(|d| normalize_doi(&d));
             p.landing_url = s(w, "/primary_location/landing_page_url")
                 .or_else(|| s(w, "/doi"))
-                .and_then(|u| https_only(&u));
+                .and_then(|u| web_url(&u));
             p.arxiv_id = p
                 .doi
                 .as_deref()
@@ -643,10 +692,10 @@ pub fn parse_semantic_scholar(response: &Value) -> Result<Vec<Paper>, WebError> 
             p.venue = s(item, "/venue");
             p.abstract_snippet = s(item, "/abstract").and_then(|a| snippet(&a));
             p.doi = s(item, "/externalIds/DOI").and_then(|d| normalize_doi(&d));
-            p.landing_url = s(item, "/url").and_then(|u| https_only(&u));
+            p.landing_url = s(item, "/url").and_then(|u| web_url(&u));
             p.pdf_url = s(item, "/openAccessPdf/url")
                 .or(arxiv_pdf)
-                .and_then(|u| https_only(&u));
+                .and_then(|u| web_url(&u));
             Some(p)
         })
         .collect())
@@ -689,6 +738,7 @@ fn absorb(into: &mut Paper, other: Paper) {
         into.authors = other.authors;
     }
     into.year = into.year.or(other.year);
+    into.published = into.published.or(other.published);
     let real_venue = |v: &Option<String>| v.as_deref().is_some_and(|v| v != ARXIV);
     if !real_venue(&into.venue) && (real_venue(&other.venue) || into.venue.is_none()) {
         into.venue = other.venue;
@@ -1056,6 +1106,32 @@ mod tests {
         );
         assert_eq!(normalize_doi("doi:10.1/x").as_deref(), Some("10.1/x"));
         assert_eq!(normalize_doi("not a doi"), None);
+        for (raw, want) in [
+            (
+                "https://www.doi.org/10.1145/3292500.3330701",
+                "10.1145/3292500.3330701",
+            ),
+            (
+                "http://dx.doi.org/10.1145/3292500.3330701.",
+                "10.1145/3292500.3330701",
+            ),
+            ("10.1145/3292500.3330701),", "10.1145/3292500.3330701"),
+            (
+                "https://doi.org/10.1145%2F3292500.3330701",
+                "10.1145/3292500.3330701",
+            ),
+            ("10.1145/3292500.3330701.pdf", "10.1145/3292500.3330701"),
+            (
+                "10.1002/(SICI)1097-4571(199806)49:8",
+                "10.1002/(sici)1097-4571(199806)49:8",
+            ),
+            ("10.1000/xyz(1)", "10.1000/xyz(1)"),
+            ("https://doi.org/10.1000/ABC?utm=1#x", "10.1000/abc"),
+        ] {
+            assert_eq!(normalize_doi(raw).as_deref(), Some(want), "{raw}");
+        }
+        assert_eq!(normalize_doi("10.1145"), None, "no suffix");
+        assert_eq!(normalize_doi("%E2%28"), None, "a broken escape is no DOI");
         for raw in [
             "2101.00001v3",
             "arXiv:2101.00001",

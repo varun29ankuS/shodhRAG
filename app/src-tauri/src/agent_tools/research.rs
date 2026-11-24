@@ -561,11 +561,14 @@ pub(crate) struct Downloaded {
 /// Downloads `url` (a document or image of an allowed type, its first bytes matching
 /// the type, at most `MAX_DOWNLOAD_BYTES`) into the folder `make_folder` gives (made
 /// only once the download is known to be allowed), named `file_name` or as the server
-/// names it, never over an existing file.
+/// names it, never over an existing file. With `pdf_only`, nothing but a PDF is saved:
+/// the server must say `application/pdf` and the bytes must start `%PDF-`; anything
+/// else is refused and leaves no file.
 pub(crate) async fn download_into(
     client: &SafeClient,
     url: &url::Url,
     file_name: Option<&str>,
+    pdf_only: bool,
     make_folder: impl FnOnce() -> Result<PathBuf, ToolError>,
 ) -> Result<Downloaded, ToolError> {
     let fetched = client
@@ -627,6 +630,16 @@ pub(crate) async fn download_into(
     if !is_allowed_extension(ext) {
         return Err(ToolError::Forbidden(format!(
             "{ext} files are not downloaded."
+        )));
+    }
+    if pdf_only && (ext != "pdf" || mime != "application/pdf") {
+        return Err(ToolError::Forbidden(format!(
+            "{final_url} sent {}, not a PDF; nothing was saved.",
+            if mime.is_empty() {
+                "a file of unknown type"
+            } else {
+                &mime
+            }
         )));
     }
 
@@ -786,9 +799,13 @@ impl HostTool for DownloadFileTool {
             mime,
             bytes: written,
             sha256,
-        } = download_into(&self.client(), &url, str_arg(&args, "file_name"), || {
-            create_planned(&plan)
-        })
+        } = download_into(
+            &self.client(),
+            &url,
+            str_arg(&args, "file_name"),
+            false,
+            || create_planned(&plan),
+        )
         .await?;
         let shown = saved_path.display().to_string();
         let saved = Saved {

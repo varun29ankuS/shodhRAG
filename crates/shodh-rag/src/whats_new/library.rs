@@ -35,6 +35,7 @@ pub fn known_paper(title: &str, doi: Option<&str>, arxiv_id: Option<&str>) -> Pa
         relevance: None,
         title_match: false,
         source_score: None,
+        published: None,
     }
 }
 

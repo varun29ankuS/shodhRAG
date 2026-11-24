@@ -29,7 +29,7 @@ import {
   localDayKey,
   renderedIds,
 } from '../src/features/whatsNew/model.ts';
-import { CONSENT_TEMPLATE, cleanWords, consentLine, wordsFromChips } from '../src/features/whatsNew/consent.ts';
+import { CONSENT_TEMPLATE, charCount, cleanWords, consentLine, toggleChip, wordsFromChips } from '../src/features/whatsNew/consent.ts';
 import type { AlertView, FeedItem } from '../src/features/whatsNew/types.ts';
 
 const read = (path: string) => readFileSync(new URL(`../src/${path}`, import.meta.url), 'utf8');
@@ -180,6 +180,11 @@ test('folder switches say their state', () => {
 
 const section = read('features/whatsNew/WhatsNewSection.tsx');
 
+test('add to library waits while a save runs', () => {
+  assert.match(section, /disabled=\{adding\}/);
+  assert.match(section, /if \(adding\) return;/);
+});
+
 test('the section reserves its height and expands only on click', () => {
   assert.match(section, /minHeight: VISIBLE_ROWS \* ROW_HEIGHT_PX/);
   assert.match(section, /onClick=\{\(\) => setShowAll\(v => !v\)\}/);
@@ -262,6 +267,20 @@ test('ticking chips fills the words and the consent line shows them', () => {
   assert.equal(words, 'linear attention kv cache');
   assert.equal(consentLine(words), CONSENT_TEMPLATE.replace('{words}', 'linear attention kv cache'));
   assert.equal(wordsFromChips([]), '');
+});
+
+test('ticking a chip keeps what the user typed', () => {
+  assert.equal(toggleChip('my own topic', 'linear attention', true), 'my own topic linear attention');
+  assert.equal(toggleChip('linear attention', 'Linear Attention', true), 'linear attention', 'already there');
+  assert.equal(toggleChip('my own topic linear attention', 'linear attention', false), 'my own topic');
+  assert.equal(toggleChip('linear attentions', 'linear attention', false), 'linear attentions', 'whole phrases only');
+  assert.equal(toggleChip('a (b)', '(b)', false), 'a', 'chip words are literal, not a pattern');
+});
+
+test('words are cleaned and counted as the backend does', () => {
+  assert.equal(cleanWords(' a b　c\t'), 'a b c');
+  assert.equal(cleanWords('a﻿b'), 'a﻿b', 'not whitespace to Rust either');
+  assert.equal(charCount('\u{1F600}ab'), 3, 'code points, as chars().count()');
 });
 
 test('papers are rows of their own, never grouped', () => {

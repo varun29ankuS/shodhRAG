@@ -19,7 +19,7 @@ use super::pace::ApiPacer;
 use crate::harness::web::client::{SafeClient, WebError};
 use crate::harness::web::papers::{
     alert_requests, merge, parse_arxiv, parse_openalex, parse_semantic_scholar, rank_papers,
-    same_paper, Paper, PaperApi,
+    same_paper, Paper, PaperApi, ALERT_RESULTS_PER_API,
 };
 use crate::harness::web::relevance::SharedScorer;
 
@@ -27,6 +27,8 @@ use crate::harness::web::relevance::SharedScorer;
 pub const CONSENT_TEMPLATE: &str = "Shodh sends these words: {words} to arXiv, OpenAlex and \
      Semantic Scholar to look for new papers. Your files, your library and who you are stay \
      on this computer.";
+/// Most new papers one check shows; the rest are kept as seen.
+pub const NEW_PAPERS_PER_RUN: usize = 10;
 /// Longest words an alert sends.
 pub const MAX_WORDS_CHARS: usize = 200;
 
@@ -87,23 +89,66 @@ pub fn windows(
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Failure {
-    /// No connection (the address did not resolve, the request timed out or broke).
+    /// No connection could be made: the name did not resolve, or the connection was
+    /// refused or had no route. The computer (or the API) is offline.
     Offline,
+    /// The API was reached but gave no answer: the request timed out or broke off.
+    Unanswered,
     /// Too many requests; `retry_after_secs` when the API said when to come back.
     RateLimited { retry_after_secs: Option<u64> },
-    /// Another HTTP status.
-    Status { status: u16 },
+    /// Another HTTP status (`retry_after_secs` when a 503 said when to come back).
+    Status {
+        status: u16,
+        retry_after_secs: Option<u64>,
+    },
     /// An answer that could not be read.
     Invalid,
+}
+
+impl Failure {
+    /// When the API asked to be asked again, in seconds.
+    pub fn retry_after_secs(&self) -> Option<u64> {
+        match self {
+            Self::RateLimited { retry_after_secs }
+            | Self::Status {
+                retry_after_secs, ..
+            } => *retry_after_secs,
+            _ => None,
+        }
+    }
+}
+
+/// The longest wait a `Retry-After` is honoured for.
+pub const MAX_RETRY_AFTER_SECS: u64 = 24 * 60 * 60;
+
+/// A `Retry-After` header: seconds, or an HTTP date (`Wed, 21 Oct 2026 07:28:00 GMT`),
+/// as seconds from `now`, at most [`MAX_RETRY_AFTER_SECS`]. `None` when it cannot be
+/// read.
+pub fn parse_retry_after(value: &str, now: DateTime<Utc>) -> Option<u64> {
+    let value = value.trim();
+    let secs = if !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) {
+        // Digits only: a huge number saturates instead of overflowing.
+        value.parse::<u64>().unwrap_or(u64::MAX)
+    } else {
+        let at = DateTime::parse_from_rfc2822(value)
+            .ok()?
+            .with_timezone(&Utc);
+        u64::try_from((at - now).num_seconds()).unwrap_or(0)
+    };
+    Some(secs.min(MAX_RETRY_AFTER_SECS))
 }
 
 /// How one API answered.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum ApiOutcome {
-    /// It answered with this many papers.
+    /// It answered with this many papers. `full`: as many as were asked for, so
+    /// older ones in the window may be missing; `oldest`: the earliest day among them,
+    /// when the API dates its papers.
     Answered {
         papers: usize,
+        full: bool,
+        oldest: Option<NaiveDate>,
     },
     Failed {
         failure: Failure,
@@ -115,20 +160,24 @@ pub enum ApiOutcome {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AlertCheck {
     pub new: Vec<Paper>,
-    /// Papers the APIs answered that are not known yet and too weak a match to
-    /// show: kept as seen, so a later check (whose answers rank differently)
-    /// never offers them as new.
-    pub weak: Vec<Paper>,
+    /// Papers the APIs answered that are not known yet and are not shown: too weak a
+    /// match, or past the [`NEW_PAPERS_PER_RUN`] best. They are kept as seen, so a
+    /// later check (whose answers rank differently) never offers them as new.
+    pub set_aside: Vec<Paper>,
     pub outcomes: BTreeMap<PaperApi, ApiOutcome>,
 }
 
 fn failure_of(error: &WebError) -> Failure {
     match error {
-        WebError::Unresolvable(_) | WebError::Timeout | WebError::Http(_) => Failure::Offline,
+        WebError::Unresolvable(_) | WebError::Unreachable(_) => Failure::Offline,
+        WebError::Timeout | WebError::Http(_) => Failure::Unanswered,
         WebError::Status { status: 429 } => Failure::RateLimited {
             retry_after_secs: None,
         },
-        WebError::Status { status } => Failure::Status { status: *status },
+        WebError::Status { status } => Failure::Status {
+            status: *status,
+            retry_after_secs: None,
+        },
         _ => Failure::Invalid,
     }
 }
@@ -143,17 +192,19 @@ async fn ask(
     pacer: &ApiPacer,
     api: PaperApi,
     url: &url::Url,
+    now: DateTime<Utc>,
 ) -> Result<Vec<Paper>, ApiOutcome> {
-    pacer.wait_turn(api).await;
+    // The turn is held until the answer is read: the spacing counts from its end.
+    let _turn = pacer.wait_turn(api).await;
     let fetched = match client.get(url.as_str(), vec![]).await {
         Ok(fetched) => fetched,
         Err(e) => return failed(failure_of(&e), e.to_string()),
     };
     let status = fetched.status;
+    let retry_after_secs = fetched
+        .header("retry-after")
+        .and_then(|v| parse_retry_after(v, now));
     if status == 429 {
-        let retry_after_secs = fetched
-            .header("retry-after")
-            .and_then(|v| v.trim().parse::<u64>().ok());
         return failed(
             Failure::RateLimited { retry_after_secs },
             format!("{} asked Shodh to wait", api.name()),
@@ -161,7 +212,10 @@ async fn ask(
     }
     if !(200..300).contains(&status) {
         return failed(
-            Failure::Status { status },
+            Failure::Status {
+                status,
+                retry_after_secs: retry_after_secs.filter(|_| status == 503),
+            },
             format!("{} answered {status}", api.name()),
         );
     }
@@ -213,24 +267,35 @@ pub async fn check_alert(
             }
             return AlertCheck {
                 new: Vec::new(),
-                weak: Vec::new(),
+                set_aside: Vec::new(),
                 outcomes,
             };
         }
     };
+    // Each request is one hop (paced as one): a redirect is not followed.
+    let client = client.clone().without_redirects();
     let mut lists = Vec::new();
     for api in apis {
         let Some(url) = requests.get(api) else {
             // No significant word for its query syntax: nothing to ask.
-            outcomes.insert(*api, ApiOutcome::Answered { papers: 0 });
+            outcomes.insert(
+                *api,
+                ApiOutcome::Answered {
+                    papers: 0,
+                    full: false,
+                    oldest: None,
+                },
+            );
             continue;
         };
-        match ask(client, pacer, *api, url).await {
+        match ask(&client, pacer, *api, url, now).await {
             Ok(papers) => {
                 outcomes.insert(
                     *api,
                     ApiOutcome::Answered {
                         papers: papers.len(),
+                        full: papers.len() >= ALERT_RESULTS_PER_API,
+                        oldest: papers.iter().filter_map(|p| p.published).min(),
                     },
                 );
                 lists.push(papers);
@@ -263,14 +328,18 @@ pub async fn check_alert(
         }
     };
     let is_known = |p: &Paper| known.iter().any(|k| same_paper(k, p));
-    let weak = answered
+    let mut set_aside: Vec<Paper> = answered
         .into_iter()
         .filter(|p| !relevant.iter().any(|r| same_paper(r, p)) && !is_known(p))
         .collect();
-    let new = relevant.into_iter().filter(|p| !is_known(p)).collect();
+    let mut new: Vec<Paper> = relevant.into_iter().filter(|p| !is_known(p)).collect();
+    // The best few are shown; the rest are kept as seen, so they never come back as new.
+    if new.len() > NEW_PAPERS_PER_RUN {
+        set_aside.extend(new.split_off(NEW_PAPERS_PER_RUN));
+    }
     AlertCheck {
         new,
-        weak,
+        set_aside,
         outcomes,
     }
 }
@@ -415,7 +484,7 @@ mod tests {
             .outcomes
             .values()
             .all(|o| matches!(o, ApiOutcome::Answered { .. })));
-        let sent = transport.sent.lock().unwrap();
+        let sent = transport.sent.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(sent.len(), 3);
         for request in sent.iter() {
             assert!(
@@ -456,7 +525,7 @@ mod tests {
         let known: Vec<Paper> = first
             .new
             .iter()
-            .chain(&first.weak)
+            .chain(&first.set_aside)
             .map(|p| known_paper(&p.title, p.doi.as_deref(), p.arxiv_id.as_deref()))
             .collect();
         let (again, _) = check(transport(&[]), &all(), &known).await;
@@ -465,7 +534,7 @@ mod tests {
             "every relevant paper was kept the first time: {:?}",
             again.new.iter().map(|p| &p.title).collect::<Vec<_>>()
         );
-        assert!(again.weak.is_empty());
+        assert!(again.set_aside.is_empty());
         // One API's answers alone rank differently; still nothing is new.
         let only = BTreeSet::from([PaperApi::SemanticScholar]);
         let (alone, _) = check(transport(&[]), &only, &known).await;
@@ -474,7 +543,7 @@ mod tests {
             "{:?}",
             alone.new.iter().map(|p| &p.title).collect::<Vec<_>>()
         );
-        for p in &first.weak {
+        for p in &first.set_aside {
             assert!(
                 !first.new.iter().any(|n| same_paper(n, p)),
                 "weak and new are apart"
@@ -525,7 +594,7 @@ mod tests {
         assert!(matches!(
             found.outcomes[&PaperApi::SemanticScholar],
             ApiOutcome::Failed {
-                failure: Failure::Status { status: 503 },
+                failure: Failure::Status { status: 503, .. },
                 ..
             }
         ));
@@ -558,7 +627,14 @@ mod tests {
     async fn apis_already_checked_this_run_are_not_asked_again() {
         let only = BTreeSet::from([PaperApi::Arxiv, PaperApi::SemanticScholar]);
         let (found, transport) = check(transport(&[]), &only, &[]).await;
-        assert_eq!(transport.sent.lock().unwrap().len(), 2);
+        assert_eq!(
+            transport
+                .sent
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .len(),
+            2
+        );
         assert!(!found.outcomes.contains_key(&PaperApi::OpenAlex));
     }
 
@@ -580,6 +656,126 @@ mod tests {
             );
         }
         assert!(found.new.is_empty());
+    }
+
+    #[test]
+    fn retry_after_reads_seconds_and_dates_and_is_capped() {
+        let now = Utc.with_ymd_and_hms(2026, 11, 23, 9, 0, 0).unwrap();
+        assert_eq!(parse_retry_after("120", now), Some(120));
+        assert_eq!(parse_retry_after(" 0 ", now), Some(0));
+        assert_eq!(
+            parse_retry_after("Mon, 23 Nov 2026 09:30:00 GMT", now),
+            Some(1800),
+            "an HTTP date"
+        );
+        assert_eq!(
+            parse_retry_after("Mon, 23 Nov 2026 08:00:00 GMT", now),
+            Some(0),
+            "a date already past"
+        );
+        assert_eq!(
+            parse_retry_after("99999999999999999999999999", now),
+            Some(MAX_RETRY_AFTER_SECS),
+            "a huge number is capped, never overflows"
+        );
+        assert_eq!(parse_retry_after("172800", now), Some(MAX_RETRY_AFTER_SECS));
+        assert_eq!(
+            parse_retry_after("Fri, 01 Jan 2100 00:00:00 GMT", now),
+            Some(MAX_RETRY_AFTER_SECS)
+        );
+        assert_eq!(parse_retry_after("soon", now), None);
+        assert_eq!(parse_retry_after("", now), None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_503_with_retry_after_is_honoured() {
+        let urls = urls();
+        let transport = transport(&[]).route(
+            urls[&PaperApi::SemanticScholar].as_str(),
+            Canned {
+                status: 503,
+                headers: vec![("retry-after".into(), "Mon, 23 Nov 2026 10:00:00 GMT".into())],
+                body: Vec::new(),
+            },
+        );
+        let (found, _) = check(transport, &all(), &[]).await;
+        match &found.outcomes[&PaperApi::SemanticScholar] {
+            ApiOutcome::Failed { failure, .. } => {
+                assert_eq!(failure.retry_after_secs(), Some(3600));
+                assert!(matches!(failure, Failure::Status { status: 503, .. }));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_reached_api_that_fails_is_not_offline() {
+        let urls = urls();
+        // OpenAlex resolves but has no answer for the request.
+        let mut transport = transport(&[]);
+        transport.routes.remove(urls[&PaperApi::OpenAlex].as_str());
+        let (found, _) = check(transport, &all(), &[]).await;
+        // The fake answers an unrouted request 404: a reached API that did not answer.
+        assert!(matches!(
+            found.outcomes[&PaperApi::OpenAlex],
+            ApiOutcome::Failed {
+                failure: Failure::Status { status: 404, .. },
+                ..
+            }
+        ));
+        assert_eq!(failure_of(&WebError::Timeout), Failure::Unanswered);
+        assert_eq!(
+            failure_of(&WebError::Http("reset".into())),
+            Failure::Unanswered
+        );
+        assert_eq!(
+            failure_of(&WebError::Unreachable("refused".into())),
+            Failure::Offline
+        );
+        assert_eq!(
+            failure_of(&WebError::Unresolvable("x".into())),
+            Failure::Offline
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn at_most_ten_new_papers_are_shown_and_the_rest_kept_as_seen() {
+        let (found, _) = check(transport(&[]), &all(), &[]).await;
+        assert!(found.new.len() <= NEW_PAPERS_PER_RUN);
+        let total = found.new.len() + found.set_aside.len();
+        for (i, a) in found.new.iter().chain(&found.set_aside).enumerate() {
+            for b in found.new.iter().chain(&found.set_aside).skip(i + 1) {
+                assert!(!same_paper(a, b), "{} twice", a.title);
+            }
+        }
+        assert!(total >= found.new.len());
+        if found.new.len() == NEW_PAPERS_PER_RUN {
+            // What was over the cap is set aside, so the next check offers none of it.
+            let known: Vec<Paper> = found
+                .new
+                .iter()
+                .chain(&found.set_aside)
+                .map(|p| known_paper(&p.title, p.doi.as_deref(), p.arxiv_id.as_deref()))
+                .collect();
+            let (again, _) = check(transport(&[]), &all(), &known).await;
+            assert!(again.new.is_empty());
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_full_arxiv_page_reports_its_oldest_day() {
+        let (found, _) = check(transport(&[]), &all(), &[]).await;
+        match found.outcomes[&PaperApi::Arxiv] {
+            ApiOutcome::Answered {
+                papers,
+                full,
+                oldest,
+            } => {
+                assert_eq!(full, papers >= ALERT_RESULTS_PER_API);
+                assert!(oldest.is_some(), "arXiv dates its papers");
+            }
+            ref other => panic!("{other:?}"),
+        }
     }
 
     #[test]

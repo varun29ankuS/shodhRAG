@@ -192,7 +192,10 @@ export function WhatsNewSection() {
       await whatsNewApi.addToLibrary(item.id, folder.sourceId);
       notify.success(`Saved to ${folder.folder}`, { description: item.title });
     } catch (e) {
-      notify.error('Could not add it to the library', { description: describe(e) });
+      const message = describe(e);
+      // The file may be saved even when its note in What's new failed: say which.
+      if (message.startsWith('Saved to ')) notify.warning('Saved, but not noted in What’s new', { description: message });
+      else notify.error('Could not add it to the library', { description: message });
     }
   }, []);
 
@@ -277,7 +280,7 @@ export function WhatsNewSection() {
                       onDismiss={() => void dismiss(row)}
                       folders={folders}
                       canSend={!blocked}
-                      onAddToLibrary={(item, folder) => void addToLibrary(item, folder)}
+                      onAddToLibrary={addToLibrary}
                     />
                   ))}
                 </ul>
@@ -405,7 +408,7 @@ function FeedRow({
   onDismiss: () => void;
   folders: FolderWatchView[];
   canSend: boolean;
-  onAddToLibrary: (item: FeedItem, folder: FolderWatchView) => void;
+  onAddToLibrary: (item: FeedItem, folder: FolderWatchView) => Promise<void>;
 }) {
   const first: FeedItem = row.items[0];
   if (row.kind === 'paper') {
@@ -497,17 +500,21 @@ function PaperRow({
   onDismiss: () => void;
   folders: FolderWatchView[];
   canSend: boolean;
-  onAddToLibrary: (item: FeedItem, folder: FolderWatchView) => void;
+  onAddToLibrary: (item: FeedItem, folder: FolderWatchView) => Promise<void>;
 }) {
   const paper = row.items[0];
   const landing = landingOf(paper);
   const pdf = pdfOf(paper);
   const saved = savedPathOf(paper);
   const [choosing, setChoosing] = useState(false);
+  /** A save is running: the button waits, so one paper is never saved twice. */
+  const [adding, setAdding] = useState(false);
   const abstract = typeof paper.data.abstract === 'string' ? paper.data.abstract : null;
   const add = (folder: FolderWatchView) => {
+    if (adding) return;
     setChoosing(false);
-    onAddToLibrary(paper, folder);
+    setAdding(true);
+    void onAddToLibrary(paper, folder).finally(() => setAdding(false));
   };
   return (
     <li className="flex flex-col" data-agent-item={agentItemKey('whats-new', paper.id)}>
@@ -540,9 +547,11 @@ function PaperRow({
                 type="button"
                 className={ROW_ACTION}
                 aria-expanded={choosing}
+                aria-busy={adding}
+                disabled={adding}
                 onClick={() => (folders.length === 1 ? add(folders[0]) : setChoosing(v => !v))}
               >
-                Add to library
+                {adding ? 'Adding…' : 'Add to library'}
               </button>
             )
           )}
@@ -555,7 +564,7 @@ function PaperRow({
         <ul className="flex flex-col pb-1 pl-8" aria-label="Save into">
           {folders.map(folder => (
             <li key={folder.sourceId} className="flex h-8 items-center">
-              <button type="button" className={ROW_ACTION} onClick={() => add(folder)}>
+              <button type="button" className={ROW_ACTION} disabled={adding} onClick={() => add(folder)}>
                 Save into {folder.folder}
               </button>
             </li>

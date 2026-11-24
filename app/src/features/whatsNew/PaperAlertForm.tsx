@@ -13,7 +13,7 @@ import React, { useEffect, useId, useState } from 'react';
 import { Check } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { whatsNewApi } from './api';
-import { cleanWords, consentLine, wordsFromChips } from './consent';
+import { MAX_WORDS_CHARS, charCount, cleanWords, consentLine, toggleChip } from './consent';
 import type { TopicSuggestion } from './types';
 
 const FOCUS_RING =
@@ -24,8 +24,7 @@ const BUTTON = cn(
   FOCUS_RING,
 );
 
-/** Longest words an alert sends (mirrors `MAX_WORDS_CHARS`). */
-const MAX_WORDS = 200;
+const MAX_WORDS = MAX_WORDS_CHARS;
 
 export function PaperAlertForm({
   initialWords = '',
@@ -60,16 +59,17 @@ export function PaperAlertForm({
   }, []);
 
   const toggle = (chip: string) => {
-    const next = ticked.includes(chip) ? ticked.filter(t => t !== chip) : [...ticked, chip];
-    setTicked(next);
-    setWords(wordsFromChips(next));
+    const on = !ticked.includes(chip);
+    setTicked(on ? [...ticked, chip] : ticked.filter(t => t !== chip));
+    // What the user typed stays; the chip's words are added or taken out.
+    setWords(current => toggleChip(current, chip, on));
   };
 
   const clean = cleanWords(words);
-  const tooLong = clean.length > MAX_WORDS;
+  const tooLong = charCount(clean) > MAX_WORDS;
 
   const submit = async () => {
-    if (!clean || tooLong || blocked) return;
+    if (saving || !clean || tooLong || blocked) return;
     setSaving(true);
     setError(null);
     try {
@@ -116,7 +116,7 @@ export function PaperAlertForm({
         value={words}
         onChange={e => setWords(e.target.value)}
         onKeyDown={e => {
-          if (e.key === 'Enter') void submit();
+          if (e.key === 'Enter' && !saving) void submit();
           if (e.key === 'Escape') onCancel();
         }}
         placeholder="Type a topic, e.g. linear attention"

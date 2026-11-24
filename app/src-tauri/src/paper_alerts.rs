@@ -36,7 +36,7 @@ use shodh_rag::harness::web::relevance::SharedScorer;
 use shodh_rag::harness::web::SafeClient;
 use shodh_rag::inbox::{InboxKind, InboxLink, InboxStatus, NewInboxItem};
 use shodh_rag::whats_new::alerts::{
-    check_alert, clean_words, consent_line, windows, ApiOutcome, Failure,
+    check_alert, clean_words, consent_line, windows, ApiOutcome, Failure, MAX_RETRY_AFTER_SECS,
 };
 use shodh_rag::whats_new::library::known_paper;
 use shodh_rag::whats_new::pace::ApiPacer;
@@ -150,14 +150,17 @@ pub fn weekly() -> Schedule {
     }
 }
 
-fn paper_ref(p: &Paper) -> String {
-    if let Some(doi) = &p.doi {
+/// A paper's row key, per alert: two alerts that find one paper each keep their own
+/// row, so deleting one alert never hides a paper the other found.
+fn paper_ref(job_id: &str, p: &Paper) -> String {
+    let id = if let Some(doi) = &p.doi {
         format!("doi:{doi}")
     } else if let Some(id) = &p.arxiv_id {
         format!("arxiv:{id}")
     } else {
         format!("title:{}", title_key(&p.title))
-    }
+    };
+    format!("{job_id}|{id}")
 }
 
 /// A paper found before, as the comparison reads it.
@@ -224,11 +227,37 @@ impl Core {
         Ok(())
     }
 
-    async fn known_papers(&self) -> Result<Vec<Paper>, String> {
+    /// The papers `job` must not offer as new: the library's (for every alert) and those
+    /// this alert has found or set aside before.
+    async fn known_papers(&self, job: &Job) -> Result<Vec<Paper>, String> {
         let mut known = self.env.library_papers().await;
         let found = self.feed.papers().map_err(|e| e.to_string())?;
-        known.extend(found.iter().map(found_paper));
+        known.extend(found.iter().filter(|r| r.job_id == job.id).map(found_paper));
         Ok(known)
+    }
+
+    /// Saves what a check of `job` (for `words`) learned: re-reads the job, so words or
+    /// a consent the user changed meanwhile are never written back. When the words
+    /// changed, nothing is saved: the dates and progress were for the old words.
+    fn save_progress(
+        &self,
+        job: &Job,
+        words: &str,
+        checked_through: &BTreeMap<PaperApi, NaiveDate>,
+        progress: Option<&Progress>,
+    ) -> Result<(), String> {
+        let current = self
+            .store()
+            .job(&job.id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "The alert is gone.".to_string())?;
+        let mut input = input_of(&current);
+        if input.words != words {
+            return Ok(());
+        }
+        input.checked_through = checked_through.clone();
+        input.progress = progress.cloned();
+        self.save_input(&current, &input)
     }
 
     fn rows_of(&self, job: &Job, words: &str, papers: &[Paper]) -> Vec<NewFeedItem> {
@@ -242,7 +271,7 @@ impl Core {
                 detail.push(p.sources.join(", "));
                 NewFeedItem {
                     kind: FeedKind::Paper,
-                    source_ref: paper_ref(p),
+                    source_ref: paper_ref(&job.id, p),
                     job_id: job.id.clone(),
                     title: p.title.clone(),
                     detail: Some(detail.join(" · ")),
@@ -330,11 +359,16 @@ impl Core {
                 if run.trigger == Trigger::CatchUp {
                     // The computer just woke: give the network a moment.
                     let at = now + TimeDelta::minutes(2);
-                    input.progress = Some(Progress {
+                    let waiting = Progress {
                         retry_at: Some(at.to_rfc3339()),
                         ..fresh
-                    });
-                    if let Err(e) = self.save_input(job, &input) {
+                    };
+                    if let Err(e) = self.save_progress(
+                        job,
+                        &input.words,
+                        &input.checked_through,
+                        Some(&waiting),
+                    ) {
                         return Handled::Transient {
                             code: "alert_unsaved".into(),
                             detail: e,
@@ -354,7 +388,7 @@ impl Core {
             .into_iter()
             .filter(|a| !progress.apis.contains(a))
             .collect();
-        let known = match self.known_papers().await {
+        let known = match self.known_papers(job).await {
             Ok(known) => known,
             Err(e) => {
                 return Handled::Transient {
@@ -375,57 +409,73 @@ impl Core {
             self.env.scorer().await,
         )
         .await;
+        // Papers that cannot be stored are not counted as asked: the retry asks again,
+        // and the retry is counted toward the three.
+        let unstored = |e: String, progress: &mut Progress| {
+            progress.retries += 1;
+            if let Err(e) =
+                self.save_progress(job, &input.words, &input.checked_through, Some(progress))
+            {
+                tracing::warn!(job = %job.id, error = %e, "a paper alert's progress was not saved");
+            }
+            Handled::Transient {
+                code: "feed_unavailable".into(),
+                detail: e,
+            }
+        };
         let rows = self.rows_of(job, &input.words, &found.new);
         match self.feed.insert_if_absent(&rows, now) {
             Ok(inserted) => progress.found += inserted.len(),
-            Err(e) => {
-                return Handled::Transient {
-                    code: "feed_unavailable".into(),
-                    detail: e.to_string(),
-                }
-            }
+            Err(e) => return unstored(e.to_string(), &mut progress),
         }
-        // Weak matches are kept as seen (dismissed, never listed), so a later check
-        // whose answers rank them higher does not offer them as new.
-        let mut weak = self.rows_of(job, &input.words, &found.weak);
-        for row in &mut weak {
-            row.data["weak"] = json!(true);
+        // Weak matches and those past the best few are kept as seen (dismissed, never
+        // listed), so a later check whose answers rank them higher does not offer them
+        // as new.
+        let mut set_aside = self.rows_of(job, &input.words, &found.set_aside);
+        for row in &mut set_aside {
+            row.data["setAside"] = json!(true);
         }
-        match self.feed.insert_if_absent(&weak, now) {
+        match self.feed.insert_if_absent(&set_aside, now) {
             Ok(inserted) => {
                 for row in inserted {
                     if let Err(e) = self.feed.set_dismissed(&row.id, true, now) {
-                        tracing::warn!(error = %e, "a weak match was not set aside");
+                        tracing::warn!(error = %e, "a paper was not set aside");
                     }
                 }
             }
-            Err(e) => {
-                return Handled::Transient {
-                    code: "feed_unavailable".into(),
-                    detail: e.to_string(),
-                }
-            }
+            Err(e) => return unstored(e.to_string(), &mut progress),
         }
         let mut wait_secs: i64 = 3600;
         let mut all_offline = true;
         for (api, outcome) in &found.outcomes {
             match outcome {
-                ApiOutcome::Answered { .. } => {
+                ApiOutcome::Answered { full, oldest, .. } => {
                     progress.apis.insert(*api);
                     progress.failed.remove(api);
-                    input.checked_through.insert(*api, now.date_naive());
+                    // A full page may leave older papers of the window out: the window
+                    // is covered only back to the oldest paper it held.
+                    let through = if !*full {
+                        Some(now.date_naive())
+                    } else {
+                        let before = input.checked_through.get(api).copied();
+                        match (before, *oldest) {
+                            (Some(before), Some(oldest)) => Some(before.max(oldest)),
+                            (None, Some(oldest)) => Some(oldest),
+                            (before, None) => before,
+                        }
+                    };
+                    if let Some(day) = through {
+                        input.checked_through.insert(*api, day);
+                    }
                 }
                 ApiOutcome::Failed { failure, detail } => {
                     progress.failed.insert(*api, detail.clone());
-                    match failure {
-                        Failure::Offline => {}
-                        Failure::RateLimited {
-                            retry_after_secs: Some(secs),
-                        } => {
-                            all_offline = false;
-                            wait_secs = wait_secs.max(i64::try_from(*secs).unwrap_or(i64::MAX));
-                        }
-                        _ => all_offline = false,
+                    if !matches!(failure, Failure::Offline) {
+                        all_offline = false;
+                    }
+                    if let Some(secs) = failure.retry_after_secs() {
+                        let secs = secs.min(MAX_RETRY_AFTER_SECS);
+                        wait_secs = wait_secs.max(i64::try_from(secs).unwrap_or(i64::MAX));
                     }
                 }
             }
@@ -440,11 +490,14 @@ impl Core {
         } else if can_retry {
             progress.retries += 1;
             let offline = !some_answered && all_offline;
-            let at = if offline {
-                now + TimeDelta::minutes(15)
+            let wait = if offline {
+                TimeDelta::minutes(15)
             } else {
-                now + TimeDelta::seconds(wait_secs)
+                TimeDelta::try_seconds(wait_secs).unwrap_or(TimeDelta::hours(24))
             };
+            let at = now
+                .checked_add_signed(wait)
+                .unwrap_or(now + TimeDelta::hours(24));
             progress.retry_at = Some(at.to_rfc3339());
             Handled::RetryAt {
                 at,
@@ -477,8 +530,8 @@ impl Core {
         };
         let retrying = matches!(handled, Handled::RetryAt { .. });
         self.post(job, run, &input.words, &progress, retrying).await;
-        input.progress = retrying.then_some(progress);
-        if let Err(e) = self.save_input(job, &input) {
+        let kept = retrying.then_some(&progress);
+        if let Err(e) = self.save_progress(job, &input.words, &input.checked_through, kept) {
             tracing::warn!(job = %job.id, error = %e, "a paper alert's progress was not saved");
         }
         if let Err(e) = self.feed.prune(now) {
@@ -687,6 +740,11 @@ impl PaperAlerts {
                 text: consent_line(&words),
                 at: now.to_rfc3339(),
             };
+            if input.words != words {
+                // New words start afresh: their first check covers the last 14 days.
+                input.checked_through.clear();
+                input.progress = None;
+            }
             input.words = words.clone();
             patch.input = Some(serde_json::to_value(&input).map_err(|e| e.to_string())?);
             patch.title = Some(words.clone());
@@ -712,6 +770,11 @@ impl PaperAlerts {
         }
         self.core.sink.changed();
         self.view(&job)
+    }
+
+    /// Whether a change asks for a check now: new words, or turning the alert on.
+    pub fn check_needed(words: Option<&str>, enabled: Option<bool>) -> bool {
+        words.is_some() || enabled == Some(true)
     }
 
     /// Deletes the alert, the papers it found and its items.
@@ -757,10 +820,10 @@ impl PaperAlerts {
             .progress
             .clone()
             .filter(|p| active.as_ref().is_some_and(|run| run.id == p.run_id));
-        let state = if blocked.is_some() {
-            AlertState::Blocked
-        } else if !job.enabled {
+        let state = if !job.enabled {
             AlertState::Off
+        } else if blocked.is_some() {
+            AlertState::Blocked
         } else if job.hold_reason.is_some() {
             AlertState::Held
         } else {
@@ -816,17 +879,72 @@ impl PaperAlerts {
             .map_err(|e| e.to_string())?
             .filter(|r| r.kind == FeedKind::Paper)
             .ok_or_else(|| "That paper is no longer in What's new.".to_string())?;
+        if let Some(saved) = row.data.get("addedPath").and_then(Value::as_str) {
+            return Err(format!("This paper is already in your library: {saved}"));
+        }
         let pdf = row
             .data
             .get("pdfUrl")
             .and_then(Value::as_str)
             .ok_or_else(|| "This paper has no open-access PDF.".to_string())?;
         let url = shodh_rag::harness::web::client::check_url(pdf).map_err(|e| e.to_string())?;
+        if url.scheme() != "https" {
+            return Err(format!(
+                "Shodh saves only PDFs offered over https; this one is at {url}."
+            ));
+        }
         let mut name: String = title_key(&row.title).chars().take(80).collect();
         if name.trim().is_empty() {
             name = "paper".into();
         }
         Ok((row, url, format!("{}.pdf", name.trim())))
+    }
+
+    /// Saves the open-access PDF of the paper row `item_id` into `folder` (a watched
+    /// folder): https only, every redirect hop included, and only a PDF (its type and
+    /// its first bytes). The row names the file before it is written, so the folder's
+    /// sync never lists it as a new file too. Returns where it was saved.
+    pub async fn add_to_library(&self, item_id: &str, folder: &Path) -> Result<PathBuf, String> {
+        let (row, url, name) = self.pdf_of(item_id)?;
+        let planned = folder.join(&name);
+        let before = row.data.clone();
+        let mut pending = before.clone();
+        pending["addedPath"] = json!(planned.display().to_string());
+        self.core.feed.set_data(&row.id, &pending).map_err(|e| {
+            format!("Nothing was saved: What's new could not note the download ({e}).")
+        })?;
+        let client = self
+            .core
+            .env
+            .client()
+            .https_only()
+            .with_timeout(std::time::Duration::from_secs(600));
+        let target = folder.to_path_buf();
+        let downloaded =
+            crate::agent_tools::download_into(&client, &url, Some(&name), true, move || Ok(target))
+                .await;
+        let saved = match downloaded {
+            Ok(downloaded) => downloaded.path,
+            Err(e) => {
+                if let Err(undo) = self.core.feed.set_data(&row.id, &before) {
+                    tracing::warn!(error = %undo, "a failed download's note was not undone");
+                }
+                self.core.sink.changed();
+                return Err(e.to_string());
+            }
+        };
+        if saved != planned {
+            let mut done = before;
+            done["addedPath"] = json!(saved.display().to_string());
+            if let Err(e) = self.core.feed.set_data(&row.id, &done) {
+                return Err(format!(
+                    "Saved to {}, but What's new could not note it ({e}): it may also show as a new file.",
+                    saved.display()
+                ));
+            }
+        }
+        self.core.sink.changed();
+        Ok(saved)
     }
 
     /// Records that the paper row `item_id` was saved at `path`: the folder's sync then
@@ -958,10 +1076,6 @@ async fn library_sources(app: &tauri::AppHandle) -> (Vec<String>, Vec<String>) {
     (scans, files)
 }
 
-fn view_error(e: impl std::fmt::Display) -> String {
-    e.to_string()
-}
-
 /// Turns on an alert for `words` (the user saw the consent line) and starts its first
 /// check.
 #[tauri::command]
@@ -987,6 +1101,14 @@ pub async fn paper_alert_update(
 ) -> Result<AlertView, String> {
     let alerts = crate::engine_commands::paper_alerts_for_command(&app).await?;
     let view = alerts.update(&id, words.as_deref(), enabled).await?;
+    if PaperAlerts::check_needed(words.as_deref(), enabled) && view.state != AlertState::Off {
+        let id = view.id.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(e) = alerts.check_now(&id).await {
+                tracing::warn!(alert = %id, error = %e, "a paper alert's check did not start");
+            }
+        });
+    }
     crate::engine_commands::wake(&app);
     Ok(view)
 }
@@ -1022,25 +1144,8 @@ pub async fn whats_new_add_to_library(
         .ok_or_else(|| {
             "That folder is not in the Library, or is not kept in sync now.".to_string()
         })?;
-    let (row, url, name) = alerts.pdf_of(&item_id)?;
-    let saved = add_to_folder(&url, &name, Path::new(&folder)).await?;
-    alerts.added_to_library(&row, &saved)?;
+    let saved = alerts.add_to_library(&item_id, Path::new(&folder)).await?;
     Ok(saved.display().to_string())
-}
-
-/// Saves `url` into `folder` as `name`, as the assistant's downloads are saved.
-pub(crate) async fn add_to_folder(
-    url: &url::Url,
-    name: &str,
-    folder: &Path,
-) -> Result<PathBuf, String> {
-    let client = SafeClient::system().with_timeout(std::time::Duration::from_secs(600));
-    let folder = folder.to_path_buf();
-    let downloaded =
-        crate::agent_tools::download_into(&client, url, Some(name), move || Ok(folder))
-            .await
-            .map_err(view_error)?;
-    Ok(downloaded.path)
 }
 
 #[cfg(test)]
@@ -1063,11 +1168,17 @@ pub(crate) mod testing {
         "../../../crates/shodh-rag/src/harness/fixtures/papers/linear-attention/semantic-scholar.json"
     );
 
-    /// In-process DNS and HTTP for the three APIs: each host answers what it is set to
-    /// (status and body), and every request is recorded. An unset host is unreachable.
+    /// One canned answer: status, headers, body.
+    pub type Answer = (u16, Vec<(String, String)>, Vec<u8>);
+
+    /// In-process DNS and HTTP: each host answers what it is set to, a full URL set in
+    /// `urls` answers before its host, a host in `silent` resolves but never answers
+    /// (a timeout), and every request is recorded. Any other host is unreachable.
     #[derive(Default)]
     pub struct ApiNet {
-        pub answers: Mutex<HashMap<String, (u16, Vec<u8>)>>,
+        pub answers: Mutex<HashMap<String, Answer>>,
+        pub urls: Mutex<HashMap<String, Answer>>,
+        pub silent: Mutex<Vec<String>>,
         pub sent: Mutex<Vec<HttpRequest>>,
     }
 
@@ -1082,10 +1193,35 @@ pub(crate) mod testing {
         }
 
         pub fn set(&self, host: &str, status: u16, body: &str) {
+            self.set_with(
+                host,
+                status,
+                &[("content-type", "application/json")],
+                body.as_bytes(),
+            );
+        }
+
+        pub fn set_with(&self, host: &str, status: u16, headers: &[(&str, &str)], body: &[u8]) {
             self.answers
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .insert(host.to_string(), (status, body.as_bytes().to_vec()));
+                .insert(host.to_string(), answer(status, headers, body));
+        }
+
+        /// `url` answers this, whatever its host answers.
+        pub fn route(&self, url: &str, status: u16, headers: &[(&str, &str)], body: &[u8]) {
+            self.urls
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(url.to_string(), answer(status, headers, body));
+        }
+
+        /// `host` resolves, but its requests time out.
+        pub fn silence(&self, host: &str) {
+            self.silent
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(host.to_string());
         }
 
         pub fn unset(&self, host: &str) {
@@ -1109,6 +1245,17 @@ pub(crate) mod testing {
         }
     }
 
+    fn answer(status: u16, headers: &[(&str, &str)], body: &[u8]) -> Answer {
+        (
+            status,
+            headers
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            body.to_vec(),
+        )
+    }
+
     #[async_trait]
     impl Resolver for ApiNet {
         async fn resolve(&self, host: &str, _port: u16) -> std::io::Result<Vec<IpAddr>> {
@@ -1116,7 +1263,25 @@ pub(crate) mod testing {
                 .answers
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .contains_key(host);
+                .contains_key(host)
+                || self
+                    .silent
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .iter()
+                    .any(|h| h == host)
+                || self
+                    .urls
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .keys()
+                    .any(|u| {
+                        url::Url::parse(u)
+                            .ok()
+                            .and_then(|u| u.host_str().map(str::to_string))
+                            .as_deref()
+                            == Some(host)
+                    });
             if known {
                 Ok(vec!["93.184.216.34".parse().expect("an address")])
             } else {
@@ -1129,20 +1294,27 @@ pub(crate) mod testing {
     impl HttpTransport for ApiNet {
         async fn send(&self, request: HttpRequest) -> Result<HttpResponse, WebError> {
             let host = request.url.host_str().unwrap_or_default().to_string();
-            let answer = self
-                .answers
+            let by_url = self
+                .urls
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .get(&host)
+                .get(request.url.as_str())
                 .cloned();
+            let answer = by_url.or_else(|| {
+                self.answers
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(&host)
+                    .cloned()
+            });
             self.sent
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .push(request);
-            let (status, body) = answer.ok_or(WebError::Timeout)?;
+            let (status, headers, body) = answer.ok_or(WebError::Timeout)?;
             Ok(HttpResponse {
                 status,
-                headers: vec![("content-type".into(), "application/json".into())],
+                headers,
                 body: Box::pin(futures::stream::iter(vec![Ok(Bytes::from(body))])),
             })
         }
@@ -1159,6 +1331,8 @@ pub(crate) mod testing {
         pub client: SafeClient,
         pub library: Mutex<Vec<Paper>>,
         pub topics: Mutex<TopicInputs>,
+        /// Run once while a check reads the library: something the user does mid-run.
+        pub mid_check: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     }
 
     #[async_trait]
@@ -1173,6 +1347,14 @@ pub(crate) mod testing {
             self.client.clone()
         }
         async fn library_papers(&self) -> Vec<Paper> {
+            let hook = self
+                .mid_check
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take();
+            if let Some(hook) = hook {
+                hook();
+            }
             self.library
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -1213,6 +1395,7 @@ pub(crate) mod testing {
             client,
             library: Mutex::new(Vec::new()),
             topics: Mutex::new(TopicInputs::default()),
+            mid_check: Mutex::new(None),
         })
     }
 }
@@ -1321,7 +1504,7 @@ mod tests {
                 .papers()
                 .unwrap()
                 .iter()
-                .filter(|p| p.data.get("weak").is_none())
+                .filter(|p| p.data.get("setAside").is_none())
                 .count()
         }
     }
@@ -1413,7 +1596,8 @@ mod tests {
                 .await
                 .unwrap()
                 .state,
-            AlertState::Blocked
+            AlertState::Off,
+            "an alert turned off reads Off, whatever the policy"
         );
         let web_off = "Web access for the agent is turned off. The user can turn it on in Settings → Privacy.";
         e.block(Some(web_off));
@@ -1727,8 +1911,12 @@ mod tests {
         }
         let with = rows
             .iter()
-            .find(|r| r.data["pdfUrl"].is_string())
-            .expect("a paper with a PDF");
+            .find(|r| {
+                r.data["pdfUrl"]
+                    .as_str()
+                    .is_some_and(|u| u.starts_with("https://"))
+            })
+            .expect("a paper with an https PDF");
         let (_, url, name) = e.alerts.pdf_of(&with.id).unwrap();
         assert_eq!(
             url.as_str(),
@@ -1746,5 +1934,321 @@ mod tests {
             .unwrap();
         let saved = e.alerts.core.feed.item(&with.id).unwrap().unwrap();
         assert_eq!(saved.data["addedPath"], "C:/library/Papers/gla.pdf");
+        assert!(
+            e.alerts
+                .pdf_of(&with.id)
+                .unwrap_err()
+                .starts_with("This paper is already in your library"),
+            "a paper is added once"
+        );
+    }
+
+    const PDF: &[u8] = b"%PDF-1.7\n1 0 obj << /Type /Catalog >> endobj\ntrailer\n%%EOF\n";
+
+    /// A paper row of `alert` whose open-access PDF is at `pdf`.
+    fn paper_row(e: &Env, alert: &str, pdf: &str) -> String {
+        let rows = e
+            .alerts
+            .core
+            .feed
+            .insert_if_absent(
+                &[NewFeedItem {
+                    kind: FeedKind::Paper,
+                    source_ref: format!("{alert}|doi:10.1/{pdf}"),
+                    job_id: alert.to_string(),
+                    title: "Gated Linear Attention".into(),
+                    detail: None,
+                    link: json!({}),
+                    data: json!({ "pdfUrl": pdf }),
+                }],
+                e.clock.now(),
+            )
+            .unwrap();
+        rows[0].id.clone()
+    }
+
+    fn saved_files(dir: &Path) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .map(|d| {
+                d.filter_map(Result::ok)
+                    .map(|f| f.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn add_to_library_saves_an_https_pdf_and_refuses_http_on_any_hop() {
+        let e = setup(monday());
+        let folder = tempfile::tempdir().unwrap();
+        e.net.route(
+            "https://papers.example/gla.pdf",
+            200,
+            &[("content-type", "application/pdf")],
+            PDF,
+        );
+        let ok = paper_row(&e, "alert-1", "https://papers.example/gla.pdf");
+        let saved = e.alerts.add_to_library(&ok, folder.path()).await.unwrap();
+        assert_eq!(std::fs::read(&saved).unwrap(), PDF);
+        let row = e.alerts.core.feed.item(&ok).unwrap().unwrap();
+        assert_eq!(row.data["addedPath"], saved.display().to_string());
+        assert!(
+            e.alerts.add_to_library(&ok, folder.path()).await.is_err(),
+            "added once"
+        );
+
+        // An http PDF is refused before anything is asked.
+        let http = paper_row(&e, "alert-1", "http://papers.example/old.pdf");
+        let asked = e.net.sent.lock().unwrap_or_else(|e| e.into_inner()).len();
+        let err = e
+            .alerts
+            .add_to_library(&http, folder.path())
+            .await
+            .unwrap_err();
+        assert!(err.contains("only PDFs offered over https"), "{err}");
+        assert_eq!(
+            e.net.sent.lock().unwrap_or_else(|e| e.into_inner()).len(),
+            asked
+        );
+
+        // An https PDF that redirects to http is refused at the hop.
+        e.net.route(
+            "https://papers.example/moved.pdf",
+            302,
+            &[("location", "http://mirror.example/moved.pdf")],
+            b"",
+        );
+        e.net.route(
+            "http://mirror.example/moved.pdf",
+            200,
+            &[("content-type", "application/pdf")],
+            PDF,
+        );
+        let moved = paper_row(&e, "alert-1", "https://papers.example/moved.pdf");
+        let err = e
+            .alerts
+            .add_to_library(&moved, folder.path())
+            .await
+            .unwrap_err();
+        assert!(err.contains("not an https address"), "{err}");
+        assert!(!e
+            .net
+            .sent
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .any(|r| r.url.scheme() == "http"));
+        let row = e.alerts.core.feed.item(&moved).unwrap().unwrap();
+        assert!(
+            row.data.get("addedPath").is_none(),
+            "a failed download notes nothing"
+        );
+        assert_eq!(
+            saved_files(folder.path()).len(),
+            1,
+            "only the first PDF was saved"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_to_library_saves_nothing_but_a_pdf() {
+        let e = setup(monday());
+        let folder = tempfile::tempdir().unwrap();
+        e.net.route(
+            "https://papers.example/page.pdf",
+            200,
+            &[("content-type", "text/html")],
+            b"<html>a landing page</html>",
+        );
+        e.net.route(
+            "https://papers.example/fake.pdf",
+            200,
+            &[("content-type", "application/pdf")],
+            b"<html>not a pdf</html>",
+        );
+        for url in [
+            "https://papers.example/page.pdf",
+            "https://papers.example/fake.pdf",
+        ] {
+            let id = paper_row(&e, "alert-1", url);
+            let err = e
+                .alerts
+                .add_to_library(&id, folder.path())
+                .await
+                .unwrap_err();
+            assert!(!err.is_empty());
+            let row = e.alerts.core.feed.item(&id).unwrap().unwrap();
+            assert!(row.data.get("addedPath").is_none(), "{url}");
+        }
+        assert!(
+            saved_files(folder.path()).is_empty(),
+            "no file, not even a partial one"
+        );
+    }
+
+    #[tokio::test]
+    async fn new_words_start_afresh_and_ask_for_a_check() {
+        let e = setup(monday());
+        let view = e.alerts.create(WORDS, CreatedBy::User).unwrap();
+        e.alerts.check_now(&view.id).await.unwrap();
+        let before = input_of(&e.store.job(&view.id).unwrap().unwrap());
+        assert!(!before.checked_through.is_empty());
+        e.alerts
+            .update(&view.id, Some("state space models"), None)
+            .await
+            .unwrap();
+        let after = input_of(&e.store.job(&view.id).unwrap().unwrap());
+        assert!(
+            after.checked_through.is_empty(),
+            "the first check of new words covers 14 days"
+        );
+        assert!(after.progress.is_none());
+        assert_eq!(after.consent.text, consent_line("state space models"));
+        assert!(PaperAlerts::check_needed(Some("state space models"), None));
+        assert!(PaperAlerts::check_needed(None, Some(true)));
+        assert!(!PaperAlerts::check_needed(None, Some(false)));
+        // The same words again keep what was checked.
+        e.alerts.check_now(&view.id).await.unwrap();
+        e.alerts
+            .update(&view.id, Some("state  space models"), None)
+            .await
+            .unwrap();
+        let same = input_of(&e.store.job(&view.id).unwrap().unwrap());
+        assert!(!same.checked_through.is_empty());
+    }
+
+    #[tokio::test]
+    async fn words_changed_mid_check_are_kept() {
+        let e = setup(monday());
+        let view = e.alerts.create(WORDS, CreatedBy::User).unwrap();
+        // While the check runs, the user rewords the alert.
+        let store = e.store.clone();
+        let id = view.id.clone();
+        let now = e.clock.now();
+        *e.env.mid_check.lock().unwrap_or_else(|e| e.into_inner()) = Some(Box::new(move || {
+            let job = store.job(&id).unwrap().unwrap();
+            let mut input = input_of(&job);
+            input.words = "state space models".into();
+            input.consent.text = consent_line("state space models");
+            input.checked_through.clear();
+            store
+                .update_job(
+                    &id,
+                    &JobPatch {
+                        input: Some(serde_json::to_value(&input).unwrap()),
+                        ..JobPatch::default()
+                    },
+                    now,
+                )
+                .unwrap();
+        }));
+        e.alerts.check_now(&view.id).await.unwrap();
+        let input = input_of(&e.store.job(&view.id).unwrap().unwrap());
+        assert_eq!(
+            input.words, "state space models",
+            "the user's words are kept"
+        );
+        assert_eq!(input.consent.text, consent_line("state space models"));
+        assert!(
+            input.checked_through.is_empty(),
+            "the old words' dates are not written over the new words"
+        );
+    }
+
+    #[tokio::test]
+    async fn two_alerts_keep_their_own_papers() {
+        let e = setup(monday());
+        let first = e.alerts.create(WORDS, CreatedBy::User).unwrap();
+        e.alerts.check_now(&first.id).await.unwrap();
+        let second = e
+            .alerts
+            .create("linear attention delta rule models", CreatedBy::User)
+            .unwrap();
+        e.alerts.check_now(&second.id).await.unwrap();
+        let of = |job: &str| {
+            e.alerts
+                .core
+                .feed
+                .papers()
+                .unwrap()
+                .into_iter()
+                .filter(|r| r.job_id == job && r.data.get("setAside").is_none())
+                .count()
+        };
+        let second_found = of(&second.id);
+        assert!(of(&first.id) > 0);
+        assert!(
+            second_found > 0,
+            "the first alert's papers do not hide the second's"
+        );
+        e.alerts.delete(&first.id).await.unwrap();
+        assert_eq!(
+            of(&second.id),
+            second_found,
+            "deleting one alert hides nothing of the other"
+        );
+    }
+
+    #[tokio::test]
+    async fn at_most_ten_new_papers_are_listed_per_check_and_the_rest_never_return() {
+        let e = setup(monday());
+        let view = e.alerts.create(WORDS, CreatedBy::User).unwrap();
+        e.alerts.check_now(&view.id).await.unwrap();
+        let listed = e.papers();
+        assert!(listed <= shodh_rag::whats_new::alerts::NEW_PAPERS_PER_RUN);
+        // The next week's check of the same answers adds nothing.
+        e.clock.set(local(2026, 11, 30, 9, 0));
+        e.tick().await;
+        assert_eq!(e.papers(), listed);
+    }
+
+    #[tokio::test]
+    async fn a_503_retry_after_sets_the_retry_time() {
+        let e = setup(monday());
+        e.net.set_with(
+            "api.semanticscholar.org",
+            503,
+            &[("retry-after", "7200")],
+            b"",
+        );
+        let view = e.alerts.create(WORDS, CreatedBy::User).unwrap();
+        e.alerts.check_now(&view.id).await.unwrap();
+        let run = e.store.active_run(&view.id).unwrap().unwrap();
+        assert_eq!(
+            run.next_attempt_at.as_deref().and_then(parse_instant),
+            Some(monday() + TimeDelta::hours(2))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_timeout_is_retried_in_an_hour_not_as_offline() {
+        let e = setup(monday());
+        e.net.unset("api.semanticscholar.org");
+        e.net.silence("api.semanticscholar.org");
+        let view = e.alerts.create(WORDS, CreatedBy::User).unwrap();
+        e.alerts.check_now(&view.id).await.unwrap();
+        let run = e.store.active_run(&view.id).unwrap().unwrap();
+        assert_eq!(run.wait_reason, Some(WaitReason::Backoff));
+        assert_eq!(
+            run.next_attempt_at.as_deref().and_then(parse_instant),
+            Some(monday() + TimeDelta::hours(1))
+        );
+        let progress = input_of(&e.store.job(&view.id).unwrap().unwrap())
+            .progress
+            .unwrap();
+        assert_eq!(progress.retries, 1, "counted toward the three");
+        assert!(
+            progress.apis.contains(&PaperApi::Arxiv),
+            "the others are not asked again"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_alert_turned_off_reads_off_even_in_local_only() {
+        let e = setup(monday());
+        let view = e.alerts.create(WORDS, CreatedBy::User).unwrap();
+        e.alerts.update(&view.id, None, Some(false)).await.unwrap();
+        e.block(Some(LOCAL_ONLY));
+        assert_eq!(e.alerts.list().unwrap()[0].state, AlertState::Off);
     }
 }

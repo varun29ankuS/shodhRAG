@@ -433,6 +433,16 @@ impl HostTool for UpdatePaperAlertTool {
             .update(&id, words.as_deref(), enabled)
             .await
             .map_err(ToolError::Failed)?;
+        // New words, or turning it on: checked now, as the app's own change is.
+        if PaperAlerts::check_needed(words.as_deref(), enabled) && view.state != AlertState::Off {
+            let started = alerts.clone();
+            let alert = view.id.clone();
+            tokio::spawn(async move {
+                if let Err(e) = started.check_now(&alert).await {
+                    tracing::warn!(alert = %alert, error = %e, "a paper alert's check did not start");
+                }
+            });
+        }
         let label = format!("Paper alert for “{}”", view.words);
         super::show_in_library(ctx, "whats_new", Some(alert_item(&view.id)), &label);
         Ok(ToolOutput {

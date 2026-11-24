@@ -75,6 +75,16 @@ test('automation items are parsed, not skipped as a newer build kind', () => {
   assert.deepEqual(items.map(i => i.kind), ['automation']);
 });
 
+test('a whats_new item parses and lands in info', () => {
+  const items = parseItems([
+    { id: 'whats_new:files:s1:20261123', kind: 'whats_new', status: 'done', title: '3 new files in Research Papers', link: { view: 'library', target: { kind: 'library', section: 'whats_new' } } },
+  ]);
+  assert.deepEqual(items.map(i => i.kind), ['whats_new']);
+  assert.equal(tabOf(items[0]), 'info');
+  assert.equal(tabOf({ ...items[0], status: 'failed' }), 'info');
+  assert.deepEqual(actionsFor(items[0]), { primary: null, secondary: 'dismiss' });
+});
+
 test('a repeating task question offers its three answers and no dismiss; a hold offers Resume', () => {
   const question = { ...item('repeat:j1', 'reminder', 'needs_you'), data: { taskId: 't1', jobId: 'j1', choices: ['make', 'skip', 'mark_done'] } };
   assert.deepEqual(actionsFor(question), { primary: null, secondary: null, choices: ['make', 'skip', 'mark_done'] });
@@ -224,6 +234,7 @@ test('every kind and status lands in its tab', () => {
     connector: ['info', 'attention', 'info', 'attention'],
     model: ['info', 'attention', 'info', 'attention'],
     automation: ['info', 'attention', 'info', 'info'],
+    whats_new: ['info', 'attention', 'info', 'info'],
   };
   const statuses: InboxItem['status'][] = ['working', 'needs_you', 'done', 'failed'];
   for (const [kind, tabs] of Object.entries(expected) as [InboxItem['kind'], string[]][]) {

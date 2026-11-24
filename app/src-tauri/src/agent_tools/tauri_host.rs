@@ -207,6 +207,8 @@ impl HostEffects for TauriEffects {
         let deleted = folders
             .remove_source(rag, &indexing, source_id, path.as_deref())
             .await?;
+        // Its new files leave What's new with it.
+        crate::whats_new::source_removed(&self.app, source_id).await;
         self.emit_library(library_removed_payload(source_id));
         Ok(deleted)
     }
@@ -282,6 +284,14 @@ impl HostEffects for TauriEffects {
 
     async fn task_repeats(&self) -> Option<std::sync::Arc<crate::task_repeat::Repeats>> {
         crate::engine_commands::repeats(&self.app).await
+    }
+
+    async fn whats_new(&self) -> Option<std::sync::Arc<crate::whats_new::WhatsNew>> {
+        crate::engine_commands::whats_new(&self.app).await
+    }
+
+    fn watched_folders(&self) -> Vec<(String, String)> {
+        crate::whats_new::watched_folders(&self.app.state::<FolderSyncState>())
     }
 
     fn calendar_changed(&self, change: CalendarChange) {

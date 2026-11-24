@@ -684,6 +684,11 @@ impl Repeats {
         self.core.store()
     }
 
+    /// The handler of the series, for the engine's loop.
+    pub fn handler(&self) -> Arc<dyn JobHandler> {
+        self.handler.clone()
+    }
+
     /// One tick of the series' schedules.
     pub async fn tick(&self) -> EngineResult<Tick> {
         self.core.engine.tick(&self.handler).await

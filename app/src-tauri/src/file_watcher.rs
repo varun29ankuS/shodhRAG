@@ -235,12 +235,14 @@ impl FolderSyncState {
     /// Drops the manifest of `source_id`, a source the Library no longer
     /// lists. Waits for a running sync, which would otherwise write it back;
     /// a source listed and watched again meanwhile keeps its manifest.
-    pub async fn forget_source(&self, source_id: &str) {
+    /// Returns whether it was forgotten.
+    pub async fn forget_source(&self, source_id: &str) -> bool {
         let _turn = self.running.lock().await;
         if self.watched_ids().contains(source_id) {
-            return;
+            return false;
         }
         self.store.forget(source_id);
+        true
     }
 
     /// Removes the Library source `source_id` (the folder or file `path`):
@@ -655,6 +657,41 @@ fn inbox_item(
     })
 }
 
+/// What a sync tells the Inbox about its folder.
+#[derive(Debug)]
+enum SyncNotice {
+    /// Post (or update) the folder's `indexing:` item.
+    Post(Box<NewInboxItem>),
+    /// Remove the folder's `indexing:` item: What's new's item tells of this sync.
+    Clear(String),
+}
+
+/// Whether the only change of a sync was files new to the folder: no file changed,
+/// removed, read again or failed, and nothing that could not be read.
+fn only_added(report: &SyncReport) -> bool {
+    !report.added.is_empty()
+        && report.indexed == report.added.len() + report.added_more
+        && report.removed == 0
+        && report.new_failures == 0
+        && report.failures.is_empty()
+        && report.unreadable.is_empty()
+}
+
+/// What a sync of `source` tells the Inbox. When What's new shows the folder's new files
+/// (`shown_in_whats_new`) and they are all the sync did, What's new's item stands for it:
+/// the folder's `indexing:` item is removed, so a failure an earlier sync left in
+/// Attention clears once the folder syncs again. Otherwise as [`inbox_item`].
+fn sync_notice(
+    source: &FolderSourceRef,
+    result: &Result<SyncReport, String>,
+    shown_in_whats_new: bool,
+) -> Option<SyncNotice> {
+    if shown_in_whats_new && result.as_ref().is_ok_and(only_added) {
+        return Some(SyncNotice::Clear(format!("indexing:{}", source.id)));
+    }
+    inbox_item(source, result).map(|item| SyncNotice::Post(Box::new(item)))
+}
+
 /// Why a sync's card says something could not be read: the folders and
 /// files the sync could not open, whose index entries it left as they were.
 fn unreadable_message(unreadable: &[FileFailure]) -> Option<String> {
@@ -708,8 +745,15 @@ async fn sync_once(app: &AppHandle, source: &FolderSourceRef) {
     // A sync its source's removal cut short has nothing to tell: the user
     // removed the folder.
     if state.is_watched(source) {
-        if let Some(item) = inbox_item(source, &result) {
-            crate::inbox_commands::post(app, item).await;
+        // The files it indexed for the first time go to What's new.
+        let shown = match &result {
+            Ok(report) => crate::whats_new::sync_reported(app, source, report).await,
+            Err(_) => false,
+        };
+        match sync_notice(source, &result, shown) {
+            Some(SyncNotice::Post(item)) => crate::inbox_commands::post(app, *item).await,
+            Some(SyncNotice::Clear(id)) => crate::inbox_commands::resolve(app, id).await,
+            None => {}
         }
     }
     let (report, error) = match result {
@@ -918,7 +962,10 @@ pub async fn sync_folder_sources(
     for id in unlisted {
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
-            app.state::<FolderSyncState>().forget_source(&id).await;
+            if app.state::<FolderSyncState>().forget_source(&id).await {
+                // Its new files leave What's new with it, as on every other removal.
+                crate::whats_new::source_removed(&app, &id).await;
+            }
         });
     }
     // Once the folders are watched, so scans in them can go to their syncs.
@@ -1155,6 +1202,87 @@ mod tests {
             ),
             "a new failure is a problem"
         );
+    }
+
+    fn papers() -> FolderSourceRef {
+        FolderSourceRef {
+            id: "s1".into(),
+            path: "C:/library/Papers".into(),
+        }
+    }
+
+    fn added(names: &[&str]) -> SyncReport {
+        SyncReport {
+            indexed: names.len(),
+            files: 10,
+            added: names
+                .iter()
+                .map(|n| format!("C:/library/Papers/{n}"))
+                .collect(),
+            ..SyncReport::default()
+        }
+    }
+
+    #[test]
+    fn a_sync_that_only_added_files_posts_no_indexing_item_when_watched() {
+        let notice = sync_notice(&papers(), &Ok(added(&["a.pdf", "b.pdf"])), true);
+        assert!(
+            matches!(&notice, Some(SyncNotice::Clear(id)) if id == "indexing:s1"),
+            "{notice:?}"
+        );
+    }
+
+    #[test]
+    fn a_sync_that_only_added_files_still_posts_it_when_not_watched() {
+        let notice = sync_notice(&papers(), &Ok(added(&["a.pdf", "b.pdf"])), false);
+        match notice {
+            Some(SyncNotice::Post(item)) => {
+                assert_eq!(item.id, "indexing:s1");
+                assert_eq!(item.detail.as_deref(), Some("2 indexed"));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_sync_that_also_changed_or_failed_keeps_its_indexing_item() {
+        let mut changed = added(&["a.pdf"]);
+        changed.indexed = 2;
+        assert!(matches!(
+            sync_notice(&papers(), &Ok(changed), true),
+            Some(SyncNotice::Post(_))
+        ));
+        let mut removed = added(&["a.pdf"]);
+        removed.removed = 1;
+        assert!(matches!(
+            sync_notice(&papers(), &Ok(removed), true),
+            Some(SyncNotice::Post(_))
+        ));
+        let mut failed = added(&["a.pdf"]);
+        failed.new_failures = 1;
+        failed.failures = vec![FileFailure {
+            file: "C:/library/Papers/torn.pdf".into(),
+            reason: "not a pdf".into(),
+        }];
+        assert!(matches!(
+            sync_notice(&papers(), &Ok(failed), true),
+            Some(SyncNotice::Post(_))
+        ));
+        assert!(matches!(
+            sync_notice(&papers(), &Err("gone".into()), true),
+            Some(SyncNotice::Post(_))
+        ));
+    }
+
+    #[test]
+    fn a_recovered_sync_that_only_added_files_clears_the_failed_item() {
+        // The sync before failed outright: its item is Attention.
+        let failed = inbox_item(&papers(), &Err("Papers is not available".into())).unwrap();
+        assert_eq!(failed.status, InboxStatus::Failed);
+        assert_eq!(failed.data["failure"], "sync");
+        // The next one only added files: the same id is removed, not left failed.
+        let notice = sync_notice(&papers(), &Ok(added(&["a.pdf"])), true);
+        assert!(matches!(&notice, Some(SyncNotice::Clear(id)) if *id == failed.id));
     }
 
     #[test]

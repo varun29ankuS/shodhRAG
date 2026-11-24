@@ -31,6 +31,7 @@ mod sources;
 mod tauri_host;
 mod visuals;
 mod web;
+mod whats_new;
 mod workspaces;
 
 use std::path::PathBuf;
@@ -156,6 +157,14 @@ pub trait HostEffects: Send + Sync {
     /// The repeating tasks (the scheduler engine), when the app database can be opened.
     async fn task_repeats(&self) -> Option<Arc<crate::task_repeat::Repeats>> {
         None
+    }
+    /// What's new (the scheduler engine and its feed), when the app database can be opened.
+    async fn whats_new(&self) -> Option<Arc<crate::whats_new::WhatsNew>> {
+        None
+    }
+    /// The Library's folders kept in sync now, as `(source id, folder)`.
+    fn watched_folders(&self) -> Vec<(String, String)> {
+        Vec::new()
     }
     /// Index a folder in the background and audit the outcome in `ctx`'s
     /// run scope.
@@ -295,13 +304,15 @@ pub fn build_registry(host: Arc<AgentHost>) -> Result<ToolRegistry, RegistryErro
     code_review::register(&mut registry, &host)?;
     code_intel::register(&mut registry, &host)?;
     recall::register(&mut registry, &host)?;
+    whats_new::register(&mut registry, &host)?;
     shodh_rag::connectors::github::tools::register(&mut registry, host.github.clone())?;
     Ok(registry)
 }
 
 /// The parts of the Library a navigation opens (`LIBRARY_SECTIONS` in the frontend's
 /// navigation; the coverage test checks the two agree).
-pub(crate) const LIBRARY_SECTIONS: [&str; 4] = ["snippets", "graph", "paper", "recall"];
+pub(crate) const LIBRARY_SECTIONS: [&str; 5] =
+    ["snippets", "graph", "paper", "recall", "whats_new"];
 
 /// Show a part of the Library ([`LIBRARY_SECTIONS`]) with `item` (a snippet or paper
 /// id) highlighted or opened.
@@ -380,6 +391,8 @@ pub(crate) mod testing {
         /// Repeating tasks over this host's data folder, on a clock the test moves.
         pub repeats: Arc<crate::task_repeat::Repeats>,
         pub repeat_clock: Arc<crate::task_repeat::testing::TestClock>,
+        /// What's new over this host's `shodh.db`, on the same clock.
+        pub whats_new: Arc<crate::whats_new::WhatsNew>,
     }
 
     #[async_trait::async_trait]
@@ -430,6 +443,12 @@ pub(crate) mod testing {
         }
         async fn task_repeats(&self) -> Option<Arc<crate::task_repeat::Repeats>> {
             Some(self.repeats.clone())
+        }
+        async fn whats_new(&self) -> Option<Arc<crate::whats_new::WhatsNew>> {
+            Some(self.whats_new.clone())
+        }
+        fn watched_folders(&self) -> Vec<(String, String)> {
+            crate::whats_new::watched_folders(&self.folder_sync)
         }
         fn start_indexing(&self, _ctx: &ToolContext, job: IndexJob) {
             self.indexing
@@ -568,6 +587,10 @@ pub(crate) mod testing {
             reviews: Mutex::default(),
             review_target: Mutex::default(),
             design_checks: Mutex::default(),
+            whats_new: Arc::new(crate::whats_new::testing::whats_new(
+                dir.path(),
+                repeat_clock.clone(),
+            )),
             repeats,
             repeat_clock,
         });

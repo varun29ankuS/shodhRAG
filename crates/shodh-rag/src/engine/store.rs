@@ -226,6 +226,8 @@ pub struct JobPatch {
     pub hold_reason: Option<Option<HoldReason>>,
     pub next_due_at: Option<Option<String>>,
     pub reset_failures: bool,
+    /// Switches the job off (its schedule and events start no run) or back on.
+    pub enabled: Option<bool>,
 }
 
 /// A run of a job.
@@ -563,6 +565,12 @@ impl EngineStore {
                 tx.execute(
                     "UPDATE engine_job SET failure_streak = 0 WHERE id = ?1",
                     params![id],
+                )?;
+            }
+            if let Some(enabled) = patch.enabled {
+                tx.execute(
+                    "UPDATE engine_job SET enabled = ?2 WHERE id = ?1",
+                    params![id, i64::from(enabled)],
                 )?;
             }
             tx.execute(
@@ -953,6 +961,32 @@ mod tests {
                 at(1, 8, 0),
             )
             .unwrap()
+    }
+
+    #[test]
+    fn a_job_can_be_switched_off_and_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir);
+        let created = job(&store, "j1");
+        assert!(created.enabled);
+        let off = JobPatch {
+            enabled: Some(false),
+            ..JobPatch::default()
+        };
+        let job = store.update_job("j1", &off, at(1, 9, 0)).unwrap().unwrap();
+        assert!(!job.enabled);
+        assert_eq!(job.title, created.title, "nothing else changes");
+        let on = JobPatch {
+            enabled: Some(true),
+            ..JobPatch::default()
+        };
+        assert!(
+            store
+                .update_job("j1", &on, at(1, 9, 5))
+                .unwrap()
+                .unwrap()
+                .enabled
+        );
     }
 
     fn queued(job_id: &str, id: &str) -> NewRun {

@@ -55,6 +55,10 @@
     "task_repeat_clear": { "tool": "update_task" },
     "task_repeat_runs": { "tool": "list_tasks" },
     "task_repeat_decide": { "tools": ["update_task", "complete_task"] },
+    "whats_new_list": { "tool": "whats_new" },
+    "whats_new_mark_seen": { "excluded": "Which rows of What's new the user has seen is theirs, as with inbox_dismiss; the agent reads them with whats_new and never marks them." },
+    "whats_new_dismiss": { "excluded": "What the user has seen and set aside is theirs, as with inbox_dismiss; the agent never dismisses or restores a row." },
+    "folder_watch_set": { "tool": "set_folder_watch" },
     "load_events": { "tool": "list_events" },
     "create_event": { "tool": "create_event" },
     "update_event": { "tool": "update_event" },
@@ -376,14 +380,15 @@
       "review": ["review_code"],
       "design_check": ["design_check"],
       "setting": ["show_setting", "update_setting"],
-      "library": ["show_paper", "show_snippet", "create_snippet", "recall_open"],
+      "library": ["show_paper", "show_snippet", "create_snippet", "recall_open", "whats_new", "set_folder_watch"],
       "status": ["system_status", "pause_indexing", "resume_indexing", "cancel_indexing"]
     },
     "librarySections": {
       "snippets": ["show_snippet", "create_snippet"],
       "graph": ["show_paper"],
       "paper": ["show_paper"],
-      "recall": ["recall_open"]
+      "recall": ["recall_open"],
+      "whats_new": ["whats_new"]
     }
   }
 }

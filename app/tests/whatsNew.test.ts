@@ -278,8 +278,8 @@ test('ticking a chip keeps what the user typed', () => {
 });
 
 test('words are cleaned and counted as the backend does', () => {
-  assert.equal(cleanWords(' a b　c\t'), 'a b c');
-  assert.equal(cleanWords('a﻿b'), 'a﻿b', 'not whitespace to Rust either');
+  assert.equal(cleanWords(' a\u00A0b\u3000c\t'), 'a b c');
+  assert.equal(cleanWords('a\uFEFFb'), 'a\uFEFFb', 'not whitespace to Rust either');
   assert.equal(charCount('\u{1F600}ab'), 3, 'code points, as chars().count()');
 });
 

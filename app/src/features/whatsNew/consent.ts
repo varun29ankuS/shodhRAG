@@ -7,11 +7,26 @@ export const CONSENT_TEMPLATE =
   'Shodh sends these words: {words} to arXiv, OpenAlex and Semantic Scholar to look for new papers. Your files, your library and who you are stay on this computer.';
 
 /** Whitespace as Rust's `char::is_whitespace` reads it (`split_whitespace` in `clean_words`). */
-const RUST_WHITESPACE = /[\t\n\v\f\r \u0085   -     　]+/;
+const RUST_WHITESPACE: ReadonlySet<number> = new Set([
+  0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x20, 0x85, 0xa0, 0x1680,
+  0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200a,
+  0x2028, 0x2029, 0x202f, 0x205f, 0x3000,
+]);
 
 /** The words an alert sends: trimmed, one space between words (as `clean_words`). */
 export function cleanWords(words: string): string {
-  return words.split(RUST_WHITESPACE).filter(Boolean).join(' ');
+  const out: string[] = [];
+  let word = '';
+  for (const ch of words) {
+    if (RUST_WHITESPACE.has(ch.codePointAt(0) ?? 0)) {
+      if (word) out.push(word);
+      word = '';
+    } else {
+      word += ch;
+    }
+  }
+  if (word) out.push(word);
+  return out.join(' ');
 }
 
 /** Longest words an alert sends, in characters (`MAX_WORDS_CHARS`). */

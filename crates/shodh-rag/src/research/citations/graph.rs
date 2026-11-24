@@ -263,6 +263,27 @@ impl PaperGraph {
         self.by_id.get(id).map(|&i| &self.papers[i])
     }
 
+    /// Every method with the number of library papers that use it, most used first
+    /// (then by label).
+    pub fn method_use_counts(&self) -> Vec<(&ConceptNode, usize)> {
+        let mut counts: Vec<(&ConceptNode, usize)> = self
+            .methods
+            .values()
+            .map(|method| {
+                let users = self
+                    .papers
+                    .iter()
+                    .zip(&self.uses_method)
+                    .filter(|(paper, uses)| paper.in_library && uses.contains(&method.id))
+                    .count();
+                (method, users)
+            })
+            .filter(|(_, users)| *users > 0)
+            .collect();
+        counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.label.cmp(&b.0.label)));
+        counts
+    }
+
     pub fn method(&self, id: &str) -> Option<&ConceptNode> {
         self.methods.get(id)
     }
@@ -983,6 +1004,18 @@ pub(crate) mod tests {
             evaluated_on: vec![("paper:arxiv:2406.06484".into(), "dataset:wikitext103".into())],
             proposed_in: vec![("method:deltanet".into(), "paper:arxiv:2406.06484".into())],
         })
+    }
+
+    #[test]
+    fn methods_count_the_library_papers_that_use_them() {
+        let g = sample();
+        let counts: Vec<(&str, usize)> = g
+            .method_use_counts()
+            .into_iter()
+            .map(|(m, n)| (m.label.as_str(), n))
+            .collect();
+        assert_eq!(counts, [("DeltaNet", 2), ("Mamba", 2)]);
+        assert!(PaperGraph::default().method_use_counts().is_empty());
     }
 
     #[test]

@@ -18,7 +18,9 @@ export type InboxKind =
   /** The user's chosen model keeps failing; Open goes to Settings → Model. */
   | 'model'
   /** Scheduled work that needs the user, e.g. a repeating task that stopped after failing. */
-  | 'automation';
+  | 'automation'
+  /** What's new: files new in a watched folder, one item per folder and day. */
+  | 'whats_new';
 
 export interface InboxLink {
   /** A view id (`ask`, `library`, `tasks`, `settings`, ...). */
@@ -40,7 +42,7 @@ export interface InboxItem {
 }
 
 const STATUSES: readonly InboxStatus[] = ['working', 'needs_you', 'done', 'failed'];
-const KINDS: readonly InboxKind[] = ['approval', 'memory', 'reminder', 'indexing', 'tables', 'citation_graph', 'export', 'install', 'connector', 'model', 'automation'];
+const KINDS: readonly InboxKind[] = ['approval', 'memory', 'reminder', 'indexing', 'tables', 'citation_graph', 'export', 'install', 'connector', 'model', 'automation', 'whats_new'];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -185,6 +187,8 @@ const FAILED_STOPS: Record<InboxKind, (data: Record<string, unknown>) => boolean
   model: () => true,
   // One failed run; three in a row become a needs-you hold.
   automation: () => false,
+  // An update: it never stops anything.
+  whats_new: () => false,
 };
 
 /** The tab of an item. */

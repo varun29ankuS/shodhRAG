@@ -30,6 +30,7 @@ mod memory_learn;
 mod model_fallback;
 mod model_picker_commands;
 mod notifications;
+mod paper_alerts;
 mod pdf_export;
 mod phone_link;
 mod profile;
@@ -52,6 +53,7 @@ mod task_repeat;
 mod ui_state_commands;
 mod updater;
 mod visual_commands;
+mod whats_new;
 mod workspace_commands;
 
 // Unified chat system modules
@@ -1096,6 +1098,15 @@ pub fn run() {
             task_repeat::task_repeat_clear,
             task_repeat::task_repeat_runs,
             task_repeat::task_repeat_decide,
+            whats_new::whats_new_list,
+            whats_new::whats_new_mark_seen,
+            whats_new::whats_new_dismiss,
+            whats_new::folder_watch_set,
+            paper_alerts::paper_alert_create,
+            paper_alerts::paper_alert_update,
+            paper_alerts::paper_alert_delete,
+            paper_alerts::paper_alert_suggestions,
+            paper_alerts::whats_new_add_to_library,
             // Background mode (tray, start with Windows)
             background::get_background_status,
             background::set_close_to_tray,

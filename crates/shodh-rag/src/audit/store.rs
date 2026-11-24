@@ -753,6 +753,34 @@ const MIGRATIONS: &[(i64, &str)] = &[
         ALTER TABLE inbox_items_rebuilt RENAME TO inbox_items;
         CREATE INDEX inbox_items_status ON inbox_items(status, updated_at);",
     ),
+    (
+        20,
+        // What's new (`crate::whats_new`): files new in a watched folder and papers a
+        // paper alert found, one row each, never two for one file or paper (the unique
+        // `(kind, source_ref)`). `job_id` is the engine job that found the row (a folder
+        // watch or a paper alert); deleting the job deletes its rows first, then the
+        // job (two writes: a crash between them leaves rows of no job, which the
+        // retention prunes). `posted_run_id` is the run whose Inbox item told of the row.
+        // Rows are kept 90 days, dismissed ones too, so a dismissed paper is not found
+        // again. Created only if absent, so the step can be applied again safely.
+        "CREATE TABLE IF NOT EXISTS feed_item (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL CHECK (kind IN ('file', 'paper')),
+            source_ref TEXT NOT NULL,
+            job_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            detail TEXT NULL,
+            found_at TEXT NOT NULL,
+            posted_run_id TEXT NULL,
+            seen_at TEXT NULL,
+            dismissed_at TEXT NULL,
+            link_json TEXT NOT NULL DEFAULT '{}',
+            data_json TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS feed_item_ref ON feed_item(kind, source_ref);
+        CREATE INDEX IF NOT EXISTS feed_item_job ON feed_item(job_id, posted_run_id);
+        CREATE INDEX IF NOT EXISTS feed_item_found ON feed_item(found_at);",
+    ),
 ];
 
 fn latest_schema_version() -> i64 {
@@ -2510,6 +2538,49 @@ mod tests {
             )
             .unwrap();
         assert_eq!(index, 1);
+    }
+
+    #[test]
+    fn migration_20_adds_the_feed_and_keeps_every_earlier_table() {
+        let (dir, log) = temp_log();
+        drop(log);
+        // As version 19 left it, with an Inbox row and an engine job.
+        raw(&dir)
+            .execute_batch(
+                "DROP TABLE feed_item;
+                 DELETE FROM schema_version WHERE version >= 20;
+                 INSERT INTO inbox_items VALUES ('whats_new:1', 'whats_new', 'done', 't', NULL,
+                     NULL, '{}', 'c', 'u');
+                 INSERT INTO engine_job (id, kind, subject, title, created_by, created_at,
+                     updated_at)
+                     VALUES ('j1', 'folder_watch', 's1', 'Research', 'system', 'c', 'u');",
+            )
+            .unwrap();
+        drop(AuditLog::open(dir.path().join("shodh.db"), None).unwrap());
+        let conn = raw(&dir);
+        let count = |table: &str| -> i64 {
+            conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(count("inbox_items"), 1);
+        assert_eq!(count("engine_job"), 1);
+        let insert = |id: &str, kind: &str, source_ref: &str| {
+            conn.execute(
+                "INSERT INTO feed_item (id, kind, source_ref, job_id, title, found_at)
+                 VALUES (?1, ?2, ?3, 'j1', 't', 'f')",
+                rusqlite::params![id, kind, source_ref],
+            )
+        };
+        insert("a", "file", "c:/r/a.pdf").unwrap();
+        insert("b", "paper", "c:/r/a.pdf").unwrap();
+        assert!(
+            insert("c", "file", "c:/r/a.pdf").is_err(),
+            "one row per file"
+        );
+        assert!(
+            insert("d", "note", "x").is_err(),
+            "an unknown kind is refused"
+        );
     }
 
     #[test]

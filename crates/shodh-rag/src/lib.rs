@@ -33,6 +33,7 @@ pub mod table_refinement;
 pub mod types;
 pub mod user_memory;
 pub mod visuals;
+pub mod whats_new;
 pub mod workspaces;
 
 // Ported modules from old shodh-rag

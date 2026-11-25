@@ -14,13 +14,24 @@ name: Release
 #                   .github/release-notes.md); a re-run reuses its draft.
 #   build           the Windows NSIS installer and the Apple Silicon dmg, built
 #                   without the signing key (tauri build --no-bundle), then
-#                   bundled and their update bundles signed in a separate step
-#                   (tauri bundle), the only step that sees the key. In the
-#                   `release` environment. Uploaded as workflow artifacts; the
-#                   build has no write token.
+#                   bundled and their update bundles signed in a later step
+#                   (tauri bundle), the only step given the key. That step is
+#                   in the same job as the build, so whatever the build left
+#                   running (a build script's process, the restored caches'
+#                   code) is still there when it runs: unlike android-sign,
+#                   the key is not kept from build code. In the `release`
+#                   environment. Uploaded as workflow artifacts; the build has
+#                   no write token.
 #   android         Shodh for Android (mobile/), a release build for arm64
 #                   phones (one APK, the name the phone's one-tap update
-#                   downloads), built without any key, then signed in two
+#                   downloads), unsigned; no debug-only code in its frontend or
+#                   native library. Not in the `release` environment: it reads
+#                   no secret. Uploads the APK and records its SHA-256.
+#   android-sign    signs that APK in a job that runs no build code (no cache,
+#                   npm, cargo or Gradle; a sparse checkout of the release
+#                   scripts; the runner's build-tools and a pinned Tauri CLI
+#                   binary), since the build's daemons outlive its steps. Only
+#                   a download with the recorded SHA-256 is signed, in two
 #                   separate steps, each the only one to see its key: the
 #                   Android key (apksigner, v2 and v3; Android updates an
 #                   installed app only with the same certificate), then the
@@ -29,8 +40,7 @@ name: Release
 #                   (scripts/release/android.mjs check): the certificate, the
 #                   package, versionName and versionCode, not debuggable, the
 #                   ABIs and size; the manifest checks of ci.yml's android job
-#                   (.github/actions/android-apk-manifest); no debug-only code
-#                   in its frontend or native library. In the `release`
+#                   (.github/actions/android-apk-manifest). In the `release`
 #                   environment; no write token.
 #   launch-macos    the dmg installed as a tester installs it (quarantined, copied
 #                   out of the mounted image), its signature, architectures,
@@ -45,10 +55,14 @@ name: Release
 #                   layers hidden again). Publishing waits for it.
 #   publish         (environment `release`, one at a time across releases)
 #                   checks the artifacts' signatures with the release key,
-#                   stages the eight release files with latest.json, uploads them
-#                   to the draft, downloads the draft and verifies it
-#                   (scripts/release/verify.mjs release): exactly the expected
-#                   files, none empty; latest.json parses, is this version and
+#                   stages the eight release files with latest.json, and the
+#                   versionless copies of the three installers
+#                   (Shodh_x64-setup.exe, Shodh_aarch64.dmg, Shodh_android.apk:
+#                   the releases/latest/download links README.md and site/
+#                   give), uploads them to the draft, downloads the draft and
+#                   verifies it (scripts/release/verify.mjs release): exactly
+#                   the expected files, none empty, each copy the same file as
+#                   its versioned one; latest.json parses, is this version and
 #                   points each platform at this release's update bundle (the
 #                   desktop's only: the phone finds its app by name); every
 #                   signature, the Android app's included, verifies against the
@@ -56,7 +70,8 @@ name: Release
 #                   notes and publishes. It becomes the latest release only if
 #                   it is newer than the current latest (an older release
 #                   finishing last never takes "latest" back). Then the URL
-#                   installed apps poll is checked (smoke); if that fails, the
+#                   installed apps poll, and each versionless download link, is
+#                   checked (smoke); if that fails, the
 #                   release is turned back into a draft and the previous latest
 #                   restored.
 #
@@ -69,12 +84,13 @@ name: Release
 #
 # Build-only runs (called by ci.yml without a tag: on pull requests whose
 # changed files can affect the installers or the phone app, on every master
-# push and in the nightly run): plan, build, android, launch-macos and launch-windows, then
-# verify checks the installers the builds uploaded, with update bundles signed
-# by a throwaway key made for that run (pr-key), and the APK signed by a
-# throwaway Android key the android job makes for itself: pull requests never
-# see a release key, and they sign through the same steps a release does. verify also
-# stages them as a release and runs the publish-time checks on the result.
+# push and in the nightly run): plan, build, android, android-sign,
+# launch-macos and launch-windows, then verify checks the installers the
+# builds uploaded, with update bundles signed by a throwaway key made for that
+# run (pr-key), and the APK signed by a throwaway Android key android-sign
+# makes for itself: pull requests never see a release key, and they sign
+# through the same jobs and steps a release does. verify also stages them as
+# a release and runs the publish-time checks on the result.
 # published-release runs the publish and smoke checks, read-only, against the
 # latest published release. No release is created or changed. ci.yml's
 # Changes job decides when a pull request needs this (a deny-list: only
@@ -90,7 +106,7 @@ name: Release
 #
 # Android key: ANDROID_KEYSTORE_BASE64 (a PKCS12 keystore), its password
 # ANDROID_KEYSTORE_PASSWORD (the store's and the key's) and ANDROID_KEY_ALIAS,
-# secrets of the `release` environment only. The android job's signing step
+# secrets of the `release` environment only. android-sign's signing step
 # decodes the keystore into a private folder of its own and removes it when
 # the step ends, whatever its outcome; the password reaches apksigner through
 # the environment, never the command line. A publishing run without them
@@ -120,8 +136,8 @@ on:
         required: false
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
         required: false
-      # The Android key: secrets of the `release` environment only, which the
-      # android job reads from there. Declared so the secrets this workflow
+      # The Android key: secrets of the `release` environment only, which
+      # android-sign reads from there. Declared so the secrets this workflow
       # reads are all listed; no caller passes them.
       ANDROID_KEYSTORE_BASE64:
         required: false
@@ -601,9 +617,12 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
-      # Only the Tauri bundler sees the key: it makes the installers and
+      # Only the Tauri bundler is given the key: it makes the installers and
       # signs the update bundles. Publishing runs use the release key (from
-      # the `release` environment); pull requests the throwaway key.
+      # the `release` environment); pull requests the throwaway key. It runs
+      # in the build's job, after the build's processes and the restored
+      # caches' code, so this keeps the key out of the build's environment
+      # but not out of the build's reach (android-sign's header says why).
       - name: Bundle and sign the update bundles
         working-directory: app
         shell: bash
@@ -781,9 +800,9 @@ jobs:
   # ARM: a universal APK would add the x86_64 library (emulators only) and
   # roughly double the download. Built as ci.yml's android job builds the
   # debug APK (the same NDK, toolchain and generated project), but with the
-  # real identifier, com.shodhrag.mobile (no tauri.dev.conf.json), and
-  # without any key. Then signed in two steps, each the only one that sees
-  # its key, and checked before it is uploaded.
+  # real identifier, com.shodhrag.mobile (no tauri.dev.conf.json). This job
+  # never has a key: it is not in the `release` environment, reads no secret,
+  # and uploads the APK unsigned for android-sign.
   android:
     name: Build (android-arm64)
     needs: [plan, pr-key, create-release]
@@ -797,11 +816,10 @@ jobs:
     # the Gradle build and the checks: 8 minutes (job 138377458438). It keeps
     # no Rust cache entry (see the cache budget at the top of ci.yml).
     timeout-minutes: 90
-    # The Android key and the release key are read from here on publishing
-    # runs only.
-    environment: ${{ needs.plan.outputs.publish == 'true' && 'release' || '' }}
     permissions:
       contents: read
+    outputs:
+      unsigned-sha256: ${{ steps.unsigned.outputs.sha256 }}
     env:
       # The workflow's builds set their own RUSTFLAGS; Android links its C
       # library dynamically whatever -crt-static says.
@@ -809,8 +827,6 @@ jobs:
       # The same NDK as ci.yml's android job (r27c, long-term support).
       NDK_VERSION: 27.2.12479018
       BUILD_TOOLS: 35.0.0
-      PUBLISH: ${{ needs.plan.outputs.publish }}
-      VERSION: ${{ needs.plan.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -854,8 +870,8 @@ jobs:
           # The elephant launcher icons replace the template's, as in ci.yml.
           cp -R src-tauri/icons/android/. src-tauri/gen/android/app/src/main/res/
 
-      # Gradle's release build, unsigned: no keystore is configured, so the
-      # build itself (Gradle, cargo, every build script) never sees a key.
+      # Gradle's release build, unsigned: no keystore is configured, and this
+      # job has none to configure.
       - name: Build the release APK (unsigned)
         working-directory: mobile
         run: |
@@ -876,6 +892,133 @@ jobs:
           mkdir -p "$out"
           cp "${apks[0]}" "$out/unsigned.apk"
           echo "- release APK (unsigned) \`$(basename "${apks[0]}")\`: $(du -h "$out/unsigned.apk" | cut -f1), built in ${seconds} s" >> "$GITHUB_STEP_SUMMARY"
+
+      # The screenshot tour and the scripted computer of the screenshots are
+      # debug builds' only. Checked on what the APK carries: the frontend
+      # the release build embedded (mobile/dist, written by its
+      # beforeBuildCommand, which exists only in this job) and the native
+      # library inside the APK. Signing adds a signature block and leaves
+      # every entry as it is, so the signed APK carries this same library.
+      # ci.yml's android job checks that a debug build has them, so this
+      # check is not vacuous.
+      - name: No debug-only code in the release APK
+        run: |
+          set -euo pipefail
+          lib="$RUNNER_TEMP/android/lib/libshodh_mobile_lib.so"
+          mkdir -p "$(dirname "$lib")"
+          unzip -p "$RUNNER_TEMP/android/unsigned.apk" lib/arm64-v8a/libshodh_mobile_lib.so > "$lib"
+          node scripts/release/android.mjs debug-markers --build release --dist mobile/dist --lib "$lib"
+
+      # Its SHA-256, as a job output: android-sign signs only a download
+      # that matches it.
+      - name: The unsigned APK's digest
+        id: unsigned
+        run: |
+          set -euo pipefail
+          sha256=$(sha256sum "$RUNNER_TEMP/android/unsigned.apk" | cut -d ' ' -f 1)
+          echo "sha256=${sha256}" >> "$GITHUB_OUTPUT"
+          echo "- unsigned APK SHA-256 \`${sha256}\`" >> "$GITHUB_STEP_SUMMARY"
+
+      # Not named shodh-*: verify and publish download that pattern, and
+      # this file is never released.
+      - name: Upload the unsigned APK
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: android-arm64-unsigned
+          path: ${{ runner.temp }}/android/unsigned.apk
+          retention-days: 1
+          if-no-files-found: error
+
+  # Signs the APK the android job built, in a job of its own, because a step
+  # does not end what it started: the Gradle daemon, the Kotlin compile
+  # daemon and anything a build script or an npm install script left running
+  # outlive the build step, as the same user, and a restored cache puts code
+  # from earlier runs in that job too. A key decoded later in the same job
+  # would be on disk while they still run. This job runs no build code: no
+  # cache, no npm, no cargo, no Gradle; it checks out only the release
+  # scripts and the manifest checks, and uses the runner's preinstalled JDK
+  # and build-tools (pinned by version) and a pinned, checksum-verified
+  # Tauri CLI binary. It signs only a download whose SHA-256 is the one the
+  # android job recorded. Then signed in two steps, each the only one that
+  # sees its key, checked, and uploaded under the name verify and publish
+  # read. Build-only runs sign through the same steps with throwaway keys.
+  android-sign:
+    name: Sign (android-arm64)
+    needs: [plan, pr-key, android]
+    # pr-key runs on pull requests only.
+    if: >-
+      ${{ !cancelled() && needs.plan.result == 'success'
+      && (needs.pr-key.result == 'success' || needs.pr-key.result == 'skipped')
+      && needs.android.result == 'success' }}
+    # ubuntu-24.04, not -latest: its image lists the build-tools and JDK this
+    # job uses (actions/runner-images, Ubuntu2404-Readme.md).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # The Android key and the release key are read from here on publishing
+    # runs only.
+    environment: ${{ needs.plan.outputs.publish == 'true' && 'release' || '' }}
+    permissions:
+      contents: read
+    env:
+      # Preinstalled on the image (no setup-android: nothing is downloaded).
+      BUILD_TOOLS: 35.0.0
+      # The Tauri CLI the phone app's package-lock.json pins, as the release
+      # publishes it for Linux: what `npx tauri signer sign` ran, without
+      # npm (scripts/release/test/release-jobs.test.mjs keeps the two equal).
+      # SHA-256 of tauri-cli-v<version>/cargo-tauri-x86_64-unknown-linux-gnu.tgz.
+      TAURI_CLI_VERSION: 2.12.4
+      TAURI_CLI_SHA256: 820ae3c7580ca637cad15f65638960ee2a96e5a491e224691c86d6f25e6c9e8a
+      PUBLISH: ${{ needs.plan.outputs.publish }}
+      VERSION: ${{ needs.plan.outputs.version }}
+      UNSIGNED_SHA256: ${{ needs.android.outputs.unsigned-sha256 }}
+    steps:
+      # The release scripts and the manifest checks only.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/release
+            .github/actions/android-apk-manifest
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: 22
+          package-manager-cache: false  # runs only scripts/release (no dependencies)
+
+      - name: The runner's build-tools and JDK
+        run: |
+          set -euo pipefail
+          tools="$ANDROID_HOME/build-tools/$BUILD_TOOLS"
+          for t in zipalign apksigner aapt2; do
+            test -x "$tools/$t" || { echo "::error::$t of build-tools $BUILD_TOOLS is not at $tools on this image"; exit 1; }
+          done
+          java -version
+          command -v keytool >/dev/null || { echo "::error::keytool is not on PATH"; exit 1; }
+
+      - name: Download the unsigned APK
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: android-arm64-unsigned
+          path: ${{ runner.temp }}/android/in
+
+      # Exactly the one file the android job uploaded, with the SHA-256 it
+      # recorded, and aligned (zipalign before apksigner: signing seals the
+      # layout, so the APK is never realigned after it).
+      - name: The download is the APK the build made
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(find "$RUNNER_TEMP/android/in" -type f)
+          if [ "${#files[@]}" -ne 1 ] || [ "${files[0]}" != "$RUNNER_TEMP/android/in/unsigned.apk" ]; then
+            echo "::error::Expected only unsigned.apk in the artifact, found: ${files[*]}"
+            exit 1
+          fi
+          if ! [[ "$UNSIGNED_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::The android job recorded no SHA-256 for the unsigned APK ('${UNSIGNED_SHA256}')"
+            exit 1
+          fi
+          echo "${UNSIGNED_SHA256}  ${files[0]}" | sha256sum --check --strict
+          "$ANDROID_HOME/build-tools/$BUILD_TOOLS/zipalign" -c 4 "${files[0]}"
 
       # The only step that sees the Android key. A publishing run decodes the
       # release keystore (the `release` environment's secrets) into a folder
@@ -923,7 +1066,7 @@ jobs:
             --ks "$keystore" --ks-type PKCS12 --ks-key-alias "$alias" \
             --ks-pass env:ANDROID_KEY_PASSWORD --key-pass env:ANDROID_KEY_PASSWORD \
             --v1-signing-enabled false --v2-signing-enabled true --v3-signing-enabled true --v4-signing-enabled false \
-            --out "$RUNNER_TEMP/android/signed.apk" "$RUNNER_TEMP/android/unsigned.apk"
+            --out "$RUNNER_TEMP/android/signed.apk" "$RUNNER_TEMP/android/in/unsigned.apk"
 
       # Under its release name: the phone's one-tap update downloads
       # Shodh_<version>_android.apk (crates/shodh-link/src/update.rs apk_name).
@@ -956,20 +1099,6 @@ jobs:
           apk: ${{ env.APK }}
           build-tools: ${{ env.BUILD_TOOLS }}
 
-      # The screenshot tour and the scripted computer of the screenshots are
-      # debug builds' only. Checked on what this APK carries: the frontend
-      # the release build embedded (mobile/dist, written by its
-      # beforeBuildCommand) and the native library inside the signed APK.
-      # ci.yml's android job checks that a debug build has them, so this
-      # check is not vacuous.
-      - name: No debug-only code in the release APK
-        run: |
-          set -euo pipefail
-          lib="$RUNNER_TEMP/android/lib/libshodh_mobile_lib.so"
-          mkdir -p "$(dirname "$lib")"
-          unzip -p "$APK" lib/arm64-v8a/libshodh_mobile_lib.so > "$lib"
-          node scripts/release/android.mjs debug-markers --build release --dist mobile/dist --lib "$lib"
-
       # The release key's (the desktop updater's) minisign signature over the
       # signed APK, which the phone's one-tap update verifies before it hands
       # the APK to Android. Publishing runs use the release key (the `release`
@@ -983,9 +1112,22 @@ jobs:
           name: pr-updater-key
           path: ${{ runner.temp }}/pr-key
 
+      # The Tauri CLI's own signer, from its release rather than npm: the
+      # archive is checked against the pinned SHA-256 before it is opened.
+      - name: The Tauri CLI (pinned binary)
+        run: |
+          set -euo pipefail
+          dir=$(mktemp -d "$RUNNER_TEMP/tauri-cli.XXXXXXXX")
+          archive="$dir/cargo-tauri.tgz"
+          curl -fsSL --retry 3 --max-time 120 -o "$archive" \
+            "https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v${TAURI_CLI_VERSION}/cargo-tauri-x86_64-unknown-linux-gnu.tgz"
+          echo "${TAURI_CLI_SHA256}  ${archive}" | sha256sum --check --strict
+          tar -xzf "$archive" -C "$dir" cargo-tauri
+          "$dir/cargo-tauri" --version
+          echo "TAURI_CLI=$dir/cargo-tauri" >> "$GITHUB_ENV"
+
       # The only step that sees the release key.
       - name: Sign it for the one-tap update
-        working-directory: mobile
         env:
           RELEASE_KEY: ${{ needs.plan.outputs.publish == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
           RELEASE_KEY_PASSWORD: ${{ needs.plan.outputs.publish == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
@@ -1011,7 +1153,7 @@ jobs:
           else
             export TAURI_SIGNING_PRIVATE_KEY_PASSWORD
           fi
-          npx tauri signer sign ${password[@]+"${password[@]}"} "$APK"
+          "$TAURI_CLI" signer sign ${password[@]+"${password[@]}"} "$APK"
           test -s "$APK.sig" || { echo "::error::tauri signer wrote no $(basename "$APK").sig"; exit 1; }
 
       # For verify (build-only runs) or publish: the APK and its .sig, under
@@ -1706,13 +1848,13 @@ jobs:
 
   verify:
     name: Verify the installers
-    needs: [plan, build, android]
+    needs: [plan, build, android-sign]
     # build runs after create-release, which is skipped on pull requests; a skipped
     # ancestor makes the implicit success() false, so the result is checked directly.
     if: >-
       ${{ !cancelled() && needs.plan.result == 'success'
       && needs.build.result == 'success'
-      && needs.android.result == 'success'
+      && needs.android-sign.result == 'success'
       && needs.plan.outputs.publish != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -1822,7 +1964,7 @@ jobs:
 
   publish:
     name: Verify and publish
-    needs: [plan, create-release, build, android, launch-macos, launch-windows]
+    needs: [plan, create-release, build, android-sign, launch-macos, launch-windows]
     # build needs pr-key, which is skipped on publishing runs; a skipped ancestor makes the
     # implicit success() false, so this job was skipped and the release stayed an empty
     # draft (v0.0.11, run 43993975752). Each result is checked directly, as verify does.
@@ -1831,7 +1973,7 @@ jobs:
       && needs.plan.result == 'success'
       && needs.create-release.result == 'success'
       && needs.build.result == 'success'
-      && needs.android.result == 'success'
+      && needs.android-sign.result == 'success'
       && needs.launch-macos.result == 'success'
       && needs.launch-windows.result == 'success' }}
     runs-on: ubuntu-latest

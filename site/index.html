@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Shodh: answers from your papers, cited to the page</title>
+  <meta name="description" content="Shodh is an open-source, local-first alternative to ChatGPT and NotebookLM. Chat, research and build with the model you choose, local (Ollama, LM Studio) or cloud with your own key. Every answer from your papers and folders is cited to the exact page." />
+  <meta name="color-scheme" content="light dark" />
+  <meta name="theme-color" content="#faf9f7" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#121214" media="(prefers-color-scheme: dark)" />
+  <meta property="og:title" content="Shodh" />
+  <meta property="og:description" content="Ask your papers and folders, get answers cited to the exact page. Open source and local-first." />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://varun29ankus.github.io/shodhRAG/" />
+  <meta property="og:image" content="https://varun29ankus.github.io/shodhRAG/assets/answer.png" />
+  <link rel="icon" href="assets/logo.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <div class="wrap header-row">
+      <a class="brand" href="./" aria-label="Shodh home">
+        <img src="assets/logo.svg" alt="" width="32" height="32" />
+        <span>Shodh</span>
+      </a>
+      <nav aria-label="Main">
+        <ul>
+          <li><a href="#features">Features</a></li>
+          <li><a href="#privacy">Privacy</a></li>
+          <li><a href="#faq">FAQ</a></li>
+          <li><a href="https://github.com/varun29ankuS/shodhRAG">GitHub</a></li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="wrap">
+        <img class="hero-logo" src="assets/logo.svg" alt="" width="96" height="96" />
+        <h1 id="hero-title">Ask your papers. Get answers cited to the exact page.</h1>
+        <p class="lead">Shodh is an open-source, local-first alternative to ChatGPT and NotebookLM. Chat, research and build with the model you choose, local (Ollama, LM Studio) or cloud with your own key. Your documents are indexed and stored on your computer, every answer cites the file and page it came from, and every cited statement is checked against its source.</p>
+        <div class="downloads" role="group" aria-label="Downloads">
+          <a class="button primary" href="https://github.com/varun29ankuS/shodhRAG/releases/latest/download/Shodh_x64-setup.exe">
+            Download for Windows
+            <small>Windows 10 or 11, 64-bit</small>
+          </a>
+          <a class="button primary" href="https://github.com/varun29ankuS/shodhRAG/releases/latest/download/Shodh_aarch64.dmg">
+            Download for macOS
+            <small>macOS 13.3 or later, Apple silicon</small>
+          </a>
+          <a class="button" href="https://github.com/varun29ankuS/shodhRAG/releases/latest/download/Shodh_android.apk">
+            Android companion
+            <small>Android 7 or later, 64-bit</small>
+          </a>
+        </div>
+        <p class="fine">Free and open source (Apache-2.0). <a href="https://github.com/varun29ankuS/shodhRAG/releases/latest">All files and checksums</a> are on the release page. The installers are not code-signed yet, so your system warns you once: <a href="https://github.com/varun29ankuS/shodhRAG#download">how to open it</a>.</p>
+        <figure class="shot hero-shot">
+          <img src="assets/answer.png" width="1400" height="900" alt="Shodh answering how Self-RAG and RAPTOR differ, as a comparison table whose cells carry citation badges" />
+        </figure>
+      </div>
+    </section>
+
+    <section id="features" class="band" aria-labelledby="features-title">
+      <div class="wrap">
+        <h2 id="features-title">What it does</h2>
+        <ul class="cards">
+          <li>
+            <h3>Answers cited to the page</h3>
+            <p>Answers stream in with numbered citations. Click one and the PDF opens at the cited page with the passage outlined.</p>
+          </li>
+          <li>
+            <h3>Citations that are checked</h3>
+            <p>Each cited statement is checked on your computer against its passage, with no language model judging. Statements the source does not back are flagged inline.</p>
+          </li>
+          <li>
+            <h3>Folders that stay in sync</h3>
+            <p>PDF, Word, PowerPoint, spreadsheets, Markdown, LaTeX, HTML, e-books, emails and code. Scanned pages and images are read with OCR.</p>
+          </li>
+          <li>
+            <h3>Built for research papers</h3>
+            <p>A graph of how your papers cite each other, read from their bibliographies, and numeric results compared across papers, every value cited.</p>
+          </li>
+          <li>
+            <h3>Workspaces and memory</h3>
+            <p>Each workspace has its own sources and instructions. Shodh remembers what you ask it to remember, and keeps your tasks and calendar.</p>
+          </li>
+          <li>
+            <h3>The model you choose</h3>
+            <p>A local model through Ollama or LM Studio, or OpenRouter, Anthropic, OpenAI, Google Gemini or xAI with your key, or a subscription sign-in.</p>
+          </li>
+        </ul>
+        <div class="pair">
+          <figure class="shot">
+            <img src="assets/cited-source.png" width="1400" height="900" loading="lazy" alt="The Self-RAG PDF opened at page 4 with the cited passage outlined" />
+            <figcaption>Click a citation: the PDF opens at the page, with the passage outlined.</figcaption>
+          </figure>
+          <figure class="shot">
+            <img src="assets/library.png" width="1400" height="900" loading="lazy" alt="The Library with a folder of papers, snippets, the citation graph and compared results" />
+            <figcaption>The Library: synced folders, snippets, the paper graph and compared results.</figcaption>
+          </figure>
+        </div>
+        <p class="fine">The screenshots show open-access papers (CC BY 4.0, from arXiv). The <a href="https://github.com/varun29ankuS/shodhRAG/blob/master/docs/FEATURES.md">full feature list</a> is on GitHub.</p>
+      </div>
+    </section>
+
+    <section id="different" aria-labelledby="different-title">
+      <div class="wrap">
+        <h2 id="different-title">How it is different</h2>
+        <div class="columns">
+          <div>
+            <h3>Local-first</h3>
+            <p>Your files are parsed, OCR'd, indexed and embedded on your computer, and the index stays there. Nothing is uploaded to build it.</p>
+          </div>
+          <div>
+            <h3>Cited to the page, then checked</h3>
+            <p>A citation points at the file, the page and the passage. Shodh then checks each cited statement against that passage and tells you when it does not hold.</p>
+          </div>
+          <div>
+            <h3>Open source</h3>
+            <p>The app and its Rust core are Apache-2.0. You can read the code behind every answer, and build the app yourself.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="privacy" class="band" aria-labelledby="privacy-title">
+      <div class="wrap narrow">
+        <h2 id="privacy-title">Privacy</h2>
+        <dl class="facts">
+          <dt>Your documents</dt>
+          <dd>Their text, OCR results and embeddings stay on your computer. Indexing makes no network calls.</dd>
+          <dt>Your questions</dt>
+          <dd>A question, and the passages retrieved to answer it, go to the model provider you choose, with your workspace instructions and any memories recalled for it. With a local model and web access off, they stay on your computer.</dd>
+          <dt>Other connections</dt>
+          <dd>Only for features you use: web search, paper lookups, model downloads, the update check, and the Slack, Telegram, GitHub and phone connections once you set them up.</dd>
+          <dt>Local-only mode</dt>
+          <dd>One switch in Settings turns off web tools, cloud models and the update check.</dd>
+        </dl>
+        <p class="fine">Every outbound connection, and the known gaps such as unencrypted storage, are listed in <a href="https://github.com/varun29ankuS/shodhRAG/blob/master/docs/FEATURES.md#data-and-privacy-what-leaves-your-computer">Data and privacy</a>.</p>
+      </div>
+    </section>
+
+    <section id="faq" aria-labelledby="faq-title">
+      <div class="wrap narrow">
+        <h2 id="faq-title">FAQ</h2>
+        <details>
+          <summary>Is it free?</summary>
+          <p>Yes. Shodh is open source under the Apache-2.0 licence. A cloud model may cost you through its provider; a local model does not.</p>
+        </details>
+        <details>
+          <summary>Does it work without the internet?</summary>
+          <p>Indexing and search do. The first run downloads the search models (about 650 MB) and the agent runtime once. To answer questions offline, use a local model through Ollama or LM Studio.</p>
+        </details>
+        <details>
+          <summary>Which computers does it run on?</summary>
+          <p>Windows 10 or 11 (64-bit) and macOS 13.3 or later on Apple silicon. There is no Intel Mac build. The Android app is a companion that pairs with Shodh on your computer.</p>
+        </details>
+        <details>
+          <summary>Why does my system warn me when I open it?</summary>
+          <p>The installers are not code-signed yet. The <a href="https://github.com/varun29ankuS/shodhRAG#download">download steps</a> show how to open Shodh the first time on Windows and macOS. Updates are signed, and one whose signature does not verify is refused.</p>
+        </details>
+        <details>
+          <summary>What files can it read?</summary>
+          <p>PDF, Word, PowerPoint, OpenDocument, RTF, spreadsheets and CSV, Markdown, LaTeX, HTML, e-books, emails, notebooks, plain text and source code, plus scanned PDFs and images through OCR.</p>
+        </details>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap footer-row">
+      <p><a href="https://github.com/varun29ankuS/shodhRAG">Shodh on GitHub</a> · <a href="https://github.com/varun29ankuS/shodhRAG/blob/master/LICENSE">Apache License 2.0</a></p>
+      <p>Shodh (शोध) means "research" in Sanskrit.</p>
+    </div>
+  </footer>
+</body>
+</html>

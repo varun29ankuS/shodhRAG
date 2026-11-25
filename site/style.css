@@ -1,0 +1,391 @@
+:root {
+  --bg: #faf9f7;
+  --bg-band: #f1eee9;
+  --surface: #ffffff;
+  --text: #1c1b1a;
+  --muted: #55524e;
+  --border: #ddd8d0;
+  --accent: #b3140f;
+  --accent-text: #ffffff;
+  --link: #9e110d;
+  --focus: #1d5fd6;
+  --shadow: 0 1px 2px rgb(0 0 0 / 6%), 0 8px 24px rgb(0 0 0 / 8%);
+  --radius: 12px;
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #121214;
+    --bg-band: #1a1a1d;
+    --surface: #202024;
+    --text: #f1efec;
+    --muted: #b4b0aa;
+    --border: #34343a;
+    --accent: #e0443d;
+    --accent-text: #120302;
+    --link: #ff8a80;
+    --focus: #7fb0ff;
+    --shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 8px 24px rgb(0 0 0 / 40%);
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 1.0625rem;
+  line-height: 1.6;
+  overflow-wrap: break-word;
+}
+
+img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+}
+
+a {
+  color: var(--link);
+  text-underline-offset: 0.15em;
+}
+
+a:focus-visible,
+summary:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+h1,
+h2,
+h3 {
+  line-height: 1.2;
+  margin: 0 0 0.5em;
+}
+
+h1 {
+  font-size: clamp(2rem, 5.5vw, 3.25rem);
+  letter-spacing: -0.02em;
+  max-width: 18ch;
+  margin-inline: auto;
+}
+
+h2 {
+  font-size: clamp(1.5rem, 3.5vw, 2rem);
+  letter-spacing: -0.01em;
+  margin-bottom: 1em;
+}
+
+h3 {
+  font-size: 1.125rem;
+}
+
+p {
+  margin: 0 0 1em;
+}
+
+.wrap {
+  width: 100%;
+  max-width: 1120px;
+  margin-inline: auto;
+  padding-inline: 16px;
+}
+
+.narrow {
+  max-width: 760px;
+}
+
+.skip {
+  position: absolute;
+  left: 16px;
+  top: -100px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 8px 12px;
+  border-radius: 8px;
+  z-index: 10;
+}
+
+.skip:focus {
+  top: 8px;
+}
+
+/* Header */
+
+.site-header {
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 60px;
+  flex-wrap: wrap;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text);
+  font-weight: 700;
+  font-size: 1.25rem;
+  text-decoration: none;
+}
+
+.site-header ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 20px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.site-header nav a {
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 0.9375rem;
+}
+
+.site-header nav a:hover {
+  color: var(--text);
+  text-decoration: underline;
+}
+
+/* Hero */
+
+.hero {
+  text-align: center;
+  padding-block: 56px 64px;
+}
+
+.hero-logo {
+  margin: 0 auto 20px;
+}
+
+.lead {
+  font-size: clamp(1.0625rem, 2.2vw, 1.25rem);
+  color: var(--muted);
+  max-width: 62ch;
+  margin: 0 auto 32px;
+}
+
+.downloads {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.button {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 56px;
+  min-width: 240px;
+  padding: 10px 22px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 600;
+  text-decoration: none;
+  line-height: 1.3;
+}
+
+.button small {
+  font-weight: 400;
+  font-size: 0.8125rem;
+}
+
+.button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
+.button:hover {
+  filter: brightness(1.06);
+}
+
+.button:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 3px;
+}
+
+.fine {
+  font-size: 0.9375rem;
+  color: var(--muted);
+  max-width: 70ch;
+  margin-inline: auto;
+}
+
+.shot {
+  margin: 0;
+}
+
+.shot img {
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+}
+
+.hero-shot {
+  margin-top: 40px;
+}
+
+.shot figcaption {
+  margin-top: 12px;
+  font-size: 0.9375rem;
+  color: var(--muted);
+}
+
+/* Sections */
+
+main > section {
+  padding-block: 64px;
+}
+
+.band {
+  background: var(--bg-band);
+  border-block: 1px solid var(--border);
+}
+
+.cards {
+  list-style: none;
+  margin: 0 0 48px;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+  gap: 16px;
+}
+
+.cards li {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px 22px;
+}
+
+.cards p,
+.columns p {
+  color: var(--muted);
+  margin: 0;
+}
+
+.pair {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
+  gap: 24px;
+  margin-bottom: 24px;
+}
+
+.columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+  gap: 32px;
+}
+
+.facts {
+  margin: 0 0 24px;
+}
+
+.facts dt {
+  font-weight: 700;
+  margin-top: 20px;
+}
+
+.facts dt:first-child {
+  margin-top: 0;
+}
+
+.facts dd {
+  margin: 4px 0 0;
+  color: var(--muted);
+}
+
+#privacy .fine {
+  margin-inline: 0;
+}
+
+details {
+  border-bottom: 1px solid var(--border);
+  padding-block: 16px;
+}
+
+details:first-of-type {
+  border-top: 1px solid var(--border);
+}
+
+summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 1.0625rem;
+}
+
+details p {
+  margin: 12px 0 0;
+  color: var(--muted);
+}
+
+/* Footer */
+
+.site-footer {
+  border-top: 1px solid var(--border);
+  padding-block: 28px;
+  font-size: 0.9375rem;
+  color: var(--muted);
+}
+
+.footer-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px 24px;
+}
+
+.footer-row p {
+  margin: 0;
+}
+
+@media (max-width: 480px) {
+  .hero {
+    padding-block: 40px 48px;
+  }
+
+  .button {
+    width: 100%;
+    min-width: 0;
+  }
+
+  main > section {
+    padding-block: 48px;
+  }
+}

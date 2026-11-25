@@ -10,10 +10,14 @@
 //              android.mjs when it was signed) and its .sig likewise.
 //   stage      artifacts, then the release's eight files in one folder under
 //              their release names, with the latest.json installed apps read
-//              (the same shape tauri-action writes), and a local record of
-//              them in the form of GitHub's release API (release.json).
+//              (the same shape tauri-action writes), plus, from ALIASES_SINCE
+//              on, versionless copies of the three installers (ALIAS_ROLES),
+//              and a local record of them in the form of GitHub's release API
+//              (release.json).
 //   release    A release's assets (downloaded to --dir) against its API record:
-//              exactly the expected files, non-empty and complete; latest.json
+//              exactly the expected files, non-empty and complete; each
+//              versionless copy the same file (SHA-256) as its versioned one;
+//              latest.json
 //              parses, names this version, points each platform at this
 //              release's update bundle, and carries that bundle's .sig; every
 //              signature verifies against the updater public key, the Android
@@ -29,6 +33,10 @@
 //              asset's size, fetched as the updater does (no credentials,
 //              Accept: application/octet-stream). When GitHub refuses that for
 //              the runner's anonymous rate limit, it is fetched with GH_TOKEN.
+//              For the latest release from ALIASES_SINCE on, each
+//              releases/latest/download/<versionless name> link (README.md,
+//              site/) answers 200 with its installer's size, fetched the same
+//              way.
 //
 //   node scripts/release/verify.mjs artifacts --dir D --version X.Y.Z [--pubkey-file F]
 //   node scripts/release/verify.mjs stage --dir D --out O --tag vX.Y.Z --repo O/R [--pubkey-file F]
@@ -78,18 +86,46 @@ export function releaseAssetNames(product, version) {
     'android-apk': android,
     'android-signature': `${android}.sig`,
     'latest-json': 'latest.json',
+    'windows-installer-latest': `${product}_x64-setup.exe`,
+    'macos-dmg-latest': `${product}_aarch64.dmg`,
+    'android-apk-latest': `${product}_android.apk`,
   };
 }
 
-// The Android app's roles: not in releases published before it shipped.
-export const ANDROID_ROLES = ['android-apk', 'android-signature'];
+// Versionless copies of the three installers, byte for byte the same files
+// as the versioned ones (each alias role maps to the role it copies), so that
+// https://github.com/<repo>/releases/latest/download/<name> always downloads
+// the latest installer: README.md and site/ link to them. They are extra
+// assets. The desktop's updater (latest.json) and the phone's one-tap update
+// keep using the versioned names, which never change. Releases carry them
+// from ALIASES_SINCE on; a release published before has none and must have
+// none.
+export const ALIASES_SINCE = '0.0.12';
+export const ALIAS_ROLES = {
+  'windows-installer-latest': 'windows-installer',
+  'macos-dmg-latest': 'macos-dmg',
+  'android-apk-latest': 'android-apk',
+};
 
-/** The names a release must have, exactly; without the Android app for `android: false`. */
+/** Whether a release of `version` carries the versionless copies (ALIAS_ROLES). */
+export function hasAliases(version) {
+  return compareVersions(version, ALIASES_SINCE) >= 0;
+}
+
+// The Android app's roles: not in releases published before it shipped.
+export const ANDROID_ROLES = ['android-apk', 'android-signature', 'android-apk-latest'];
+
+/**
+ * The names a release must have, exactly; without the Android app for
+ * `android: false`, and without the versionless copies before ALIASES_SINCE.
+ */
 export function expectedAssetNames(product, version, { android = true } = {}) {
   const names = releaseAssetNames(product, version);
+  const aliases = hasAliases(version);
   return new Set(
     Object.entries(names)
       .filter(([role]) => android || !ANDROID_ROLES.includes(role))
+      .filter(([role]) => aliases || !(role in ALIAS_ROLES))
       .map(([, name]) => name),
   );
 }
@@ -204,8 +240,9 @@ export function latestJson({ repo, tag, product, windowsSignature, macosSignatur
 }
 
 /**
- * Writes the eight release files to `out` under their release names, plus
- * release.json (a local record of them shaped like GitHub's release API).
+ * Writes the release files to `out` under their release names (eight, and
+ * the three versionless copies from ALIASES_SINCE on), plus release.json (a
+ * local record of them shaped like GitHub's release API).
  */
 export async function stageRelease({ dir, out, tag, repo, product, pubkey, pubDate = new Date().toISOString() }) {
   const version = tagVersion(tag);
@@ -221,6 +258,13 @@ export async function stageRelease({ dir, out, tag, repo, product, pubkey, pubDa
     [found.android, names['android-apk']],
     [`${found.android}.sig`, names['android-signature']],
   ];
+  if (hasAliases(version)) {
+    copies.push(
+      [found.windows, names['windows-installer-latest']],
+      [found.dmg, names['macos-dmg-latest']],
+      [found.android, names['android-apk-latest']],
+    );
+  }
   for (const [from, name] of copies) copyFileSync(from, join(out, name));
   const latest = latestJson({
     repo,
@@ -308,6 +352,16 @@ export async function verifyRelease({ release, dir, tag, repo, product, pubkey, 
     await checkSignature(join(dir, file), readFileSync(join(dir, `${file}.sig`), 'utf8'), pubkey, file);
   }
 
+  // Each versionless copy is the very file it stands for.
+  const sha = new Map(rows.map((row) => [row.name, row.sha256]));
+  for (const [alias, role] of Object.entries(ALIAS_ROLES)) {
+    if (!expected.has(names[alias])) continue;
+    if (sha.get(names[alias]) !== sha.get(names[role])) {
+      throw new ReleaseError(`${names[alias]} is not the same file as ${names[role]}`);
+    }
+    console.log(`  same file: ${names[alias]} = ${names[role]}`);
+  }
+
   let latest;
   try {
     latest = JSON.parse(readFileSync(join(dir, 'latest.json'), 'utf8'));
@@ -389,6 +443,7 @@ function anonymousLimitSpent(response) {
 export async function smoke({
   repo,
   tag,
+  product,
   expectLatest = true,
   fetchImpl = fetch,
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
@@ -439,25 +494,39 @@ export async function smoke({
     await sleep(delayMs);
   }
   verifyLatestJsonShape(latest, version);
-  for (const [platform, entry] of Object.entries(latest.platforms)) {
-    const asset = assetForUrl(entry.url, release, repo, tag);
-    if (!asset) throw new ReleaseError(`${platform}: ${entry.url} is not an asset of ${tag}`);
+  // As tauri-plugin-updater downloads it: no credentials, octet-stream.
+  const download = async (label, url, asset) => {
     const head = (credentials = {}) =>
-      fetchImpl(entry.url, { method: 'HEAD', redirect: 'follow', headers: { Accept: 'application/octet-stream', ...credentials } });
-    // As tauri-plugin-updater downloads it: no credentials, octet-stream.
+      fetchImpl(url, { method: 'HEAD', redirect: 'follow', headers: { Accept: 'application/octet-stream', ...credentials } });
     let response = await head();
     let note = '';
     if (anonymousLimitSpent(response)) {
-      if (!token) throw new ReleaseError(`${platform}: HEAD ${entry.url} answered ${response.status}: ${ANONYMOUS_LIMIT}, and no GH_TOKEN to check with`);
+      if (!token) throw new ReleaseError(`${label}: HEAD ${url} answered ${response.status}: ${ANONYMOUS_LIMIT}, and no GH_TOKEN to check with`);
       response = await head({ Authorization: `Bearer ${token}` });
       note = ` (checked with GH_TOKEN: ${ANONYMOUS_LIMIT})`;
     }
     const length = Number(response.headers.get('content-length'));
-    if (response.status !== 200) throw new ReleaseError(`${platform}: HEAD ${entry.url} answered ${response.status}${note}`);
-    if (length !== asset.size) throw new ReleaseError(`${platform}: ${entry.url} serves ${length} bytes, ${asset.name} has ${asset.size}`);
-    console.log(`  ${platform}: ${asset.name}, 200, ${length} bytes${note}`);
+    if (response.status !== 200) throw new ReleaseError(`${label}: HEAD ${url} answered ${response.status}${note}`);
+    if (length !== asset.size) throw new ReleaseError(`${label}: ${url} serves ${length} bytes, ${asset.name} has ${asset.size}`);
+    console.log(`  ${label}: ${asset.name}, 200, ${length} bytes${note}`);
+  };
+  for (const [platform, entry] of Object.entries(latest.platforms)) {
+    const asset = assetForUrl(entry.url, release, repo, tag);
+    if (!asset) throw new ReleaseError(`${platform}: ${entry.url} is not an asset of ${tag}`);
+    await download(platform, entry.url, asset);
   }
   console.log(`${endpoint} serves ${tag} and every update bundle in it downloads`);
+  // The versionless download links README.md and site/ give, which follow
+  // the latest release only.
+  if (expectLatest && hasAliases(version)) {
+    const names = releaseAssetNames(product, version);
+    for (const alias of Object.keys(ALIAS_ROLES)) {
+      const asset = release.assets.find((a) => a.name === names[alias]);
+      if (!asset) throw new ReleaseError(`${tag} has no ${names[alias]}`);
+      await download(alias, `https://github.com/${repo}/releases/latest/download/${encodeURIComponent(names[alias])}`, asset);
+    }
+    console.log(`Every versionless download link serves ${tag}'s installer`);
+  }
 }
 
 // --- CLI ------------------------------------------------------------------------
@@ -494,6 +563,7 @@ async function main(argv) {
     await smoke({
       repo: need('repo'),
       tag: need('tag'),
+      product: readConfig(values.config).product,
       expectLatest: !values['not-latest'],
       token: process.env.GH_TOKEN || process.env.GITHUB_TOKEN,
     });

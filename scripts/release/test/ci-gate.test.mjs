@@ -257,9 +257,23 @@ test('no file built into the app is in the footprint or release-build skip sets'
 });
 
 test('the skip sets skip documentation and keep everything a build reads', () => {
-  const { eval_skip, eval_keep, footprint_skip, release_skip } = skipSets();
-  for (const docs of ['README.md', 'docs/adr/0001-agent-harness-omp.md', 'marketing/x.png']) {
-    for (const skip of [eval_skip, footprint_skip, release_skip]) assert.ok(skip.test(docs), docs);
+  const { eval_skip, eval_keep, footprint_skip, release_skip, android_skip } = skipSets();
+  const documentation = [
+    'README.md',
+    'docs/adr/0001-agent-harness-omp.md',
+    'docs/FEATURES.md',
+    'marketing/x.png',
+    // The website and the workflow that deploys it: no build reads them.
+    'site/index.html',
+    'site/assets/answer.png',
+    '.github/workflows/pages.yml',
+  ];
+  for (const docs of documentation) {
+    for (const skip of [eval_skip, footprint_skip, release_skip, android_skip]) assert.ok(skip.test(docs), docs);
+  }
+  // Only the top-level site/ folder is the website.
+  for (const path of ['app/site/index.html', 'crates/shodh-rag/site/x.rs', '.github/workflows/pages-yml']) {
+    assert.ok(!release_skip.test(path), `the release builds skip ${path}`);
   }
   const everyBuild = [
     'crates/shodh-rag/src/search/hybrid.rs',

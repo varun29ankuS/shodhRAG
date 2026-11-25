@@ -157,10 +157,11 @@ jobs:
           echo "${#files[@]} files changed against the base commit $base:"
           printf '  %s\n' "${files[@]}"
 
-          # Documentation and lint configuration (Workflow lint always runs):
-          # no heavy job reads them. Markdown is skipped only at the root and
-          # under docs/: the eval corpora hold Markdown documents.
-          docs='^(docs/|marketing/|[^/]+\.md$|LICENSE$|NOTICE$|\.gitignore$|\.github/zizmor\.yml$)'
+          # Documentation, the website (site/, deployed by pages.yml) and lint
+          # configuration (Workflow lint always runs): no heavy job reads
+          # them. Markdown is skipped only at the root and under docs/: the
+          # eval corpora hold Markdown documents.
+          docs='^(docs/|marketing/|site/|[^/]+\.md$|LICENSE$|NOTICE$|\.gitignore$|\.github/zizmor\.yml$|\.github/workflows/pages\.yml$)'
           # The release workflows and their scripts: the release builds read
           # them, the evals and the footprint build do not.
           release_files='^(scripts/release/|\.github/release-notes\.md$|\.github/workflows/(release|tag-release|prepare-release)\.yml$)'

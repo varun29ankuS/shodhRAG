@@ -45,10 +45,14 @@ name: Release
 #                   layers hidden again). Publishing waits for it.
 #   publish         (environment `release`, one at a time across releases)
 #                   checks the artifacts' signatures with the release key,
-#                   stages the eight release files with latest.json, uploads them
-#                   to the draft, downloads the draft and verifies it
-#                   (scripts/release/verify.mjs release): exactly the expected
-#                   files, none empty; latest.json parses, is this version and
+#                   stages the eight release files with latest.json, and the
+#                   versionless copies of the three installers
+#                   (Shodh_x64-setup.exe, Shodh_aarch64.dmg, Shodh_android.apk:
+#                   the releases/latest/download links README.md and site/
+#                   give), uploads them to the draft, downloads the draft and
+#                   verifies it (scripts/release/verify.mjs release): exactly
+#                   the expected files, none empty, each copy the same file as
+#                   its versioned one; latest.json parses, is this version and
 #                   points each platform at this release's update bundle (the
 #                   desktop's only: the phone finds its app by name); every
 #                   signature, the Android app's included, verifies against the
@@ -56,7 +60,8 @@ name: Release
 #                   notes and publishes. It becomes the latest release only if
 #                   it is newer than the current latest (an older release
 #                   finishing last never takes "latest" back). Then the URL
-#                   installed apps poll is checked (smoke); if that fails, the
+#                   installed apps poll, and each versionless download link, is
+#                   checked (smoke); if that fails, the
 #                   release is turned back into a draft and the previous latest
 #                   restored.
 #

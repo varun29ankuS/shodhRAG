@@ -1126,6 +1126,8 @@ pub fn run() {
             automations::automation_run_now,
             automations::engine_approval_decide,
             automations::automations_model_set,
+            automations::automation_draft,
+            automations::automation_templates,
             // Background mode (tray, start with Windows)
             background::get_background_status,
             background::set_close_to_tray,

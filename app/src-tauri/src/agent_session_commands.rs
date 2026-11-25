@@ -1409,6 +1409,8 @@ fn session_reuse(closed: bool, running: bool, fits: bool) -> SessionReuse {
 pub(crate) struct AutomationSession {
     pub events: tokio::sync::mpsc::UnboundedSender<AgentEvent>,
     pub saved: Arc<DeferredCalls>,
+    /// The run only answers from what it is given: its agent has no tools.
+    pub answer_only: bool,
 }
 
 /// Starts an automation's agent session for `conversation_id` (one per run): the
@@ -1907,6 +1909,7 @@ async fn start_attempt(
     // An automation's session has its own profile: reads, no tool that acts outside
     // Shodh, a small budget, and every change saved for the user's OK.
     let mut profile = match automation {
+        Some(session) if session.answer_only => AgentProfile::automation_answer_only(),
         Some(_) => AgentProfile::automation(),
         None => AgentProfile::builtin(&profile_id)
             .ok_or_else(|| HarnessError::UnknownProfile(profile_id.clone()))?,

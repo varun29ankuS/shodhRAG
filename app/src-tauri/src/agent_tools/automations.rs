@@ -23,7 +23,7 @@ use shodh_rag::harness::RiskTier;
 
 use super::{invalid, str_arg, AgentHost};
 use crate::automations::{
-    estimate_line, when_label, AutomationState, AutomationView, Automations, Draft,
+    estimate_for, planned_calls, when_text, AutomationState, AutomationView, Automations, Draft,
 };
 
 pub(super) fn register(
@@ -85,6 +85,7 @@ fn state_words(state: AutomationState) -> &'static str {
     match state {
         AutomationState::Scheduled => "scheduled",
         AutomationState::Manual => "runs when started",
+        AutomationState::Watching => "runs when what it watches happens",
         AutomationState::Running => "running now",
         AutomationState::Waiting => "waiting (while the user chats, or for its model)",
         AutomationState::Paused => "paused until the provider's limit resets",
@@ -154,11 +155,19 @@ fn draft_of(
         (None, Some(current)) => current.workspace_id.clone(),
         (None, None) => None,
     };
+    // What starts it (new files, an alert's papers) is set in the Automations view. It is
+    // kept unless the assistant gives a schedule, which replaces it.
+    let trigger = match (args.get("schedule"), current) {
+        (None, Some(current)) => current.trigger.clone(),
+        _ => None,
+    };
     Draft {
         name,
         instruction,
         schedule,
+        trigger,
         workspace_id,
+        answer_only: current.is_some_and(|c| c.answer_only),
     }
     .checked()
     .map_err(|e| invalid(tool, e))
@@ -263,7 +272,10 @@ impl HostTool for ShowAutomationTool {
         let mut lines = vec![
             line(&automation),
             format!("Instruction: {}", automation.instruction),
-            format!("Each run: {}.", estimate_line(automation.schedule.as_ref())),
+            format!(
+                "Each run: {}.",
+                estimate_for(automation.schedule.as_ref(), automation.planned_calls)
+            ),
         ];
         for r in &runs {
             lines.push(format!(
@@ -373,8 +385,8 @@ impl HostTool for SaveAutomationTool {
             details: json!({
                 "name": draft.name,
                 "instruction": draft.instruction,
-                "when": when_label(draft.schedule.as_ref()),
-                "estimate": estimate_line(draft.schedule.as_ref()),
+                "when": when_text(draft.schedule.as_ref(), draft.trigger.as_ref()),
+                "estimate": estimate_for(draft.schedule.as_ref(), planned_calls(draft.answer_only)),
                 "workspaceId": draft.workspace_id,
             }),
         })
@@ -404,7 +416,7 @@ impl HostTool for SaveAutomationTool {
                 "Saved the automation {} ({}). Each run: {}.",
                 saved.name,
                 saved.when,
-                estimate_line(saved.schedule.as_ref())
+                estimate_for(saved.schedule.as_ref(), saved.planned_calls)
             ),
             summary_for_ui: format!("Saved {}", saved.name),
             detail: Some(json!({ "id": saved.id })),

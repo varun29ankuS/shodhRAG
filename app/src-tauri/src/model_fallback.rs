@@ -390,6 +390,34 @@ pub(crate) fn kind_str(kind: ProviderErrorKind) -> String {
         .unwrap_or_else(|| "other".to_string())
 }
 
+/// One call of exactly `model` that answers `prompt` in at most `max_tokens` tokens: no
+/// fallback and no second try, so the caller knows which model was asked and that it
+/// was asked once (an automation never spends another model than its own).
+pub(crate) async fn complete_once(
+    app: &AppHandle,
+    model: &ModelRef,
+    prompt: &str,
+    max_tokens: usize,
+) -> Result<ModelReply, ProviderFailure> {
+    let health = app.state::<FallbackState>().health.health(model, now_ms());
+    let free = model.model.ends_with(":free");
+    let candidate = Candidate {
+        model: model.clone(),
+        name: model.model.clone(),
+        origin: Origin::Requested,
+        context_length: None,
+        privacy: shodh_rag::harness::model_catalog::PrivacyNote::ProviderTerms,
+        free,
+        paid: model.provider.needs_key() && !free,
+        health,
+        availability: None,
+        reachable: true,
+    };
+    AppCandidates { app: app.clone() }
+        .complete(&candidate, prompt, max_tokens)
+        .await
+}
+
 /// The model that answers `purpose`'s direct calls: the configured `requested` model
 /// with the app's fallback.
 pub(crate) fn fallback_text_model(

@@ -6,6 +6,9 @@
  *   in slots that never move.
  * - The pane on the right (fixed width): the selected automation and its runs, a run's
  *   steps and the changes it waits on (a checkbox each), or the form for a new one.
+ *   A new one can be described in words and drafted (one model call), then confirmed
+ *   in the same form; nothing is saved until Save.
+ * - With no automation yet: the templates, each opening the form filled in.
  * - The header: the model automations use, tagged with whose limit it counts against.
  * - The footer: today's model calls.
  */
@@ -15,13 +18,17 @@ import { listen } from '@tauri-apps/api/event';
 import { Loader2, Pause, Play, Plus, RotateCcw } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { APP_SETTINGS_CHANGED } from '../../lib/appSettings';
+import { typingActivity } from '../../lib/navigationGate';
+import { normalizeViewTab } from '../../lib/viewTabs';
+import { parseTarget, publishTarget } from '../agent/navigation';
 import { useNavigationTarget } from '../agent/useNavigationTarget';
 import { CallsToday } from '../modelPicker/CallsToday';
 import { modelApi, MODEL_CHANGED_EVENT } from '../modelPicker/modelApi';
 import type { ModelRef, PickerView } from '../modelPicker/modelTypes';
+import { whatsNewApi, WHATS_NEW_CHANGED_EVENT } from '../whatsNew/api';
 import { workspacesApi } from '../workspaces/api';
 import type { WorkspaceListing } from '../workspaces/types';
-import { AUTOMATIONS_CHANGED_EVENT, automationsApi, errorText } from './api';
+import { AUTOMATIONS_CHANGED_EVENT, automationsApi, errorText, onNewAutomation, takeNewAutomation } from './api';
 import {
   DEFAULT_WHEN,
   WEEK_DAYS,
@@ -29,15 +36,46 @@ import {
   callsText,
   estimateText,
   formOf,
+  isEventKind,
   limitTag,
   modelKey,
+  plannedCalls,
+  prefillFromDraft,
+  prefillFromTemplate,
+  replayMoves,
   runOutcome,
-  scheduleOf,
+  savedMoves,
   shortTime,
   stateChip,
+  stepLine,
+  whenOf,
   whyRan,
 } from './model';
-import type { Automation, Run, RunDetail, Tone, WhenForm, WhenKind } from './model';
+import type { Automation, FormPrefill, Run, RunDetail, SavedMove, Template, Tone, WhenForm, WhenKind } from './model';
+
+/** Something the form's When can name: a watched folder, a paper alert. */
+interface Choice {
+  id: string;
+  name: string;
+}
+
+/** The last part of a folder's path, as the Library names it. */
+function folderName(path: string): string {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] ?? path;
+}
+
+/** Go to one place a run's agent opened, as a click on an Inbox item does. */
+function followSaved(move: SavedMove, onOpenChat: (conversationId: string) => void): void {
+  const view = normalizeViewTab(move.view);
+  const target = parseTarget(move.target);
+  if (target?.kind === 'conversation') {
+    onOpenChat(target.conversationId);
+    return;
+  }
+  if (target) publishTarget(target);
+  if (view) window.dispatchEvent(new CustomEvent('switchTab', { detail: view }));
+}
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-ground';
@@ -66,9 +104,15 @@ const WHEN_LABELS: Record<WhenKind, string> = {
   weekly: 'Weekly',
   monthly: 'Monthly',
   every_hours: 'Every few hours',
+  files_added: 'When files arrive',
+  paper_found: 'When an alert finds papers',
 };
 
-type Pane = { kind: 'none' } | { kind: 'new' } | { kind: 'edit'; id: string } | { kind: 'detail'; id: string; runId: string | null };
+type Pane =
+  | { kind: 'none' }
+  | { kind: 'new'; prefill: FormPrefill | null; seq: number }
+  | { kind: 'edit'; id: string }
+  | { kind: 'detail'; id: string; runId: string | null };
 
 /** The models the automations may use: what the picker already offers, without repeats. */
 function modelChoices(view: PickerView | null): { model: ModelRef; name: string }[] {
@@ -226,28 +270,62 @@ function Row({
 
 function AutomationForm({
   initial,
+  prefill,
   workspaces,
+  folders,
+  alerts,
+  canDraft,
   onSaved,
   onCancel,
 }: {
   initial: Automation | null;
+  /** What a new automation's form opens with (a template, a skill). */
+  prefill: FormPrefill | null;
   workspaces: WorkspaceListing[];
+  /** The watched folders and paper alerts an automation can be started by. */
+  folders: Choice[];
+  alerts: Choice[];
+  /** A model is set up, so the words can be drafted. */
+  canDraft: boolean;
   onSaved: (automation: Automation) => void;
   onCancel: () => void;
 }) {
+  const describeId = useId();
   const nameId = useId();
   const textId = useId();
   const whenId = useId();
   const atId = useId();
   const whereId = useId();
-  const [name, setName] = useState(initial?.name ?? '');
-  const [instruction, setInstruction] = useState(initial?.instruction ?? '');
-  const [when, setWhen] = useState<WhenForm>(initial ? formOf(initial.schedule) : DEFAULT_WHEN);
-  const [workspaceId, setWorkspaceId] = useState<string>(initial?.workspaceId ?? '');
+  const [description, setDescription] = useState('');
+  const [drafting, setDrafting] = useState(false);
+  const [name, setName] = useState(initial?.name ?? prefill?.name ?? '');
+  const [instruction, setInstruction] = useState(initial?.instruction ?? prefill?.instruction ?? '');
+  const [when, setWhen] = useState<WhenForm>(initial ? formOf(initial.schedule, initial.trigger) : (prefill?.when ?? DEFAULT_WHEN));
+  const [workspaceId, setWorkspaceId] = useState<string>(initial?.workspaceId ?? prefill?.workspaceId ?? '');
+  const [answerOnly, setAnswerOnly] = useState(initial?.answerOnly ?? prefill?.answerOnly ?? false);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const planned = scheduleOf(when, new Date().toISOString());
+  const [error, setError] = useState<string | null>(prefill?.note ?? null);
+  const planned = whenOf(when, new Date().toISOString());
   const schedule = 'schedule' in planned ? planned.schedule : null;
+  // Answering from what arrived alone only makes sense for a run that something brought.
+  const answers = answerOnly && isEventKind(when.kind);
+  const fill = (next: FormPrefill) => {
+    setName(next.name);
+    setInstruction(next.instruction);
+    setWhen(next.when);
+    setWorkspaceId(next.workspaceId ?? '');
+    setAnswerOnly(next.answerOnly);
+    setError(next.note);
+  };
+  const draft = () => {
+    setDrafting(true);
+    setError(null);
+    automationsApi
+      .draft(description)
+      .then(drafted => fill(prefillFromDraft(drafted, when)))
+      .catch(e => setError(errorText(e)))
+      .finally(() => setDrafting(false));
+  };
   const save = async () => {
     if ('error' in planned) {
       setError(planned.error);
@@ -255,15 +333,18 @@ function AutomationForm({
     }
     setSaving(true);
     setError(null);
-    const draft = { name, instruction, schedule: planned.schedule, workspaceId: workspaceId || null };
+    const saved = { name, instruction, schedule: planned.schedule, trigger: planned.trigger, workspaceId: workspaceId || null, answerOnly: answers };
     try {
-      onSaved(initial ? await automationsApi.update(initial.id, draft) : await automationsApi.create(draft));
+      onSaved(initial ? await automationsApi.update(initial.id, saved) : await automationsApi.create(saved));
     } catch (e) {
       setError(errorText(e));
     } finally {
       setSaving(false);
     }
   };
+  // The folder or alert an automation names stays listed even when it is gone.
+  const listed = (choices: Choice[], id: string): Choice[] =>
+    id && !choices.some(c => c.id === id) ? [{ id, name: 'No longer there' }, ...choices] : choices;
   return (
     <form
       className="flex flex-col gap-3"
@@ -274,6 +355,32 @@ function AutomationForm({
       }}
     >
       <h2 className="m-0 text-body-lg font-semibold text-shodh-text">{initial ? 'Change automation' : 'New automation'}</h2>
+      {!initial && (
+        <>
+          <label htmlFor={describeId} className="text-small font-medium text-shodh-text">Describe it</label>
+          <textarea
+            id={describeId}
+            value={description}
+            maxLength={1000}
+            rows={2}
+            placeholder="What should Shodh do, and when?"
+            onChange={e => setDescription(e.target.value)}
+            className={cn(FIELD, 'py-2 resize-none')}
+          />
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              className={cn(QUIET, 'w-24')}
+              disabled={!canDraft || drafting || !description.trim()}
+              title={canDraft ? 'Fills the form below; nothing is saved' : 'Set up a model first'}
+              onClick={draft}
+            >
+              {drafting ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" /> : 'Draft'}
+            </button>
+            <span className="text-caption text-shodh-text-muted">1 call</span>
+          </div>
+        </>
+      )}
       <label htmlFor={nameId} className="text-small font-medium text-shodh-text">Name</label>
       <input id={nameId} value={name} maxLength={80} onChange={e => setName(e.target.value)} className={cn(FIELD, 'h-9')} />
       <label htmlFor={textId} className="text-small font-medium text-shodh-text">What should Shodh do?</label>
@@ -292,7 +399,33 @@ function AutomationForm({
             <option key={k} value={k}>{WHEN_LABELS[k]}</option>
           ))}
         </select>
-        {when.kind !== 'manual' && when.kind !== 'every_hours' && (
+        {when.kind === 'files_added' && (
+          <select
+            aria-label="Folder"
+            value={when.sourceId}
+            onChange={e => setWhen({ ...when, sourceId: e.target.value })}
+            className={cn(FIELD, 'h-9 flex-1 min-w-0 truncate')}
+          >
+            <option value="">{folders.length === 0 ? 'No watched folder' : 'Pick a folder'}</option>
+            {listed(folders, when.sourceId).map(c => (
+              <option key={c.id} value={c.id}>{c.name}</option>
+            ))}
+          </select>
+        )}
+        {when.kind === 'paper_found' && (
+          <select
+            aria-label="Paper alert"
+            value={when.alertId}
+            onChange={e => setWhen({ ...when, alertId: e.target.value })}
+            className={cn(FIELD, 'h-9 flex-1 min-w-0 truncate')}
+          >
+            <option value="">{alerts.length === 0 ? 'No paper alert' : 'Pick an alert'}</option>
+            {listed(alerts, when.alertId).map(c => (
+              <option key={c.id} value={c.id}>{c.name}</option>
+            ))}
+          </select>
+        )}
+        {when.kind !== 'manual' && when.kind !== 'every_hours' && !isEventKind(when.kind) && (
           <input
             id={atId}
             type="time"
@@ -352,7 +485,9 @@ function AutomationForm({
           <option key={w.id} value={w.id}>{w.name}</option>
         ))}
       </select>
-      <p className="m-0 text-caption text-shodh-text-muted">{estimateText(schedule, 4)}. Changes wait for your OK.</p>
+      <p className="m-0 text-caption text-shodh-text-muted">
+        {estimateText(schedule, plannedCalls(answers))}. {answers ? 'It reads only what arrived.' : 'Changes wait for your OK.'}
+      </p>
       <p className="m-0 min-h-[1.25rem] text-caption text-shodh-warning" role="alert">{error ?? ''}</p>
       <div className="flex justify-end gap-2">
         <button type="button" className={cn(QUIET, 'w-24')} onClick={onCancel}>Cancel</button>
@@ -369,6 +504,7 @@ function RunDetailView({ runId, onOpenChat }: { runId: string; onOpenChat: (conv
   const [error, setError] = useState<string | null>(null);
   const [chosen, setChosen] = useState<number[] | null>(null);
   const [deciding, setDeciding] = useState(false);
+  const [showing, setShowing] = useState(false);
   const load = useCallback(() => {
     automationsApi
       .run(runId)
@@ -407,6 +543,16 @@ function RunDetailView({ runId, onOpenChat }: { runId: string; onOpenChat: (conv
       .catch(e => setError(errorText(e)))
       .finally(() => setDeciding(false));
   };
+  const moves = savedMoves(run.steps);
+  // The places its agent opened, one at a time; it goes on after this view is left.
+  const showMe = () => {
+    setShowing(true);
+    void replayMoves(moves, {
+      go: move => followSaved(move, onOpenChat),
+      wait: ms => new Promise(resolve => window.setTimeout(resolve, ms)),
+      typing: () => typingActivity.isTyping(document.activeElement as HTMLElement | null, Date.now()),
+    }).finally(() => setShowing(false));
+  };
   return (
     <section aria-label="Run" className="flex flex-col gap-3">
       <div className="flex items-center justify-between gap-2">
@@ -415,13 +561,18 @@ function RunDetailView({ runId, onOpenChat }: { runId: string; onOpenChat: (conv
       </div>
       <p className="m-0 text-small text-shodh-text">{runOutcome(run)}</p>
       <ol className="m-0 p-0 list-none flex flex-col gap-1">
-        {run.steps.map(step => (
-          <li key={step.idx} className="h-7 flex items-center gap-2 text-small text-shodh-text-secondary">
-            <span className="w-16 shrink-0 font-medium text-shodh-text">{step.kind === 'notify' ? 'Told you' : 'Agent'}</span>
-            <span className="flex-1 truncate" title={String(step.output.summary ?? '')}>{String(step.output.summary ?? step.state)}</span>
-            {step.kind === 'agent' && <span className="shrink-0 text-caption text-shodh-text-muted">{step.calls} calls</span>}
-          </li>
-        ))}
+        {run.steps.map(step => {
+          const line = stepLine(step);
+          return (
+            <li key={step.idx} className="h-7 flex items-center gap-2 text-small text-shodh-text-secondary">
+              <span className="w-16 shrink-0 font-medium text-shodh-text">{line.label}</span>
+              <span className="flex-1 truncate" title={line.text}>{line.text}</span>
+              {step.kind === 'agent' && (
+                <span className="shrink-0 text-caption text-shodh-text-muted">{step.calls === 1 ? '1 call' : `${step.calls} calls`}</span>
+              )}
+            </li>
+          );
+        })}
       </ol>
       {approval && (
         <div className="flex flex-col gap-2 rounded-lg border border-shodh-border p-3" role="group" aria-label={approval.title}>
@@ -454,11 +605,24 @@ function RunDetailView({ runId, onOpenChat }: { runId: string; onOpenChat: (conv
           )}
         </div>
       )}
-      {run.conversationId && (
-        <button type="button" className={cn(QUIET, 'self-start w-40')} onClick={() => onOpenChat(run.conversationId as string)}>
-          Open conversation
-        </button>
-      )}
+      <div className="flex gap-2">
+        {run.conversationId && (
+          <button type="button" className={cn(QUIET, 'w-40')} onClick={() => onOpenChat(run.conversationId as string)}>
+            Open conversation
+          </button>
+        )}
+        {moves.length > 0 && (
+          <button
+            type="button"
+            className={cn(QUIET, 'w-28')}
+            disabled={showing}
+            title={moves.length === 1 ? 'Opens the place it looked at' : `Opens the ${moves.length} places it looked at, one by one`}
+            onClick={showMe}
+          >
+            {showing ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" /> : 'Show me'}
+          </button>
+        )}
+      </div>
     </section>
   );
 }
@@ -559,7 +723,34 @@ export function AutomationsView({ onOpenChat }: { onOpenChat: (conversationId: s
   const [pane, setPane] = useState<Pane>({ kind: 'none' });
   const [model, setModel] = useState<ModelRef | null>(null);
   const [workspaces, setWorkspaces] = useState<WorkspaceListing[]>([]);
+  const [folders, setFolders] = useState<Choice[]>([]);
+  const [alerts, setAlerts] = useState<Choice[]>([]);
+  const [templates, setTemplates] = useState<Template[]>([]);
+  const [chatModel, setChatModel] = useState<ModelRef | null>(null);
   const [now, setNow] = useState(() => Date.now());
+
+  /** A new automation's form, empty or filled; `seq` makes each opening a fresh form. */
+  const openNew = useCallback((prefill: FormPrefill | null) => {
+    setPane(prev => ({ kind: 'new', prefill, seq: prev.kind === 'new' ? prev.seq + 1 : 0 }));
+  }, []);
+
+  // What an automation can be started by: the folders What's new watches, the paper alerts.
+  const loadWatched = useCallback(() => {
+    whatsNewApi
+      .list()
+      .then(view => {
+        setFolders(view.folders.filter(f => f.on).map(f => ({ id: f.sourceId, name: folderName(f.folder) })));
+        setAlerts(view.alerts.map(a => ({ id: a.id, name: a.words })));
+      })
+      .catch(() => {
+        setFolders([]);
+        setAlerts([]);
+      });
+  }, []);
+
+  const loadChatModel = useCallback(() => {
+    modelApi.view().then(v => setChatModel(v.active?.model ?? null)).catch(() => setChatModel(null));
+  }, []);
 
   const load = useCallback(() => {
     automationsApi
@@ -580,24 +771,38 @@ export function AutomationsView({ onOpenChat }: { onOpenChat: (conversationId: s
   useEffect(() => {
     load();
     loadModel();
+    loadWatched();
+    loadChatModel();
     workspacesApi.list().then(setWorkspaces).catch(() => setWorkspaces([]));
+    automationsApi.templates().then(setTemplates).catch(() => setTemplates([]));
     const timer = window.setInterval(() => setNow(Date.now()), 60_000);
     const unlisteners: (() => void)[] = [];
     let live = true;
     for (const [event, handler] of [
       [AUTOMATIONS_CHANGED_EVENT, load],
       [APP_SETTINGS_CHANGED, loadModel],
+      [WHATS_NEW_CHANGED_EVENT, loadWatched],
     ] as const) {
       listen(event, () => handler())
         .then(fn => (live ? unlisteners.push(fn) : fn()))
         .catch(() => undefined);
     }
+    window.addEventListener(MODEL_CHANGED_EVENT, loadChatModel);
+    // A form another view asked for (a skill's "Automate"): waiting, or asked while open.
+    const waiting = takeNewAutomation();
+    if (waiting) openNew(waiting);
+    const stopPrefills = onNewAutomation(() => {
+      const asked = takeNewAutomation();
+      if (asked) openNew(asked);
+    });
     return () => {
       live = false;
       window.clearInterval(timer);
+      window.removeEventListener(MODEL_CHANGED_EVENT, loadChatModel);
+      stopPrefills();
       unlisteners.forEach(fn => fn());
     };
-  }, [load, loadModel]);
+  }, [load, loadModel, loadWatched, loadChatModel, openNew]);
 
   useNavigationTarget('automation', target => {
     setPane({ kind: 'detail', id: target.automationId, runId: target.runId });
@@ -606,6 +811,15 @@ export function AutomationsView({ onOpenChat }: { onOpenChat: (conversationId: s
 
   const selectedId = pane.kind === 'detail' || pane.kind === 'edit' ? pane.id : null;
   const selected = automations?.find(a => a.id === selectedId) ?? null;
+  const canDraft = (model ?? chatModel) !== null;
+  const setUp = (template: Template) =>
+    openNew(
+      prefillFromTemplate(template, {
+        folderIds: folders.map(f => f.id),
+        alertIds: alerts.map(a => a.id),
+        workspaceIds: workspaces.filter(w => !w.archived).map(w => w.id),
+      }),
+    );
 
   return (
     <div className="h-full flex flex-col bg-shodh-ground">
@@ -619,7 +833,7 @@ export function AutomationsView({ onOpenChat }: { onOpenChat: (conversationId: s
             setModel(next);
           }}
         />
-        <button type="button" className={cn(PRIMARY, 'w-40')} onClick={() => setPane({ kind: 'new' })}>
+        <button type="button" className={cn(PRIMARY, 'w-40')} onClick={() => openNew(null)}>
           <Plus className="w-3.5 h-3.5" aria-hidden="true" />
           New automation
         </button>
@@ -634,7 +848,20 @@ export function AutomationsView({ onOpenChat }: { onOpenChat: (conversationId: s
             ) : automations.length === 0 ? (
               <div className="h-full flex flex-col items-center justify-center gap-3">
                 <p className="m-0 text-small text-shodh-text-muted">No automations yet</p>
-                <button type="button" className={cn(PRIMARY, 'w-40')} onClick={() => setPane({ kind: 'new' })}>
+                {templates.length > 0 && (
+                  <ul className="m-0 p-0 list-none flex flex-wrap justify-center gap-3" aria-label="Templates">
+                    {templates.map(t => (
+                      <li key={t.id} className="w-64 h-32 flex flex-col gap-1 rounded-xl border border-shodh-border p-3">
+                        <p className="m-0 text-small font-semibold text-shodh-text truncate" title={t.name}>{t.name}</p>
+                        <p className="m-0 text-caption text-shodh-text-secondary truncate" title={t.when}>{t.when}</p>
+                        <p className="m-0 text-caption text-shodh-text-muted truncate" title={t.estimate}>{t.estimate}</p>
+                        <div className="flex-1" />
+                        <button type="button" className={cn(QUIET, 'self-end w-24')} onClick={() => setUp(t)}>Set up</button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <button type="button" className={cn(PRIMARY, 'w-40')} onClick={() => openNew(null)}>
                   <Plus className="w-3.5 h-3.5" aria-hidden="true" />
                   New automation
                 </button>
@@ -666,8 +893,13 @@ export function AutomationsView({ onOpenChat }: { onOpenChat: (conversationId: s
         <aside className="w-[420px] shrink-0 border-l border-shodh-border overflow-y-auto scrollbar-thin p-5" aria-label="Automation">
           {pane.kind === 'new' && (
             <AutomationForm
+              key={pane.seq}
               initial={null}
+              prefill={pane.prefill}
               workspaces={workspaces}
+              folders={folders}
+              alerts={alerts}
+              canDraft={canDraft}
               onCancel={() => setPane({ kind: 'none' })}
               onSaved={a => {
                 setPane({ kind: 'detail', id: a.id, runId: null });
@@ -677,8 +909,13 @@ export function AutomationsView({ onOpenChat }: { onOpenChat: (conversationId: s
           )}
           {pane.kind === 'edit' && selected && (
             <AutomationForm
+              key={selected.id}
               initial={selected}
+              prefill={null}
               workspaces={workspaces}
+              folders={folders}
+              alerts={alerts}
+              canDraft={canDraft}
               onCancel={() => setPane({ kind: 'detail', id: selected.id, runId: null })}
               onSaved={a => {
                 setPane({ kind: 'detail', id: a.id, runId: null });

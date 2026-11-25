@@ -46,8 +46,9 @@ const SQLITE_HEADER: &[u8; 16] = b"SQLite format 3\0";
 /// store's state (12), what happened to memories in each answer (13), evidence tables
 /// (14), the evidence tables' daily call counter and fill-job state (15) and the captures
 /// of their hand fills with the `model_unavailable` pause (16), and later the scheduler
-/// engine (19), What's new (20), the ledger of model calls (21) and the steps and
-/// approvals of automations (22) use one version sequence,
+/// engine (19), What's new (20), the ledger of model calls (21), the steps and
+/// approvals of automations (22) and the automations' cache of unchanged steps (23) use
+/// one version sequence,
 /// so every component that opens it sees the same schema.
 const MIGRATIONS: &[(i64, &str)] = &[
     (
@@ -846,6 +847,20 @@ const MIGRATIONS: &[(i64, &str)] = &[
         CREATE INDEX IF NOT EXISTS engine_approval_run ON engine_approval(run_id);
         CREATE INDEX IF NOT EXISTS engine_approval_open ON engine_approval(decision)
             WHERE decision IS NULL;",
+    ),
+    (
+        23,
+        // What an automation's step gave for inputs it has seen (`crate::engine::cache`):
+        // a run whose step has the same inputs again takes this instead of calling the
+        // model. One row per job and input key; rows go with their job, and after 90
+        // days. Created only if absent, so the step can be applied again safely.
+        "CREATE TABLE IF NOT EXISTS engine_cache (
+            job_id TEXT NOT NULL,
+            input_key TEXT NOT NULL,
+            output_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (job_id, input_key)
+        );",
     ),
 ];
 
@@ -2774,6 +2789,31 @@ mod tests {
         };
         assert_eq!(count("engine_step"), 1, "re-applied, the rows stay");
         assert_eq!(count("engine_approval"), 1);
+    }
+
+    #[test]
+    fn migration_23_adds_the_step_cache_and_reapplies_safely() {
+        let (dir, log) = temp_log();
+        drop(log);
+        let conn = raw(&dir);
+        let insert = |key: &str| {
+            conn.execute(
+                "INSERT INTO engine_cache (job_id, input_key, output_json, created_at)
+                 VALUES ('j1', ?1, '{}', 'c')",
+                rusqlite::params![key],
+            )
+        };
+        insert("k1").unwrap();
+        assert!(insert("k1").is_err(), "one row per job and input key");
+        insert("k2").unwrap();
+        conn.execute_batch("DELETE FROM schema_version WHERE version >= 23;")
+            .unwrap();
+        drop(conn);
+        drop(AuditLog::open(dir.path().join("shodh.db"), None).unwrap());
+        let rows: i64 = raw(&dir)
+            .query_row("SELECT count(*) FROM engine_cache", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 2, "re-applied, the rows stay");
     }
 
     #[test]

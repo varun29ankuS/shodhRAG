@@ -4,8 +4,8 @@
  */
 import { invoke } from '@tauri-apps/api/core';
 import type { ModelRef } from '../modelPicker/modelTypes';
-import { readAutomation, readAutomations, readRun, readRunDetail } from './model';
-import type { Automation, Draft, Run, RunDetail } from './model';
+import { readAutomation, readAutomations, readDrafted, readRun, readRunDetail, readTemplates } from './model';
+import type { Automation, Draft, Drafted, FormPrefill, Run, RunDetail, Template } from './model';
 
 /** Emitted when an automation or one of its runs changed. */
 export const AUTOMATIONS_CHANGED_EVENT = 'automations-changed';
@@ -39,4 +39,37 @@ export const automationsApi = {
   decide: async (approvalId: string, chosen: number[]): Promise<RunDetail> =>
     must(readRunDetail(await invoke<unknown>('engine_approval_decide', { decision: { approvalId, chosen } })), 'The run'),
   setModel: (model: ModelRef | null) => invoke<unknown>('automations_model_set', { model }),
+  /** One model call that drafts an automation from the user's words; nothing is saved. */
+  draft: async (description: string): Promise<Drafted> => must(readDrafted(await invoke<unknown>('automation_draft', { description })), 'The draft'),
+  templates: async (): Promise<Template[]> => readTemplates(await invoke<unknown>('automation_templates')),
 };
+
+type PrefillListener = (prefill: FormPrefill) => void;
+
+let pendingPrefill: FormPrefill | null = null;
+const prefillListeners = new Set<PrefillListener>();
+
+/**
+ * Open the Automations view on a new automation filled with `prefill` (from a skill's
+ * "Automate"): the view takes it now if it is open, or when it opens.
+ */
+export function openNewAutomation(prefill: FormPrefill): void {
+  pendingPrefill = prefill;
+  for (const listener of prefillListeners) listener(prefill);
+  window.dispatchEvent(new CustomEvent('switchTab', { detail: 'automations' }));
+}
+
+/** Take (and clear) the form waiting to be opened, if any. */
+export function takeNewAutomation(): FormPrefill | null {
+  const prefill = pendingPrefill;
+  pendingPrefill = null;
+  return prefill;
+}
+
+/** Listen for forms to open; returns the unsubscribe function. */
+export function onNewAutomation(listener: PrefillListener): () => void {
+  prefillListeners.add(listener);
+  return () => {
+    prefillListeners.delete(listener);
+  };
+}

@@ -42,7 +42,7 @@ test('legacy and agent ids resolve through aliases', () => {
 });
 
 test('unknown, hidden and non-string ids are not navigable', () => {
-  for (const value of ['graph', 'terminal', 'automations', '', 'Ask', 'toString', '__proto__', null, undefined, 3, {}]) {
+  for (const value of ['graph', 'terminal', 'playbooks', '', 'Ask', 'toString', '__proto__', null, undefined, 3, {}]) {
     assert.equal(normalizeViewTab(value), null, `value ${String(value)}`);
   }
 });

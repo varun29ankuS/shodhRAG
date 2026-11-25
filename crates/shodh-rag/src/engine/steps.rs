@@ -19,12 +19,14 @@ use super::store::{EngineError, EngineResult, EngineStore};
 pub const APPROVAL_DAYS: i64 = 7;
 
 macro_rules! text_enum {
-    ($(#[$meta:meta])* $name:ident { $($variant:ident => $text:literal),+ $(,)? }) => {
+    ($(#[$meta:meta])* $name:ident {
+        $($(#[$vmeta:meta])* $variant:ident => $text:literal),+ $(,)?
+    }) => {
         $(#[$meta])*
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
         #[serde(rename_all = "snake_case")]
         pub enum $name {
-            $($variant),+
+            $($(#[$vmeta])* $variant),+
         }
 
         impl $name {

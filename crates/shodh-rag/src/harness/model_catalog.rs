@@ -311,6 +311,20 @@ impl ModelRef {
     pub fn describe(&self) -> String {
         format!("{} · {}", self.provider.label(), self.model)
     }
+
+    /// The provider limit this model's calls count against, for the ledger of model calls
+    /// (`crate::engine::ledger`). OpenRouter limits its free models (ids ending `:free`)
+    /// per account, so every free model shares `openrouter:free`; its other models are
+    /// billed (`openrouter:paid`). Any other provider is one pool of its own.
+    pub fn quota_pool(&self) -> String {
+        match self.provider {
+            ProviderId::OpenRouter if self.model.trim().ends_with(":free") => {
+                "openrouter:free".to_string()
+            }
+            ProviderId::OpenRouter => "openrouter:paid".to_string(),
+            provider => provider.as_str().to_string(),
+        }
+    }
 }
 
 /// Whether a model accepts tool definitions (the agent needs tools).
@@ -678,6 +692,32 @@ pub fn choose_fallback(ctx: &FallbackContext<'_>) -> Option<ModelRef> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn free_openrouter_models_share_one_quota_pool() {
+        let pool = |provider, model: &str| ModelRef::new(provider, model).quota_pool();
+        assert_eq!(
+            pool(
+                ProviderId::OpenRouter,
+                "nvidia/nemotron-3-super-120b-a12b:free"
+            ),
+            "openrouter:free"
+        );
+        assert_eq!(
+            pool(
+                ProviderId::OpenRouter,
+                "meta-llama/llama-3.3-70b-instruct:free"
+            ),
+            "openrouter:free",
+            "another free model counts against the same account limit"
+        );
+        assert_eq!(
+            pool(ProviderId::OpenRouter, "anthropic/claude-sonnet-4"),
+            "openrouter:paid"
+        );
+        assert_eq!(pool(ProviderId::LmStudio, "qwen3-8b"), "lmstudio");
+        assert_eq!(pool(ProviderId::Google, "gemini-2.5-flash"), "google");
+    }
 
     const OPENROUTER_FIXTURE: &str = r#"{"data":[
         {"id":"nvidia/nemotron-3-super-120b-a12b:free","name":"NVIDIA: Nemotron 3 Super (free)","context_length":262144,

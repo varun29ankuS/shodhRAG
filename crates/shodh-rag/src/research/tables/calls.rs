@@ -1,6 +1,7 @@
 //! The model calls evidence tables made per UTC day, and the clock. The daily cap
-//! (Settings, [`DEFAULT_DAILY_CAP`] by default) is checked against this count. Only table
-//! fills count here: chat and agents do not, so a table fill can never silently spend the
+//! (Settings, [`DEFAULT_DAILY_CAP`] by default) is checked against this count: the
+//! tables' rows of the ledger of model calls ([`crate::engine::ledger`]), where chat and
+//! the other spenders are counted apart, so a table fill can never silently spend the
 //! quota a conversation needs, and the fill dialog says "Tables have made N of 30 calls
 //! today".
 //!
@@ -19,11 +20,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use chrono::{DateTime, NaiveDate, TimeDelta, TimeZone, Utc};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::Connection;
 
 use super::budget::MAX_CALLS_PER_PAPER;
 use crate::audit::{open_shared_connection, AuditKey, SharedConnection};
 pub use crate::engine::clock::{day_key, next_utc_midnight, utc_day, Clock, SystemClock};
+use crate::engine::ledger::{record_in, spender_count_in, Spender};
 use crate::research::{ResearchError, ResearchResult};
 
 /// The daily cap of table calls when the user has not set one.
@@ -91,16 +93,14 @@ fn as_sql(n: usize) -> ResearchResult<i64> {
     i64::try_from(n).map_err(|_| ResearchError::Invalid(format!("{n} calls is too many.")))
 }
 
-/// The day's count on `conn`.
+/// The day's count of table calls on `conn`.
 fn count_in(conn: &Connection, day: &str) -> rusqlite::Result<i64> {
-    Ok(conn
-        .query_row(
-            "SELECT calls FROM table_calls WHERE utc_day = ?1",
-            params![day],
-            |r| r.get::<_, i64>(0),
-        )
-        .optional()?
-        .unwrap_or(0))
+    spender_count_in(conn, day, Spender::Tables)
+}
+
+/// Adds `n` table calls to the day on `conn`. Tables do not name a quota pool.
+fn add_in(conn: &Connection, day: &str, n: i64) -> rusqlite::Result<()> {
+    record_in(conn, day, Spender::Tables, "", n)
 }
 
 /// Table model calls per UTC day, in `shodh.db`.
@@ -135,11 +135,7 @@ impl CallCounter {
         let n = as_sql(n)?;
         let key = day_key(day);
         let total = self.conn.write(|tx| {
-            tx.execute(
-                "INSERT INTO table_calls(utc_day, calls) VALUES (?1, ?2)
-                 ON CONFLICT(utc_day) DO UPDATE SET calls = calls + excluded.calls",
-                params![key, n],
-            )?;
+            add_in(tx, &key, n)?;
             count_in(tx, &key)
         })?;
         Ok(as_count(total))
@@ -162,11 +158,7 @@ impl CallCounter {
             if current.saturating_add(n) > cap {
                 return Ok(None);
             }
-            tx.execute(
-                "INSERT INTO table_calls(utc_day, calls) VALUES (?1, ?2)
-                 ON CONFLICT(utc_day) DO UPDATE SET calls = calls + excluded.calls",
-                params![key, n_sql],
-            )?;
+            add_in(tx, &key, n_sql)?;
             Ok(Some(as_count(count_in(tx, &key)?)))
         })
     }

@@ -1215,7 +1215,7 @@ fn migration_15_keeps_one_active_job_per_table() {
     // after 15 and rebuilds the job table with its rows).
     conn.execute_batch(
         "DROP TABLE table_fill_job;
-         DROP TABLE table_calls;
+         DROP TABLE model_calls;
          DROP TABLE table_fill_capture;
          DROP TABLE slack_index_channel;
          DROP TABLE slack_index_thread;

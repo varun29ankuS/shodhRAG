@@ -42,6 +42,18 @@ The UI rules come from the memory "UI: sturdy, unambiguous" and from `docs/super
 
 The branch is `feat/proactive-automations`, from `origin/master` `6695be40` (PRs #199, #202, #203, #204 and #207 merged). The next free migration is **21**. The only open PR, #208, touches neither `audit/store.rs`, `engine/`, `engine_commands.rs`, `agent_session_commands.rs`, `navigate.rs`, `viewTabs.ts` nor `agent-coverage.json`. It does touch `app_settings.rs` and `SettingsView.tsx`, so whichever lands second rebases (checked 2026-11-25).
 
+## Rulings (2026-11-25)
+
+The user took the recommended option of every decision Q1–Q8 (listed at the end), with two additions:
+- **Q1.** The three PRs go up in order, and each is CI green before the next one goes up.
+- **Q2.** The pool tag says it in one short line: another free OpenRouter model shares chat's 50-a-day limit.
+- **Q3.** Providers other than OpenRouter only react to rate-limit errors.
+
+**As built in 4a:**
+- The counter's spenders are those of the ledger (chat, tables), plus learning's own count of its calls (`memory_learn_usage`, the same UTC day) until learning moves into the ledger.
+- Slack and Telegram count answers, not calls, so they stay on their own Connectors pages.
+- The counter line sits under Settings → Model → Model (`CallsToday.tsx`), not in `SettingsView.tsx`, which #208 also changes.
+
 ## Proposed split (decision Q1)
 
 | PR | Scope | Ships alone because |

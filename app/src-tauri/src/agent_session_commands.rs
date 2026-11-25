@@ -68,6 +68,7 @@ use crate::workspace_commands::{
 };
 use shodh_rag::audit::payload::is_cloud;
 use shodh_rag::audit::LOCAL_OWNER;
+use shodh_rag::engine::ledger::Spender;
 use shodh_rag::harness::grounding::{GroundingConfig, ScorerSet, SharedEntailment};
 use shodh_rag::harness::web::relevance::SharedScorer;
 use shodh_rag::harness::web::SafeClient;
@@ -1391,6 +1392,13 @@ fn session_reuse(closed: bool, running: bool, fits: bool) -> SessionReuse {
     }
 }
 
+/// Whether `event` is one model call: the runtime reports each answered message's usage
+/// (running totals) once, when the message ends. A refused call (a rate limit) reports
+/// none and is not counted.
+fn counts_a_call(event: &AgentEvent) -> bool {
+    matches!(event, AgentEvent::Usage { .. })
+}
+
 /// Start (or reuse) the agent session for a conversation. Returns its id.
 ///
 /// `instructions` are the conversation's custom instructions; a change
@@ -2287,6 +2295,11 @@ async fn start_attempt(
     let forward_id = session_id.clone();
     // The model this session answers with, whose health each finished run updates.
     let forward_model = crate::model_fallback::session_model(&mode);
+    // The quota pool its calls count against, in the ledger of model calls.
+    let forward_pool = forward_model
+        .as_ref()
+        .map(|model| model.quota_pool())
+        .unwrap_or_default();
     let forward_learn = learn.inner().clone();
     let forward_memory = app.state::<MemoryState>().inner().clone();
     let last_used_ms = Arc::new(AtomicU64::new(now_ms()));
@@ -2329,6 +2342,14 @@ async fn start_attempt(
             forward_memory.observe(&event);
             // A finished answer shows whether its provider's key works.
             crate::connection_health::observe_answer(&forward_app, answer_provider, &event);
+            // Each answered message is one model call, counted as chat (never refused).
+            if counts_a_call(&event) {
+                let pool = forward_pool.clone();
+                let app = forward_app.clone();
+                tauri::async_runtime::spawn(async move {
+                    crate::engine_commands::record_call(&app, Spender::Chat, pool).await;
+                });
+            }
             // ... and whether its model is healthy (the fallback skips failing ones).
             crate::model_fallback::observe_agent_event(
                 &forward_app,
@@ -4034,6 +4055,36 @@ mod tests {
     use super::*;
     use crate::conversation_commands::{ConversationMessage, ConversationStore, TurnWrite};
     use crate::memory_commands::recall_for_run_unhurried;
+
+    #[test]
+    fn each_answered_message_is_one_chat_call() {
+        let usage = |input| AgentEvent::Usage {
+            run_id: "r1".into(),
+            input_tokens: input,
+            output_tokens: 10,
+            cache_read_tokens: 0,
+            cost_usd: 0.0,
+        };
+        let text = |delta: &str| AgentEvent::TextDelta {
+            run_id: "r1".into(),
+            message_id: "m1".into(),
+            delta: delta.into(),
+        };
+        let thinking = AgentEvent::Thinking {
+            run_id: "r1".into(),
+            message_id: "m1".into(),
+            delta: "plan".into(),
+        };
+        // A run that searched once, then answered: two messages, two calls.
+        let run = [
+            thinking,
+            text("Searching"),
+            usage(100),
+            text("The answer"),
+            usage(250),
+        ];
+        assert_eq!(run.iter().filter(|e| counts_a_call(e)).count(), 2);
+    }
 
     /// A store that refuses every write.
     struct FailingSink;

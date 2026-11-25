@@ -709,6 +709,17 @@ impl LearnState {
         }
     }
 
+    /// The model calls learning made today (UTC day), from its own count.
+    pub async fn calls_today(&self) -> Result<u32, String> {
+        let learner = self.learner().await?;
+        let now = learner.service().store().now();
+        learner
+            .inbox()
+            .usage(now)
+            .map(|usage| usage.llm_calls)
+            .map_err(|e| e.to_string())
+    }
+
     /// The learner, opening it (and the memory service) if needed.
     pub async fn learner(&self) -> Result<Arc<Learner>, String> {
         self.inner

@@ -4,6 +4,7 @@
 //! Its first parts came from the evidence-table runner (leases, the backoff ladder, the
 //! clock), which imports them from here, so both share one lease and one ladder.
 //!
+//! - [`ledger`]: the model calls each part of Shodh made per day.
 //! - [`schedule`]: typed schedules and their next times, in local time.
 //! - [`store`]: jobs and runs in `shodh.db`.
 //! - [`plan`]: what a job's schedule asks for now (catch-up, overlap, the decision fold).
@@ -12,6 +13,7 @@
 pub mod backoff;
 pub mod clock;
 pub mod lease;
+pub mod ledger;
 pub mod plan;
 pub mod runner;
 pub mod schedule;

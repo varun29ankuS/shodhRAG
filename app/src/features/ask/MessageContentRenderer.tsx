@@ -11,6 +11,8 @@ import { getArtifactKind } from '../../utils/artifactKind';
 import { ChartArtifact } from '../../components/ChartArtifact';
 import { CodeHighlight } from '../../components/CodeHighlight';
 import { ReviewableSnippet } from '../code/ReviewThisButton';
+import { HtmlPreviewBlock } from './HtmlPreviewBlock';
+import { isHtmlLanguage } from './htmlPreview';
 import { TableArtifact } from '../../components/TableArtifact';
 import { ArtifactPreviewCard } from '../../components/ArtifactPreviewCard';
 import type { SearchHit } from './types';
@@ -425,6 +427,30 @@ function MessageContent({
         );
         // Printed answers have no code pane to review in.
         if (print) return <div>{block(null)}</div>;
+        // A page drawn inline, with its source one click away (Raw).
+        if (isHtmlLanguage(match[1])) {
+          return (
+            <ReviewableSnippet code={codeString} language={match[1]}>
+              {(reviewButton, codeRef) => (
+                <HtmlPreviewBlock
+                  code={codeString}
+                  language={match[1]}
+                  actions={<>{reviewButton}<CodeCopyButton text={codeString} /></>}
+                  codeRef={codeRef}
+                  raw={(
+                    <CodeHighlight
+                      code={codeString}
+                      language={match[1]}
+                      dark={isDark}
+                      preTag="div"
+                      customStyle={{ margin: 0, padding: '14px 16px', fontSize: '13px', lineHeight: 1.6, borderRadius: 0, background: 'transparent' }}
+                    />
+                  )}
+                />
+              )}
+            </ReviewableSnippet>
+          );
+        }
         return <ReviewableSnippet code={codeString} language={match[1]}>{block}</ReviewableSnippet>;
       }
       return (

@@ -28,6 +28,7 @@ import { useDraftSubmit } from './useDraftSubmit';
 import { useConversationModes } from '../ask/useConversationModes';
 import { useModelLabel } from '../modelPicker/useModelLabel';
 import { requestModelPicker } from '../modelPicker/navigation';
+import { useSendKey } from '../../hooks/useSendKey';
 
 /** dock → main (`dock_layer::DOCK_ACTION_EVENT`). */
 export const DOCK_ACTION_EVENT = 'dock-action';
@@ -65,6 +66,7 @@ export function useDockBridge({ active, sources, onExpand }: DockBridgeOptions):
   // The composer's mode menu and model control, as Ask shows them.
   const modes = useConversationModes();
   const modelLabel = useModelLabel(active);
+  const { sendKey } = useSendKey();
   // The layer shows while the assistant builds the page the user is watching: open at first.
   const [open, setOpen] = useState(true);
   const [unreadBase, setUnreadBase] = useState<number | null>(null);
@@ -103,7 +105,8 @@ export function useDockBridge({ active, sources, onExpand }: DockBridgeOptions):
     permission: modes.permission,
     codeAvailable: modes.codeAvailable,
     model: modelLabel,
-  }), [conversationId, session.activeConversation?.title, session.activeConversation?.source?.connector, messages, isStreaming, streamingConversationId, sideRun, draft, voice.listening, voice.supported, open, unread, theme, runtime, modes.work, modes.permission, modes.codeAvailable, modelLabel]);
+    sendKey,
+  }), [conversationId, session.activeConversation?.title, session.activeConversation?.source?.connector, messages, isStreaming, streamingConversationId, sideRun, draft, voice.listening, voice.supported, open, unread, theme, runtime, modes.work, modes.permission, modes.codeAvailable, modelLabel, sendKey]);
 
   // At most one publish a frame, the latest snapshot.
   useEffect(() => {

@@ -2,7 +2,9 @@ import React, { forwardRef, useImperativeHandle, useLayoutEffect, useRef } from 
 import { ArrowUp, CornerDownRight, ImagePlus, Mic, MicOff, Square } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { pasteDecision } from '../ask/imageNotice';
-import { IS_MAC_PLATFORM, matchesShortcut, withShortcut } from '../../lib/shortcuts';
+import { IS_MAC_PLATFORM, matchesShortcut, shortcutText, withShortcut } from '../../lib/shortcuts';
+import { DEFAULT_SEND_KEY, composerKey, sendShortcut } from '../../lib/sendKey';
+import type { SendKey } from '../../lib/sendKey';
 import { COMPOSER_ICON_CONTROL, COMPOSER_ROW_CLASS, COMPOSER_TEST_IDS } from './composerRow';
 
 /** The engine grows the field with its content (no per-keystroke measuring). */
@@ -75,6 +77,13 @@ interface AgentComposerProps {
    * supported, compact or not; without it there is none.
    */
   voice?: { supported: boolean; listening: boolean; toggle: () => void };
+  /**
+   * Which key sends (Settings → General): Enter, with Shift+Enter for a new line; or
+   * Ctrl+Enter (⌘ on a Mac), with Enter for a new line. It also steers and approves.
+   */
+  sendKey?: SendKey;
+  /** Shown just above the box, in its own slot: the pending approval (Ask, the floating chat). */
+  approvalDock?: React.ReactNode;
 }
 
 /**
@@ -109,6 +118,8 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
     runningPlaceholder,
     onCycleMode,
     voice,
+    sendKey = DEFAULT_SEND_KEY,
+    approvalDock,
   },
   ref,
 ) {
@@ -143,7 +154,13 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
       onCycleMode();
       return;
     }
-    if (e.key !== 'Enter' || e.shiftKey || e.nativeEvent.isComposing) return;
+    // A new line (Shift+Enter, or Enter with Ctrl+Enter sending) is the field's own.
+    const press = composerKey(
+      { key: e.key, code: e.code, ctrlKey: e.ctrlKey, metaKey: e.metaKey, shiftKey: e.shiftKey, altKey: e.altKey, isComposing: e.nativeEvent.isComposing },
+      sendKey,
+      IS_MAC_PLATFORM,
+    );
+    if (press !== 'send') return;
     e.preventDefault();
     if (running) {
       if (canSteerNow) onSteer();
@@ -166,12 +183,14 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
   const effectivePlaceholder = running
     ? approvalPending
       ? onApprove
-        ? 'Enter to approve · Esc to deny · or type to steer…'
+        ? `${shortcutText(sendShortcut(sendKey), IS_MAC_PLATFORM)} to approve · Esc to deny · or type to steer…`
         : 'Approve or deny above · Esc to deny…'
       : !canSteer && runningPlaceholder
         ? runningPlaceholder
         : 'Steer the agent…'
     : placeholder;
+
+  const steerShortcut = sendKey === 'modEnter' ? sendShortcut(sendKey) : 'steer';
 
   const iconButton = cn(
     COMPOSER_ICON_CONTROL,
@@ -184,7 +203,7 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
     FOCUS_RING,
   );
 
-  return (
+  const box = (
     <div
       className={cn(
         'border border-shodh-border-strong bg-shodh-surface has-[textarea:focus-visible]:border-shodh-text-faint has-[textarea:focus-visible]:ring-1 has-[textarea:focus-visible]:ring-ring/60',
@@ -276,8 +295,8 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
               type="button"
               onClick={onSteer}
               disabled={!canSteerNow}
-              aria-label={withShortcut('Steer the answer', 'steer', IS_MAC_PLATFORM)}
-              title={withShortcut('Steer', 'steer', IS_MAC_PLATFORM)}
+              aria-label={withShortcut('Steer the answer', steerShortcut, IS_MAC_PLATFORM)}
+              title={withShortcut('Steer', steerShortcut, IS_MAC_PLATFORM)}
               data-testid={COMPOSER_TEST_IDS.steer}
               className={roundButton}
             >
@@ -289,12 +308,24 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
               <Square className="w-3.5 h-3.5" fill="currentColor" aria-hidden="true" />
             </button>
           ) : (
-            <button type="button" onClick={onSubmit} disabled={!canSend} aria-label="Send" title={withShortcut('Send', 'send', IS_MAC_PLATFORM)} data-testid={COMPOSER_TEST_IDS.send} className={roundButton}>
+            <button type="button" onClick={onSubmit} disabled={!canSend} aria-label="Send" title={withShortcut('Send', sendShortcut(sendKey), IS_MAC_PLATFORM)} data-testid={COMPOSER_TEST_IDS.send} className={roundButton}>
               <ArrowUp className="w-4 h-4" strokeWidth={2.6} aria-hidden="true" />
             </button>
           )}
         </div>
       </div>
+    </div>
+  );
+
+  if (approvalDock === undefined) return box;
+  // The approval docks just above the box, in its own slot: the box and its row of
+  // controls stay where they are (the composer is anchored at the bottom).
+  return (
+    <div className="flex flex-col gap-2 min-w-0">
+      <div data-testid="approval-dock" className="empty:hidden max-h-[45vh] overflow-y-auto overscroll-contain scrollbar-thin">
+        {approvalDock}
+      </div>
+      {box}
     </div>
   );
 });

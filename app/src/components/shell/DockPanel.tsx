@@ -8,6 +8,8 @@ import { passageHits } from '../../features/agent/citations';
 import { currentStep, isLive, pendingApproval } from '../../features/agent/reducer';
 import { StatusLine } from '../../features/agent/StatusLine';
 import { ModePicker } from '../../features/agent/ModePicker';
+import { ApprovalPrompt } from '../../features/agent/ApprovalPrompt';
+import { RUN_LOCKED_REASON } from '../../features/agent/composerRow';
 import { Transcript } from '../../features/agent/Transcript';
 import { Kbd, IS_MAC } from '../ui/Kbd';
 import { ariaKeyShortcuts, withShortcut } from '../../lib/shortcuts';
@@ -183,8 +185,17 @@ export function DockPanel({ model, onExpandAsk, fixed, maxHeight, pillRef, panel
           onPickWork={work => onAction({ kind: 'setWork', work })}
           onPickPermission={mode => onAction({ kind: 'setPermission', mode })}
           answerRunning={snapshot.isStreaming}
+          lockedReason={snapshot.isStreaming ? RUN_LOCKED_REASON : null}
         />
       )}
+      sendKey={snapshot.sendKey}
+      approvalDock={waiting?.approval ? (
+        <ApprovalPrompt
+          approval={waiting.approval}
+          onDecide={(approved, forConversation, reviewToken) => decide(waiting.id, approved, forConversation, reviewToken)}
+          compact
+        />
+      ) : null}
       modelControl={model.modelControl}
       compact
     />
@@ -261,11 +272,12 @@ export function DockPanel({ model, onExpandAsk, fixed, maxHeight, pillRef, panel
             onRuntimeInstalled={() => onAction({ kind: 'runtimeInstalled', installed: true })}
             onOpenSettings={() => onAction({ kind: 'openSettings' })}
             compact
+            approvalsDocked
           />
         )}
         {transcript && (
           <div data-testid="answer-status">
-            <StatusLine transcript={transcript} fallbackModel={null} compact />
+            <StatusLine transcript={transcript} fallbackModel={null} compact sendKey={snapshot.sendKey} />
           </div>
         )}
       </div>

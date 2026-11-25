@@ -86,6 +86,11 @@ interface StepLineProps {
   depth?: number;
   /** The run is still going (a call refused for its arguments may yet be retried). */
   live?: boolean;
+  /**
+   * Show a pending approval's prompt here (false: it shows above the composer, or under the
+   * answer's folded steps line). A decided prompt always shows here, as the record.
+   */
+  pendingApprovals?: boolean;
 }
 
 /**
@@ -97,7 +102,7 @@ interface StepLineProps {
  * The label row expands to the monospace arguments and result. Sub-steps
  * are indented under their parent.
  */
-export function StepLine({ step, steps, onDecide, compact = false, depth = 0, live = false }: StepLineProps) {
+export function StepLine({ step, steps, onDecide, compact = false, depth = 0, live = false, pendingApprovals = true }: StepLineProps) {
   const [open, setOpen] = useState(false);
   const detailId = useId();
   const running = step.status === 'running';
@@ -186,7 +191,7 @@ export function StepLine({ step, steps, onDecide, compact = false, depth = 0, li
       )}
       {open && <div id={detailId}><DetailView step={step} /></div>}
       {attribution && <AttributionFrame html={attribution} />}
-      {step.approval && onDecide && (
+      {step.approval && onDecide && (pendingApprovals || step.approval.decision !== 'pending') && (
         <div className="mt-2 ml-[17px]">
           <ApprovalPrompt approval={step.approval} onDecide={(approved, forConversation, reviewToken) => onDecide(step.id, approved, forConversation, reviewToken)} compact={compact} />
         </div>
@@ -196,7 +201,7 @@ export function StepLine({ step, steps, onDecide, compact = false, depth = 0, li
           {step.children.map(childId => {
             const child = steps[childId];
             return child ? (
-              <StepLine key={childId} step={child} steps={steps} onDecide={onDecide} compact={compact} depth={depth + 1} live={live} />
+              <StepLine key={childId} step={child} steps={steps} onDecide={onDecide} compact={compact} depth={depth + 1} live={live} pendingApprovals={pendingApprovals} />
             ) : null;
           })}
         </div>

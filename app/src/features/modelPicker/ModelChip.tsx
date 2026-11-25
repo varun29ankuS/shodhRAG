@@ -21,6 +21,8 @@ interface ModelChipProps {
    * does: the floating chat's chip unmounts as Ask opens, and would take the request away.
    */
   takesPickerRequests?: boolean;
+  /** Why the model cannot change now (an answer is running), or null. */
+  lockedReason?: string | null;
 }
 
 /**
@@ -30,7 +32,7 @@ interface ModelChipProps {
  * "Manage…" (Settings → Model); a choice applies from the next answer,
  * without a restart, and never interrupts the answer in progress.
  */
-export function ModelChip({ answerRunning, onOpenSettings, takesPickerRequests = true }: ModelChipProps) {
+export function ModelChip({ answerRunning, onOpenSettings, takesPickerRequests = true, lockedReason = null }: ModelChipProps) {
   const picker = useModelPicker();
   const { view } = picker;
   const [open, setOpen] = useState(false);
@@ -38,6 +40,13 @@ export function ModelChip({ answerRunning, onOpenSettings, takesPickerRequests =
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const panelId = useId();
+  // Locked while an answer runs: the menu closes, and requests to open it wait for the end.
+  const lockedRef = useRef(lockedReason !== null);
+  lockedRef.current = lockedReason !== null;
+  useEffect(() => {
+    if (lockedReason !== null) setOpen(false);
+    else if (takesPickerRequests && takeModelPickerRequest()) setOpen(true);
+  }, [lockedReason, takesPickerRequests]);
 
   const close = useCallback((refocus: boolean) => {
     setOpen(false);
@@ -71,7 +80,7 @@ export function ModelChip({ answerRunning, onOpenSettings, takesPickerRequests =
 
   // "Change model" on an answer's error card opens this picker.
   useEffect(() => {
-    const onOpen = () => setOpen(true);
+    const onOpen = () => { if (!lockedRef.current) setOpen(true); };
     window.addEventListener(OPEN_MODEL_PICKER_EVENT, onOpen);
     return () => window.removeEventListener(OPEN_MODEL_PICKER_EVENT, onOpen);
   }, []);
@@ -80,9 +89,9 @@ export function ModelChip({ answerRunning, onOpenSettings, takesPickerRequests =
   // after this chip mounted.
   useEffect(() => {
     if (!takesPickerRequests) return;
-    if (takeModelPickerRequest()) setOpen(true);
+    if (!lockedRef.current && takeModelPickerRequest()) setOpen(true);
     const onRequest = () => {
-      if (takeModelPickerRequest()) setOpen(true);
+      if (!lockedRef.current && takeModelPickerRequest()) setOpen(true);
     };
     window.addEventListener(OPEN_PICKER_REQUEST_EVENT, onRequest);
     return () => window.removeEventListener(OPEN_PICKER_REQUEST_EVENT, onRequest);
@@ -104,6 +113,7 @@ export function ModelChip({ answerRunning, onOpenSettings, takesPickerRequests =
         ref={triggerRef}
         label={label}
         ready={ready}
+        lockedReason={lockedReason}
         onClick={() => setOpen(o => !o)}
         aria-haspopup="dialog"
         aria-expanded={open}

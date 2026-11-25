@@ -84,6 +84,7 @@ function input(messages: ChatMessage[], extra: Partial<SnapshotInput> = {}): Sna
     permission: 'ask',
     codeAvailable: true,
     model: { label: 'Gemma 4 31B', ready: true },
+    sendKey: 'enter',
     ...extra,
   };
 }
@@ -256,6 +257,7 @@ test('a malformed snapshot is not read', () => {
     { ...good, codeAvailable: 'yes' },
     { ...good, model: null },
     { ...good, model: { label: 1, ready: true } },
+    { ...good, sendKey: 'altEnter' },
   ]) {
     assert.equal(parseDockSnapshot(bad), null, JSON.stringify(bad)?.slice(0, 80));
   }

@@ -76,6 +76,9 @@ import { CodeBranchChip, useCodeStatus } from '../agent/CodeBranchChip';
 import { ModePicker } from '../agent/ModePicker';
 import { useConversationModes } from './useConversationModes';
 import { useSearchAll } from './searchAllStore';
+import { useSendKey } from '../../hooks/useSendKey';
+import { ApprovalPrompt } from '../agent/ApprovalPrompt';
+import { RUN_LOCKED_REASON } from '../agent/composerRow';
 import { TokensSavedChip } from '../codeIntel/TokensSavedChip';
 import { CodeMapChip } from '../codeIntel/CodeMapChip';
 import { DesignCheckChip } from '../code/DesignCheckChip';
@@ -512,6 +515,7 @@ function AssistantMessageView({
             onOpenSettings={onOpenSettings}
             providerActions={providerActions}
             onCiteInstead={conversationId ? citeInstead : undefined}
+            approvalsDocked
           />
         </>
       ) : (
@@ -755,6 +759,9 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
   const agentMode: AgentMode | null = modes.agentMode;
   const changeAgentMode = modes.changeAgentMode;
   const cycleAgentMode = modes.cycle;
+  // Mode and model stay as they are while an answer runs (Stop, then change them).
+  const runLock = isStreaming ? RUN_LOCKED_REASON : null;
+  const { sendKey } = useSendKey();
   const codeWorkspaceId = mode === 'code' ? session.activeConversation?.workspaceId ?? null : null;
   const diagramHost = useMemo(() => ({ codeWorkspaceId }), [codeWorkspaceId]);
   // The code folder's state (Code mode): its problem blocks Send; its branch shows in the top bar.
@@ -1295,7 +1302,14 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
         blockedReason={blockedReason}
         blockedAction={blockedAction}
         placeholder={messages.length === 0 ? 'Ask about your files…' : 'Ask a follow-up…'}
-        onCycleMode={conversationId ? cycleAgentMode : undefined}
+        onCycleMode={conversationId && !isStreaming ? cycleAgentMode : undefined}
+        sendKey={sendKey}
+        approvalDock={waitingStep?.approval ? (
+          <ApprovalPrompt
+            approval={waitingStep.approval}
+            onDecide={(approved, forConversation, reviewToken) => approve(waitingStep.id, approved, forConversation, reviewToken)}
+          />
+        ) : null}
         voice={voice}
         modeControl={(
           <ModePicker
@@ -1305,9 +1319,10 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
             onPickWork={modes.pickWork}
             onPickPermission={changeAgentMode}
             answerRunning={isStreaming}
+            lockedReason={runLock}
           />
         )}
-        modelControl={<ModelChip answerRunning={isStreaming} onOpenSettings={() => onNavigate('settings')} />}
+        modelControl={<ModelChip answerRunning={isStreaming} onOpenSettings={() => onNavigate('settings')} lockedReason={runLock} />}
         onPickImage={onPickImage}
         onPasteImage={onPasteImage}
         attachments={(
@@ -1460,7 +1475,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
     const statusRow = message.transcript && (
       <div data-testid="answer-status" className="flex flex-wrap items-center gap-x-2 gap-y-1.5 min-w-0">
         <div className="min-w-0 flex-1">
-          <StatusLine transcript={message.transcript} fallbackModel={newest && llmStatus.connected ? llmStatus.model : null} />
+          <StatusLine transcript={message.transcript} fallbackModel={newest && llmStatus.connected ? llmStatus.model : null} sendKey={sendKey} />
         </div>
         {newest && conversationId && mode === 'code' && (
           <TokensSavedChip

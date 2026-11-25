@@ -4,6 +4,9 @@ import { cn } from '../../lib/utils';
 import { statusSummary } from './format';
 import { currentStep, isLive, pendingApproval } from './reducer';
 import type { TranscriptState } from './reducer';
+import { IS_MAC_PLATFORM, shortcutText } from '../../lib/shortcuts';
+import { DEFAULT_SEND_KEY, sendShortcut } from '../../lib/sendKey';
+import type { SendKey } from '../../lib/sendKey';
 
 /** Re-renders once a second while `active` (only this component ticks). */
 function useNow(active: boolean): number {
@@ -22,6 +25,8 @@ interface StatusLineProps {
   /** Shown before the run reports its model. */
   fallbackModel: string | null;
   compact?: boolean;
+  /** The composer's send key, which also approves (Settings → General). */
+  sendKey?: SendKey;
 }
 
 /**
@@ -29,7 +34,7 @@ interface StatusLineProps {
  * with the token counts in its tooltip, and the key hint for whatever the
  * run is waiting on.
  */
-export function StatusLine({ transcript, fallbackModel, compact = false }: StatusLineProps) {
+export function StatusLine({ transcript, fallbackModel, compact = false, sendKey = DEFAULT_SEND_KEY }: StatusLineProps) {
   const live = isLive(transcript);
   const now = useNow(live);
   const elapsed = live ? now - transcript.startedAtMs : transcript.durationMs ?? 0;
@@ -39,7 +44,7 @@ export function StatusLine({ transcript, fallbackModel, compact = false }: Statu
   const step = currentStep(transcript);
 
   let hint: string | null = null;
-  if (approval) hint = approval.tier === 'write' ? 'Enter to approve · Esc to deny' : 'Esc to deny';
+  if (approval) hint = approval.tier === 'write' ? `${shortcutText(sendShortcut(sendKey), IS_MAC_PLATFORM)} to approve · Esc to deny` : 'Esc to deny';
   else if (transcript.interrupting) hint = 'Interrupting…';
   else if (live) hint = 'Esc to interrupt';
 

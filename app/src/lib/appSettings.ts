@@ -9,6 +9,8 @@ import { parseNotificationPrefs, saveNotificationPrefs } from '../features/notif
 import type { NotificationPrefs } from '../features/notifications/notificationPrefs.ts';
 import { parseTextSize } from './textSize.ts';
 import type { TextSize } from './textSize.ts';
+import { parseSendKey } from './sendKey.ts';
+import type { SendKey } from './sendKey.ts';
 import { DEFAULT_AGENT_MODE, DEFAULTABLE_MODES, parseAgentMode } from '../features/agent/agentModes.ts';
 import type { AgentMode } from '../features/agent/agentModes.ts';
 
@@ -24,6 +26,8 @@ export interface Preferences {
   searchMaxResults: number;
   /** How large the interface is drawn (Settings → Appearance). */
   textSize: TextSize;
+  /** Which key sends from the composer (Settings → General). */
+  sendWith: SendKey;
 }
 
 export interface Policy {
@@ -181,6 +185,7 @@ export function parseAppSettings(value: unknown): AppSettings | null {
       theme: preferences.theme,
       searchMaxResults: preferences.searchMaxResults,
       textSize: parseTextSize(preferences.textSize),
+      sendWith: parseSendKey(preferences.sendWith),
     },
     policy: { localOnly: policy.localOnly, webAccess: policy.webAccess },
     code: parseCodePrefs(value.code),

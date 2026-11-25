@@ -12,6 +12,7 @@ pub mod config;
 pub mod connectors;
 pub mod design_check;
 pub mod embeddings;
+pub mod engine;
 pub mod folder_sync;
 pub mod harness;
 pub mod inbox;
@@ -32,6 +33,7 @@ pub mod table_refinement;
 pub mod types;
 pub mod user_memory;
 pub mod visuals;
+pub mod whats_new;
 pub mod workspaces;
 
 // Ported modules from old shodh-rag

@@ -700,6 +700,7 @@ fn source_change_record(
 /// chunks stay, whatever their paths.
 #[tauri::command]
 pub async fn delete_folder_source(
+    app: tauri::AppHandle,
     folder_path: String,
     source_id: String,
     state: State<'_, RagState>,
@@ -717,6 +718,10 @@ pub async fn delete_folder_source(
         )
         .await
         .map(|deleted| removal_message(deleted, &folder_path));
+    if result.is_ok() {
+        // Its new files leave What's new with it.
+        crate::whats_new::source_removed(&app, &source_id).await;
+    }
     audit.record(source_change_record(
         "remove",
         Some(source_id.as_str()),

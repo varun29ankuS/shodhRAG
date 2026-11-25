@@ -20,7 +20,8 @@ import { useWorkspaces } from '../../features/workspaces/WorkspaceContext';
 import { useNavigationTarget } from '../../features/agent/useNavigationTarget';
 import { agentItemKey, revealAgentItem } from '../../lib/agentHighlight';
 
-export type SettingsSection = 'models' | 'search' | 'tools' | 'code' | 'tables' | 'general' | 'appearance' | 'notifications' | 'phone' | 'privacy' | 'memory' | 'data';
+import type { SettingsSection } from '../../features/memory/navigation';
+export type { SettingsSection } from '../../features/memory/navigation';
 
 const SECTIONS: { id: SettingsSection; label: string; description: string }[] = [
   {

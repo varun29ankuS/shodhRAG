@@ -7,7 +7,7 @@
  * (`app/tests/workspaces.test.ts`).
  */
 
-import type { AnswerScope } from '../agent/useAgentSession';
+import type { AnswerScope } from '../agent/agentApi';
 import type { SourceCounts, SourceKind, SourceState, Workspace, WorkspaceTab, WorkspaceTemplate } from './types';
 
 export const WORKSPACE_TABS: readonly WorkspaceTab[] = ['overview', 'sources', 'chats', 'tasks', 'memory', 'visuals', 'results', 'tables'];

@@ -38,7 +38,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
-use tauri::webview::{DownloadEvent, NewWindowResponse, PageLoadEvent};
+use tauri::webview::{DownloadEvent, NewWindowResponse, PageLoadEvent, WebviewBuilder};
 use tauri::window::Color;
 use tauri::{
     AppHandle, Emitter, EventTarget, Manager, PhysicalPosition, PhysicalSize, Runtime, Theme, Url,
@@ -92,11 +92,21 @@ pub enum PreviewState {
     Stopped,
 }
 
+/// Where a preview shows: its own window, or embedded in the main window
+/// over the Artifacts pane ([`super::preview_embed`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Place {
+    Window,
+    Embedded,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreviewEvent {
     pub label: String,
     pub state: PreviewState,
+    pub place: Place,
 }
 
 /// The preview showing now, as the tab sees it.
@@ -108,9 +118,33 @@ pub struct Shown {
     /// A saved version, or the folder as it is now (`None`).
     pub version: Option<u32>,
     pub network: bool,
+    pub place: Place,
 }
 
 static SHOWN: Mutex<Option<Shown>> = Mutex::new(None);
+
+/// The previews whose page has finished loading and not started loading again since,
+/// so a pane that asks again (opened anew on the same page) or learns its label after
+/// the page loaded is told so ([`has_loaded`]).
+static LOADED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Whether the page of the preview `label` has finished loading (and not started again).
+pub fn has_loaded(label: &str) -> bool {
+    LOADED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .any(|l| l == label)
+}
+
+/// The page of `label` finished loading (`true`) or started loading again.
+fn note_loaded(label: &str, loaded: bool) {
+    let mut list = LOADED.lock().unwrap_or_else(|e| e.into_inner());
+    list.retain(|l| l != label);
+    if loaded {
+        list.push(label.to_string());
+    }
+}
 
 /// Where the user last left the window, while it is open.
 static BOUNDS: Mutex<Option<Bounds>> = Mutex::new(None);
@@ -284,13 +318,19 @@ fn note_bounds<R: Runtime>(window: &Window<R>) {
     }
 }
 
-fn tell_main<R: Runtime>(app: &AppHandle<R>, label: &str, state: PreviewState) {
+pub(crate) fn tell_main<R: Runtime>(
+    app: &AppHandle<R>,
+    label: &str,
+    place: Place,
+    state: PreviewState,
+) {
     let event = PreviewEvent {
         label: label.to_string(),
         state,
+        place,
     };
     if let Err(e) = app.emit_to(
-        EventTarget::WebviewWindow {
+        EventTarget::Webview {
             label: MAIN_WINDOW.to_string(),
         },
         PREVIEW_EVENT,
@@ -312,6 +352,98 @@ pub struct Opening<'a> {
     pub dark: bool,
     /// The preview's own browser data folder ([`data_folder`]).
     pub data_dir: PathBuf,
+    /// Its own window, or embedded in the main window.
+    pub place: Place,
+}
+
+/// Every lock a preview webview gets, written once for both builder types
+/// (the preview window's `WebviewWindowBuilder` and the embedded preview's
+/// `WebviewBuilder`, which have the same method names; only the webview type
+/// their callbacks receive differs).
+macro_rules! locked {
+    ($builder:expr, $app:expr, $opening:expr) => {{
+        let app = $app;
+        let opening = $opening;
+        let label = opening.label.to_string();
+        let place = opening.place;
+        let blocked = Arc::new(AtomicBool::new(false));
+        let loaded = Arc::new(AtomicBool::new(false));
+        let on_navigation = (
+            app.clone(),
+            label.clone(),
+            opening.token.to_string(),
+            blocked.clone(),
+        );
+        let on_new_window = (app.clone(), label.clone(), blocked.clone());
+        let on_download = (app.clone(), label.clone(), blocked);
+        let on_load = (app.clone(), label, loaded);
+        $builder
+            // Its own browser process (Windows), arguments and private profile.
+            .additional_browser_args(&browser_args(
+                crate::profile::process_browser_args(),
+                opening.network,
+            ))
+            .data_directory(opening.data_dir.clone())
+            .incognito(true)
+            .devtools(cfg!(debug_assertions))
+            .initialization_script_for_all_frames(preview::GUARD_SCRIPT)
+            .on_navigation(move |url| {
+                let (app, label, token, blocked) = &on_navigation;
+                let allowed = navigation_allowed(url, token);
+                // Logged and reported once per preview: a page looping on it floods nothing.
+                if !allowed && !blocked.swap(true, Ordering::SeqCst) {
+                    tracing::info!(window = %label, "a preview tried to leave its own files; stopped");
+                    tell_main(app, label, place, PreviewState::Blocked);
+                }
+                allowed
+            })
+            .on_new_window(move |url, _features| {
+                let (app, label, blocked) = &on_new_window;
+                if new_window_allowed(&url) {
+                    return NewWindowResponse::Allow;
+                }
+                if !blocked.swap(true, Ordering::SeqCst) {
+                    tracing::info!(window = %label, "a preview tried to open a window; stopped");
+                    tell_main(app, label, place, PreviewState::Blocked);
+                }
+                NewWindowResponse::Deny
+            })
+            .on_download(move |_webview, event| {
+                let (app, label, blocked) = &on_download;
+                let allowed = download_allowed(&event);
+                if !allowed
+                    && matches!(event, DownloadEvent::Requested { .. })
+                    && !blocked.swap(true, Ordering::SeqCst)
+                {
+                    tracing::info!(window = %label, "a preview tried to download a file; stopped");
+                    tell_main(app, label, place, PreviewState::Blocked);
+                }
+                allowed
+            })
+            .on_page_load(move |webview, payload| {
+                let (app, label, loaded) = &on_load;
+                match payload.event() {
+                    PageLoadEvent::Started => note_loaded(label, false),
+                    PageLoadEvent::Finished => {
+                        // A page with no background of its own is white, as in a browser.
+                        if !loaded.swap(true, Ordering::SeqCst) {
+                            if let Err(e) = webview.set_background_color(Some(LIGHT_SURFACE)) {
+                                tracing::debug!(error = %e, "the preview's background could not be set");
+                            }
+                        }
+                        // Every load, not only the first: a reload the pane asked for, or
+                        // the live reload while it builds, is reported loaded again.
+                        note_loaded(label, true);
+                        tell_main(app, label, place, PreviewState::Loaded);
+                    }
+                }
+            })
+            .background_color(if opening.dark {
+                DARK_SURFACE
+            } else {
+                LIGHT_SURFACE
+            })
+    }};
 }
 
 /// The preview window, with every lock on, not yet shown.
@@ -320,91 +452,87 @@ fn locked_builder<'a, R: Runtime, M: Manager<R>>(
     app: &AppHandle<R>,
     opening: &Opening<'_>,
 ) -> WebviewWindowBuilder<'a, R, M> {
-    let label = opening.label.to_string();
-    let blocked = Arc::new(AtomicBool::new(false));
-    let loaded = Arc::new(AtomicBool::new(false));
-    let on_navigation = (
-        app.clone(),
-        label.clone(),
-        opening.token.to_string(),
-        blocked.clone(),
-    );
-    let on_new_window = (app.clone(), label.clone(), blocked.clone());
-    let on_download = (app.clone(), label.clone(), blocked);
-    let on_load = (app.clone(), label, loaded);
-    WebviewWindowBuilder::new(
-        manager,
-        opening.label,
-        WebviewUrl::CustomProtocol(opening.url.clone()),
+    locked!(
+        WebviewWindowBuilder::new(
+            manager,
+            opening.label,
+            WebviewUrl::CustomProtocol(opening.url.clone()),
+        ),
+        app,
+        opening
     )
-    // Its own browser process (Windows), arguments and private profile.
-    .additional_browser_args(&browser_args(
-        crate::profile::process_browser_args(),
-        opening.network,
-    ))
-    .data_directory(opening.data_dir.clone())
-    .incognito(true)
-    .devtools(cfg!(debug_assertions))
-    .initialization_script_for_all_frames(preview::GUARD_SCRIPT)
-    .on_navigation(move |url| {
-        let (app, label, token, blocked) = &on_navigation;
-        let allowed = navigation_allowed(url, token);
-        // Logged and reported once per window: a page looping on it floods nothing.
-        if !allowed && !blocked.swap(true, Ordering::SeqCst) {
-            tracing::info!(window = %label, "a preview tried to leave its own files; stopped");
-            tell_main(app, label, PreviewState::Blocked);
-        }
-        allowed
-    })
-    .on_new_window(move |url, _features| {
-        let (app, label, blocked) = &on_new_window;
-        if new_window_allowed(&url) {
-            return NewWindowResponse::Allow;
-        }
-        if !blocked.swap(true, Ordering::SeqCst) {
-            tracing::info!(window = %label, "a preview tried to open a window; stopped");
-            tell_main(app, label, PreviewState::Blocked);
-        }
-        NewWindowResponse::Deny
-    })
-    .on_download(move |_webview, event| {
-        let (app, label, blocked) = &on_download;
-        let allowed = download_allowed(&event);
-        if !allowed
-            && matches!(event, DownloadEvent::Requested { .. })
-            && !blocked.swap(true, Ordering::SeqCst)
-        {
-            tracing::info!(window = %label, "a preview tried to download a file; stopped");
-            tell_main(app, label, PreviewState::Blocked);
-        }
-        allowed
-    })
-    .on_page_load(move |window, payload| {
-        let (app, label, loaded) = &on_load;
-        if payload.event() == PageLoadEvent::Finished && !loaded.swap(true, Ordering::SeqCst) {
-            // A page with no background of its own is white, as in a browser.
-            if let Err(e) = window.set_background_color(Some(LIGHT_SURFACE)) {
-                tracing::debug!(error = %e, "the preview's background could not be set");
-            }
-            tell_main(app, label, PreviewState::Loaded);
-        }
-    })
     .title(window_title(opening.title, opening.version))
     .theme(Some(if opening.dark {
         Theme::Dark
     } else {
         Theme::Light
     }))
-    .background_color(if opening.dark {
-        DARK_SURFACE
-    } else {
-        LIGHT_SURFACE
-    })
     .decorations(true)
     .resizable(true)
     .min_inner_size(320.0, 240.0)
     // Placed first, then shown (the user asked for it, so it takes the focus).
     .visible(false)
+}
+
+/// The preview as a child webview of another window (the embedded preview
+/// in Artifacts), with exactly the preview window's locks. It does not take
+/// the keyboard focus when added; the caller adds it, hides it and places it.
+pub(crate) fn locked_webview<R: Runtime>(
+    app: &AppHandle<R>,
+    opening: &Opening<'_>,
+) -> WebviewBuilder<R> {
+    locked!(
+        WebviewBuilder::new(
+            opening.label,
+            WebviewUrl::CustomProtocol(opening.url.clone()),
+        ),
+        app,
+        opening
+    )
+    .focused(false)
+}
+
+/// WebView2's locks wry does not offer, on any preview webview (a window's
+/// or an embedded one): every permission request is denied, and a crashed
+/// or hung page is reported to the main window as stopped. An embedded
+/// page that calls `window.close()` loses its host (wry destroys the child's
+/// container), so that preview is closed and its token ended as if the
+/// user had closed it; a window's close is noticed by its window event.
+#[cfg(windows)]
+pub(crate) fn lock_platform<R: Runtime>(
+    app: &AppHandle<R>,
+    label: &str,
+    place: Place,
+    webview: &tauri::Webview<R>,
+) -> Result<(), String> {
+    let app = app.clone();
+    let label = label.to_string();
+    webview
+        .with_webview(move |webview| {
+            let stopped = Arc::new(AtomicBool::new(false));
+            let on_failed = {
+                let (app, label) = (app.clone(), label.clone());
+                Box::new(move || {
+                    if !stopped.swap(true, Ordering::SeqCst) {
+                        tracing::warn!(window = %label, "a preview's page stopped");
+                        tell_main(&app, &label, place, PreviewState::Stopped);
+                    }
+                })
+            };
+            let on_close: Option<Box<dyn Fn()>> = (place == Place::Embedded).then(|| {
+                Box::new(move || {
+                    let (app, label) = (app.clone(), label.clone());
+                    tauri::async_runtime::spawn(async move {
+                        let _changing = changing().await;
+                        close(&app, Some(&label));
+                    });
+                }) as Box<dyn Fn()>
+            });
+            if let Err(e) = webview2::lock(&webview, on_failed, on_close) {
+                tracing::warn!(error = %e, "the preview's permission and crash handlers could not be set");
+            }
+        })
+        .map_err(|e| e.to_string())
 }
 
 fn destroy<R: Runtime>(window: &WebviewWindow<R>) {
@@ -451,31 +579,16 @@ pub fn open<R: Runtime>(
         }
     }
     #[cfg(windows)]
-    {
-        let app = app.clone();
-        let label = opening.label.to_string();
-        let locked = window.with_webview(move |webview| {
-            let stopped = Arc::new(AtomicBool::new(false));
-            let on_failed = Box::new(move || {
-                if !stopped.swap(true, Ordering::SeqCst) {
-                    tracing::warn!(window = %label, "a preview's page stopped");
-                    tell_main(&app, &label, PreviewState::Stopped);
-                }
-            });
-            if let Err(e) = webview2::lock(&webview, on_failed) {
-                tracing::warn!(error = %e, "the preview's permission and crash handlers could not be set");
-            }
-        });
-        if let Err(e) = locked {
-            destroy(&window);
-            return Err(format!("The preview window could not be locked ({e})"));
-        }
+    if let Err(e) = lock_platform(app, opening.label, Place::Window, window.as_ref()) {
+        destroy(&window);
+        return Err(format!("The preview window could not be locked ({e})"));
     }
-    *SHOWN.lock().unwrap_or_else(|e| e.into_inner()) = Some(Shown {
+    set_shown(Shown {
         label: opening.label.to_string(),
         creation_id: creation_id.to_string(),
         version: opening.version,
         network: opening.network,
+        place: Place::Window,
     });
     *BOUNDS.lock().unwrap_or_else(|e| e.into_inner()) = remembered;
     if let Err(e) = window.show().and_then(|()| window.set_focus()) {
@@ -484,31 +597,52 @@ pub fn open<R: Runtime>(
     Ok(())
 }
 
-fn preview_window<R: Runtime>(app: &AppHandle<R>, label: &str) -> Result<WebviewWindow<R>, String> {
+/// Record the preview showing now (its window, or the embedded one).
+pub(crate) fn set_shown(shown: Shown) {
+    *SHOWN.lock().unwrap_or_else(|e| e.into_inner()) = Some(shown);
+}
+
+/// The preview `label` in its own window. An embedded preview is not one:
+/// its webview lives in the main window, which Tauri then no longer counts
+/// as a webview window.
+fn preview_window<R: Runtime>(app: &AppHandle<R>, label: &str) -> Option<WebviewWindow<R>> {
     app.get_webview_window(label)
+        .filter(|w| preview::is_preview_webview(w.label()))
+}
+
+/// The webview of the preview `label`, in its own window or embedded.
+fn preview_webview<R: Runtime>(
+    app: &AppHandle<R>,
+    label: &str,
+) -> Result<tauri::Webview<R>, String> {
+    app.get_webview(label)
         .filter(|w| preview::is_preview_webview(w.label()))
         .ok_or_else(|| "This preview has closed.".to_string())
 }
 
-/// Bring the preview `label` to the front, with the keyboard focus.
+/// Bring the preview `label` to the front, with the keyboard focus. An
+/// embedded preview takes the keyboard focus where it is.
 pub fn focus<R: Runtime>(app: &AppHandle<R>, label: &str) -> Result<(), String> {
-    let window = preview_window(app, label)?;
-    window
-        .unminimize()
-        .and_then(|()| window.show())
-        .and_then(|()| window.set_focus())
-        .map_err(|e| format!("The preview could not come to the front ({e})"))
+    let focused = match preview_window(app, label) {
+        Some(window) => window
+            .unminimize()
+            .and_then(|()| window.show())
+            .and_then(|()| window.set_focus()),
+        None => preview_webview(app, label)?.set_focus(),
+    };
+    focused.map_err(|e| format!("The preview could not come to the front ({e})"))
 }
 
 /// Load the preview `label` again (the files changed, or the user asked).
 pub fn reload<R: Runtime>(app: &AppHandle<R>, label: &str) -> Result<(), String> {
-    preview_window(app, label)?
+    preview_webview(app, label)?
         .reload()
         .map_err(|e| format!("The preview could not reload ({e})"))
 }
 
 /// Close the preview `label`, or the one shown now (`None`). Its token
-/// stops working at once.
+/// stops working at once. A window's end is told to the tab by its window
+/// event; an embedded preview has none, so its end is told here.
 pub fn close<R: Runtime>(app: &AppHandle<R>, label: Option<&str>) {
     let shown = {
         let mut shown = SHOWN.lock().unwrap_or_else(|e| e.into_inner());
@@ -531,8 +665,11 @@ pub fn close<R: Runtime>(app: &AppHandle<R>, label: Option<&str>) {
             continue;
         }
         preview::PREVIEWS.end(label);
-        if let Some(window) = app.get_webview_window(label) {
+        note_loaded(label, false);
+        if let Some(window) = preview_window(app, label) {
             destroy(&window);
+        } else if super::preview_embed::closed(app, label) {
+            tell_main(app, label, Place::Embedded, PreviewState::Closed);
         }
     }
 }
@@ -549,11 +686,13 @@ fn on_preview_destroyed<R: Runtime>(app: &AppHandle<R>, label: &str) {
         }
     }
     preview::PREVIEWS.end(label);
-    tell_main(app, label, PreviewState::Closed);
+    note_loaded(label, false);
+    tell_main(app, label, Place::Window, PreviewState::Closed);
 }
 
 /// Window events: the preview remembers where the user puts it, and its end
 /// is noticed however it comes; it closes when the main window does (quit).
+/// The embedded preview hides while the main window is minimised.
 pub fn on_window_event<R: Runtime>(window: &Window<R>, event: &WindowEvent) {
     let label = window.label();
     if preview::is_preview_webview(label) {
@@ -564,22 +703,35 @@ pub fn on_window_event<R: Runtime>(window: &Window<R>, event: &WindowEvent) {
         }
         return;
     }
-    if label == MAIN_WINDOW && matches!(event, WindowEvent::Destroyed) {
-        let app = window.app_handle().clone();
-        tauri::async_runtime::spawn(async move {
-            let _changing = changing().await;
-            close(&app, None);
-        });
+    if label != MAIN_WINDOW {
+        return;
+    }
+    match event {
+        WindowEvent::Resized(_) => super::preview_embed::minimised(
+            window.app_handle(),
+            window.is_minimized().unwrap_or(false),
+        ),
+        WindowEvent::Destroyed => {
+            let app = window.app_handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let _changing = changing().await;
+                close(&app, None);
+            });
+        }
+        _ => {}
     }
 }
 
-/// The main window went to the tray: so does the preview.
+/// The main window went to the tray: so does the preview. An embedded one
+/// is hidden with it, and stays hidden until the Artifacts pane reports
+/// its place again.
 pub fn hide_with_main<R: Runtime>(app: &AppHandle<R>) {
     if let Some(window) = shown_window(app) {
         if let Err(e) = window.hide() {
             tracing::warn!(error = %e, "the preview window could not be hidden");
         }
     }
+    super::preview_embed::minimised(app, true);
 }
 
 /// The main window came back from the tray: so does the preview. Call
@@ -590,11 +742,13 @@ pub fn show_with_main<R: Runtime>(app: &AppHandle<R>) {
             tracing::warn!(error = %e, "the preview window could not be shown");
         }
     }
+    super::preview_embed::minimised(app, false);
 }
 
+/// The preview window showing now (not an embedded preview).
 fn shown_window<R: Runtime>(app: &AppHandle<R>) -> Option<WebviewWindow<R>> {
-    let label = shown()?.label;
-    app.get_webview_window(&label)
+    let shown = shown().filter(|s| s.place == Place::Window)?;
+    preview_window(app, &shown.label)
 }
 
 #[cfg(windows)]
@@ -610,7 +764,10 @@ mod webview2 {
         COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED,
         COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE,
     };
-    use webview2_com::{PermissionRequestedEventHandler, ProcessFailedEventHandler};
+    use webview2_com::{
+        PermissionRequestedEventHandler, ProcessFailedEventHandler,
+        WindowCloseRequestedEventHandler,
+    };
 
     /// Whether a failed process leaves the page dead (not a GPU or utility
     /// process WebView2 restarts by itself).
@@ -625,7 +782,11 @@ mod webview2 {
     }
 
     /// Runs on the UI thread (inside `with_webview`).
-    pub fn lock(webview: &PlatformWebview, on_failed: Box<dyn Fn()>) -> windows_core::Result<()> {
+    pub fn lock(
+        webview: &PlatformWebview,
+        on_failed: Box<dyn Fn()>,
+        on_close: Option<Box<dyn Fn()>>,
+    ) -> windows_core::Result<()> {
         // Every permission (camera, microphone, location, notifications,
         // clipboard and the rest) is denied without asking.
         let deny = PermissionRequestedEventHandler::create(Box::new(|_, args| {
@@ -653,6 +814,13 @@ mod webview2 {
             let core = webview.controller().CoreWebView2()?;
             core.add_PermissionRequested(&deny, &mut token)?;
             core.add_ProcessFailed(&failed, &mut token)?;
+            if let Some(on_close) = on_close {
+                let closed = WindowCloseRequestedEventHandler::create(Box::new(move |_, _| {
+                    on_close();
+                    Ok(())
+                }));
+                core.add_WindowCloseRequested(&closed, &mut token)?;
+            }
         }
         Ok(())
     }
@@ -666,6 +834,28 @@ mod tests {
 
     fn url(text: &str) -> Url {
         Url::parse(text).unwrap_or_else(|e| panic!("{text}: {e}"))
+    }
+
+    /// The pane may learn its label after the page loaded (a page kept from
+    /// an earlier visit, or a fast first load): Rust still knows it loaded.
+    #[test]
+    fn a_page_counts_as_loaded_until_it_loads_again_or_closes() {
+        let (a, b) = ("preview-loaded-test-a", "preview-loaded-test-b");
+        assert!(!has_loaded(a));
+        note_loaded(a, true);
+        note_loaded(b, true);
+        assert!(has_loaded(a) && has_loaded(b));
+        // A reload starts: it is loading again, until it finishes.
+        note_loaded(a, false);
+        assert!(!has_loaded(a));
+        assert!(has_loaded(b));
+        note_loaded(a, true);
+        note_loaded(a, true);
+        assert!(has_loaded(a));
+        // Closed: forgotten.
+        note_loaded(a, false);
+        note_loaded(b, false);
+        assert!(!has_loaded(a) && !has_loaded(b));
     }
 
     #[test]
@@ -843,24 +1033,27 @@ mod tests {
     }
 
     #[test]
-    fn the_tab_hears_four_plain_states() {
-        let event = |state| {
+    fn the_tab_hears_four_plain_states_and_where_the_preview_is() {
+        let event = |state, place| {
             serde_json::to_value(PreviewEvent {
                 label: "preview-x".into(),
                 state,
+                place,
             })
             .unwrap()
         };
-        for (state, word) in [
-            (PreviewState::Loaded, "loaded"),
-            (PreviewState::Blocked, "blocked"),
-            (PreviewState::Closed, "closed"),
-            (PreviewState::Stopped, "stopped"),
-        ] {
-            assert_eq!(
-                event(state),
-                serde_json::json!({ "label": "preview-x", "state": word })
-            );
+        for (place, where_) in [(Place::Window, "window"), (Place::Embedded, "embedded")] {
+            for (state, word) in [
+                (PreviewState::Loaded, "loaded"),
+                (PreviewState::Blocked, "blocked"),
+                (PreviewState::Closed, "closed"),
+                (PreviewState::Stopped, "stopped"),
+            ] {
+                assert_eq!(
+                    event(state, place),
+                    serde_json::json!({ "label": "preview-x", "state": word, "place": where_ })
+                );
+            }
         }
     }
 
@@ -901,11 +1094,46 @@ mod tests {
             network: false,
             dark: true,
             data_dir: std::env::temp_dir().join("shodh-preview-test"),
+            place: Place::Window,
         };
         let window = locked_builder(&app, app.handle(), &opening)
             .build()
             .expect("the preview window builds");
         assert_eq!(window.label(), label);
         assert_eq!(window.url().expect("its address"), url(&address));
+    }
+
+    /// The embedded form of the same locks builds as a child webview of
+    /// another window, on its own label and address.
+    #[test]
+    fn the_locked_child_builds_on_its_own_address() {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("the mock app builds");
+        let label = new_label();
+        let address = format!("{}/{TOKEN}/index.html", preview::origin());
+        let opening = Opening {
+            label: &label,
+            token: TOKEN,
+            url: url(&address),
+            title: "Snake",
+            version: None,
+            network: false,
+            dark: false,
+            data_dir: std::env::temp_dir().join("shodh-preview-test"),
+            place: Place::Embedded,
+        };
+        let host = tauri::window::WindowBuilder::new(&app, "host")
+            .build()
+            .expect("the host window builds");
+        let webview = host
+            .add_child(
+                locked_webview(app.handle(), &opening),
+                tauri::LogicalPosition::new(0., 0.),
+                tauri::LogicalSize::new(100., 100.),
+            )
+            .expect("the locked child builds");
+        assert_eq!(webview.label(), label);
+        assert_eq!(webview.url().expect("its address"), url(&address));
     }
 }

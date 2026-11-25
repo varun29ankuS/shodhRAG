@@ -257,8 +257,9 @@ impl HostTool for OpenArtifactTool {
     fn description(&self) -> &'static str {
         "Show the user a creation in the Artifacts tab (its id from list_artifacts, or the \
          creation this conversation builds): at a saved version (the folder as it is now when \
-         absent) and on a pane: preview (the page running), files (its files) or versions \
-         (each saved version and what changed). This changes nothing."
+         absent) and on a pane: preview (the page running live inside Artifacts, with this \
+         chat floating over it), files (its files) or versions (each saved version and what \
+         changed). This changes nothing."
     }
     fn schema(&self) -> Value {
         json!({
@@ -328,9 +329,14 @@ impl HostTool for OpenArtifactTool {
             Some(number) => format!("version {number}"),
             None => "as it is now".to_string(),
         };
+        let place = if pane == "preview" {
+            " The page runs live inside Artifacts, with this chat floating over it.".to_string()
+        } else {
+            String::new()
+        };
         Ok(ToolOutput {
             text_for_model: format!(
-                "\"{}\" ({at}) on the {pane} pane of the Artifacts tab: {SHOWN_TO_USER}",
+                "\"{}\" ({at}) on the {pane} pane of the Artifacts tab: {SHOWN_TO_USER}{place}",
                 creation.title
             ),
             summary_for_ui: format!("Showed “{}” · {pane}", creation.title),
@@ -399,6 +405,41 @@ mod tests {
         );
         assert_eq!(shown.label.as_deref(), Some(creation.title.as_str()));
         assert_eq!(tool.tier(), RiskTier::Read);
+        assert!(!out.text_for_model.contains("inside Artifacts"));
+
+        // The preview (the pane it opens on by default): the page runs live inside
+        // Artifacts, and the model is told the chat floats over it. The window opens the
+        // chat over the page for a preview target (ChatSessionContext's `openDock`).
+        for args in [
+            json!({"artifact_id": creation.id, "pane": "preview"}),
+            json!({"artifact_id": creation.id}),
+        ] {
+            let out = tool.execute(args.clone(), &ctx).await.unwrap();
+            assert!(
+                out.text_for_model
+                    .contains("runs live inside Artifacts, with this chat floating over it"),
+                "{args}: {}",
+                out.text_for_model
+            );
+            let shown = crate::agent_tools::testing::expect_navigation(&mut rx, "open_artifact");
+            assert_eq!(
+                shown.target,
+                Some(NavigationTarget::Artifact {
+                    artifact_id: creation.id.clone(),
+                    version: None,
+                    pane: Some("preview".into()),
+                })
+            );
+        }
+        let session = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../src/features/ask/ChatSessionContext.tsx"),
+        )
+        .expect("the chat session's source");
+        assert!(session.contains(
+            "const openDock = nav.target?.kind === 'artifact' && nav.target.pane === 'preview';"
+        ));
+        assert!(tool.description().contains("live inside Artifacts"));
     }
 
     #[tokio::test]

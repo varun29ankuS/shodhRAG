@@ -8,6 +8,14 @@ import { notify } from '../../lib/notify';
 import { openInTasks } from './openInTasks';
 import { FOCUS_RING } from './fields';
 import { reminderLabel } from './reminders';
+import { repeatDecide } from './repeatApi';
+import type { RepeatChoice } from './repeat';
+
+const REPEAT_ANSWERS: ReadonlyArray<{ choice: RepeatChoice; label: string }> = [
+  { choice: 'make', label: 'Make the next one' },
+  { choice: 'skip', label: 'Skip this one' },
+  { choice: 'mark_done', label: 'Mark done' },
+];
 
 /** Payload of `reminder-fired` / items of `reminders-missed` (`reminders.rs::DueReminder`). */
 interface DueReminder {
@@ -15,6 +23,8 @@ interface DueReminder {
   title: string;
   reminder: string;
   dueDate?: string | null;
+  /** A repeating task's question: the next one fell due while this copy is open. */
+  repeat?: { jobId: string; occurrence: string; detail: string } | null;
 }
 
 const SNOOZE_MINUTES = 10;
@@ -42,11 +52,61 @@ function openTask(taskId: string) {
   openInTasks({ taskId });
 }
 
+/** A repeating task's question: its three answers, no snooze (that would ring the open copy again). */
+function RepeatToast({ id, reminder, jobId, detail }: { id: string | number; reminder: DueReminder; jobId: string; detail: string }) {
+  const answer = (choice: RepeatChoice) => {
+    toast.dismiss(id);
+    repeatDecide(jobId, choice).catch(err => notify.error('The answer was not saved', { description: errorText(err) }));
+  };
+  return (
+    <div
+      role="alert"
+      aria-labelledby={`${id}-title`}
+      aria-describedby={`${id}-when`}
+      className="w-[356px] max-w-full flex flex-col gap-2 p-3 rounded-[10px] border border-shodh-border-strong bg-shodh-surface text-shodh-text shadow-[0_8px_24px_rgba(0,0,0,0.3)]"
+    >
+      <div className="flex items-start gap-2">
+        <BellRing className="w-4 h-4 mt-0.5 shrink-0 text-shodh-accent-text" aria-hidden="true" />
+        <div className="min-w-0 flex flex-col">
+          <span id={`${id}-title`} className="text-small font-medium truncate">{reminder.title}</span>
+          <span id={`${id}-when`} className="text-caption text-shodh-text-muted">{detail}</span>
+        </div>
+      </div>
+      <div className="flex flex-wrap items-center gap-1.5 justify-end">
+        {REPEAT_ANSWERS.map(({ choice, label }, i) => (
+          <button
+            key={choice}
+            type="button"
+            className={cn(ACTION, i === 0 ? 'bg-shodh-accent text-shodh-on-accent hover:opacity-90' : 'text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text')}
+            onClick={() => answer(choice)}
+          >
+            {label}
+          </button>
+        ))}
+        <button
+          type="button"
+          className={cn(ACTION, 'text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text')}
+          onClick={() => {
+            toast.dismiss(id);
+            openTask(reminder.taskId);
+          }}
+        >
+          <ExternalLink className="w-3.5 h-3.5" aria-hidden="true" />
+          Open
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function ReminderToast({ id, reminder }: { id: string | number; reminder: DueReminder }) {
   const act = (run: () => Promise<unknown>, failure: string) => {
     toast.dismiss(id);
     run().catch(err => notify.error(failure, { description: errorText(err) }));
   };
+  if (reminder.repeat) {
+    return <RepeatToast id={id} reminder={reminder} jobId={reminder.repeat.jobId} detail={reminder.repeat.detail} />;
+  }
   return (
     <div
       role="alert"
@@ -170,7 +230,8 @@ export function ReminderAlerts() {
       if (!isDueReminder(event.payload)) return;
       const reminder = event.payload;
       toast.custom(id => <ReminderToast id={id} reminder={reminder} />, {
-        id: `reminder-${reminder.taskId}`,
+        // One toast per series' question, replaced when it moves to a newer occurrence.
+        id: reminder.repeat ? `repeat-${reminder.repeat.jobId}` : `reminder-${reminder.taskId}`,
         duration: Infinity,
       });
     })

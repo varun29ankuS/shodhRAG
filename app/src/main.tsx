@@ -6,6 +6,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App-SplitView";
 import PrintView from "./features/print/PrintView";
+import DockView from "./features/dock/DockView";
 import { ThemeProvider, useTheme } from "./contexts/ThemeContext";
 import { SidebarProvider } from "./contexts/SidebarContext";
 import { SearchModelsProvider } from "./features/setup/SearchModelsContext";
@@ -73,6 +74,16 @@ if (path === '/print-view') {
         <ThemeProvider forced="light">
           <PrintView />
         </ThemeProvider>
+      </ErrorBoundary>
+    </React.StrictMode>,
+  );
+} else if (path === '/dock-view') {
+  // The floating chat over the embedded Artifacts preview (dock_layer.rs): its own theme
+  // (from main's snapshot), no app shell.
+  root.render(
+    <React.StrictMode>
+      <ErrorBoundary>
+        <DockView />
       </ErrorBoundary>
     </React.StrictMode>,
   );

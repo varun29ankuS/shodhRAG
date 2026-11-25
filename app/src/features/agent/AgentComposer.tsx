@@ -1,7 +1,6 @@
-import React, { forwardRef, useCallback, useImperativeHandle, useLayoutEffect, useRef } from 'react';
+import React, { forwardRef, useImperativeHandle, useLayoutEffect, useRef } from 'react';
 import { ArrowUp, CornerDownRight, Folder, ImagePlus, Mic, MicOff, Square } from 'lucide-react';
 import { cn } from '../../lib/utils';
-import { useVoiceInput } from '../ask/useVoiceInput';
 import { pasteDecision } from '../ask/imageNotice';
 import { IS_MAC_PLATFORM, matchesShortcut, shortcutText, withShortcut } from '../../lib/shortcuts';
 
@@ -47,6 +46,8 @@ interface AgentComposerProps {
   approvalPending?: boolean;
   /** Sending is blocked (e.g. an answer is running in another conversation). */
   blockedReason: string | null;
+  /** A one-click fix shown with `blockedReason`, e.g. "Turn on Code mode". */
+  blockedAction?: { label: string; onClick: () => void; busy: boolean } | null;
   placeholder: string;
   /** The model chip (Ask only): shows and changes the model the next answer uses. */
   modelChip?: React.ReactNode;
@@ -70,6 +71,12 @@ interface AgentComposerProps {
    * user's key, never the agent's; Auto is picked in the menu).
    */
   onCycleMode?: () => void;
+  /**
+   * Dictation, run by the caller (Ask runs `useVoiceInput` on its own draft; the floating
+   * chat over the preview has the main window dictate). The microphone shows whenever it is
+   * supported, compact or not; without it there is none.
+   */
+  voice?: { supported: boolean; listening: boolean; toggle: () => void };
 }
 
 /**
@@ -90,6 +97,7 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
     canSteer,
     approvalPending = false,
     blockedReason,
+    blockedAction = null,
     placeholder,
     modelChip,
     scopeLabel,
@@ -103,20 +111,17 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
     compact = false,
     runningPlaceholder,
     onCycleMode,
+    voice,
   },
   ref,
 ) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const valueRef = useRef(value);
-  valueRef.current = value;
   const inputId = `${id}-input`;
   const blockedId = `${id}-blocked`;
   const maxHeight = compact ? MAX_COMPACT_HEIGHT : MAX_TEXTAREA_HEIGHT;
 
   useImperativeHandle(ref, () => ({ focus: () => textareaRef.current?.focus() }), []);
 
-  const getText = useCallback(() => valueRef.current, []);
-  const voice = useVoiceInput(getText, onChange);
 
   // Grow with content up to a cap, then scroll. Where the engine sizes the
   // field itself (CSS field-sizing) nothing is measured per keystroke;
@@ -226,7 +231,7 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
             <ImagePlus className="w-[17px] h-[17px]" aria-hidden="true" />
           </button>
         )}
-        {!compact && voice.supported && (
+        {voice?.supported && (
           <button
             type="button"
             onClick={voice.toggle}
@@ -277,9 +282,25 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
         </div>
       </div>
       {blockedReason && (
-        <p id={blockedId} className={cn('-mt-1 text-caption text-shodh-text-muted', compact ? 'px-3 pb-2' : 'px-[18px] pb-3')}>
-          {blockedReason}
-        </p>
+        <div className={cn('-mt-1 flex flex-wrap items-center gap-x-2 gap-y-1', compact ? 'px-3 pb-2' : 'px-[18px] pb-3')}>
+          <p id={blockedId} className="m-0 text-caption text-shodh-text-muted">
+            {blockedReason}
+          </p>
+          {blockedAction && (
+            <button
+              type="button"
+              onClick={blockedAction.onClick}
+              disabled={blockedAction.busy}
+              aria-busy={blockedAction.busy}
+              className={cn(
+                'inline-flex items-center h-6 px-2.5 rounded-full text-caption font-medium bg-shodh-accent text-white hover:opacity-90 disabled:opacity-60 disabled:cursor-wait',
+                FOCUS_RING,
+              )}
+            >
+              {blockedAction.label}
+            </button>
+          )}
+        </div>
       )}
     </div>
   );

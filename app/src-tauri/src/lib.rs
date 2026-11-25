@@ -17,6 +17,7 @@ mod graph_commands;
 mod image_upload_commands;
 mod inbox_commands;
 mod indexing_control;
+mod launch_probe;
 mod library_profile;
 mod llm_bootstrap;
 mod llm_commands;
@@ -29,6 +30,7 @@ mod memory_learn;
 mod model_fallback;
 mod model_picker_commands;
 mod notifications;
+mod paper_alerts;
 mod pdf_export;
 mod phone_link;
 mod profile;
@@ -47,9 +49,11 @@ mod storage_commands;
 mod store_notices;
 mod table_commands;
 mod table_model_commands;
+mod task_repeat;
 mod ui_state_commands;
 mod updater;
 mod visual_commands;
+mod whats_new;
 mod workspace_commands;
 
 // Unified chat system modules
@@ -66,6 +70,8 @@ mod code_review_commands;
 mod conversation_commands;
 mod conversation_turns;
 mod design_check_commands;
+mod dock_layer;
+mod engine_commands;
 mod event_emitter;
 
 use tauri::Manager;
@@ -213,6 +219,9 @@ pub fn run() {
             // A (re)load of the main window starts with no conversation shown:
             // the code map leases of the page before it are given back.
             if payload.event() == tauri::webview::PageLoadEvent::Started && webview.label() == "main" {
+                // Nothing reports the Artifacts pane for the page before it:
+                // the embedded preview hides until the new page does.
+                creations::preview_embed::main_reloaded(webview.app_handle());
                 if let Some(maps) = webview.app_handle().try_state::<code_map_commands::CodeMapState>() {
                     let released = maps.release_all();
                     if released > 0 {
@@ -643,6 +652,12 @@ pub fn run() {
             // Task reminders: native notifications while the app runs.
             app.manage(reminders::ReminderState::default());
             reminders::spawn(app.handle().clone());
+            // Repeating tasks, on the scheduler engine (shodh.db): one loop, woken by
+            // every task change.
+            app.manage(engine_commands::EngineState::new(
+                &app.state::<audit_commands::AuditState>(),
+            ));
+            engine_commands::spawn(app.handle().clone());
 
             // Tray icon: the window can hide there and reminders keep ringing.
             app.manage(background::BackgroundState::with_pause(pause));
@@ -652,7 +667,7 @@ pub fn run() {
                 tracing::error!("Tray icon unavailable: {e}");
             }
             if tray.is_ok() && background::started_in_background() {
-                if let Some(window) = app.get_webview_window(background::MAIN_WINDOW) {
+                if let Some(window) = background::main_window(app.handle()) {
                     if let Err(e) = window.hide() {
                         tracing::warn!("Could not start hidden: {e}");
                     }
@@ -993,6 +1008,13 @@ pub fn run() {
             creation_commands::creation_preview_focus,
             creation_commands::creation_preview_reload,
             creation_commands::creation_preview_close,
+            creation_commands::creation_preview_embed,
+            creation_commands::creation_preview_place,
+            creation_commands::creation_preview_pop_out,
+            // The floating chat over the embedded preview (dock_layer.rs)
+            dock_layer::dock_layer_publish,
+            dock_layer::dock_layer_action,
+            dock_layer::dock_layer_size,
             creation_commands::creation_keep,
             creation_commands::creation_export,
             creation_commands::creation_delete,
@@ -1070,6 +1092,21 @@ pub fn run() {
             reminders::snooze_reminder,
             reminders::list_missed_reminders,
             reminders::dismiss_missed_reminders,
+            // Repeating tasks
+            task_repeat::task_repeat_get,
+            task_repeat::task_repeat_set,
+            task_repeat::task_repeat_clear,
+            task_repeat::task_repeat_runs,
+            task_repeat::task_repeat_decide,
+            whats_new::whats_new_list,
+            whats_new::whats_new_mark_seen,
+            whats_new::whats_new_dismiss,
+            whats_new::folder_watch_set,
+            paper_alerts::paper_alert_create,
+            paper_alerts::paper_alert_update,
+            paper_alerts::paper_alert_delete,
+            paper_alerts::paper_alert_suggestions,
+            paper_alerts::whats_new_add_to_library,
             // Background mode (tray, start with Windows)
             background::get_background_status,
             background::set_close_to_tray,

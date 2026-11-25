@@ -19,6 +19,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::NaiveDate;
 use serde_json::{json, Value};
+use shodh_rag::engine::schedule::Schedule;
+use shodh_rag::engine::store::CreatedBy;
 use shodh_rag::harness::events::NavigationTarget;
 use shodh_rag::harness::profile::app_tools;
 use shodh_rag::harness::tools::navigate::{emit_shown, SHOWN_TO_USER};
@@ -285,6 +287,96 @@ fn describe_changes(changes: &[FieldChange]) -> String {
         .join("; ")
 }
 
+// ── Repeats ────────────────────────────────────────────────────────────────
+
+/// What `repeat` takes: a typed schedule whose time of day follows the task's due time.
+fn repeat_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "kind": {"type": "string", "enum": ["daily", "weekdays", "weekly", "monthly"]},
+            "days": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 7,
+                "items": {"type": "string", "enum": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]}
+            },
+            "day": {"type": ["integer", "string"]}
+        },
+        "required": ["kind"],
+        "additionalProperties": false
+    })
+}
+
+const REPEAT_HINT: &str = "use {\"kind\": \"daily\"}, {\"kind\": \"weekdays\"}, \
+     {\"kind\": \"weekly\", \"days\": [\"mon\"]} or {\"kind\": \"monthly\", \"day\": 24} \
+     (or \"day\": \"last\")";
+
+/// The `repeat` argument: `None` when absent, `Some(None)` for `"none"` or `null` (stop
+/// repeating), else the schedule. Its time of day is set from the task's due time when
+/// it is saved.
+fn repeat_arg(tool: &str, args: &Value) -> Result<Option<Option<Schedule>>, ToolError> {
+    let value = match args.get("repeat") {
+        None => return Ok(None),
+        Some(Value::Null) => return Ok(Some(None)),
+        Some(Value::String(text)) if text == "none" => return Ok(Some(None)),
+        Some(value) => value.clone(),
+    };
+    let Value::Object(mut fields) = value else {
+        return Err(invalid(
+            tool,
+            format!("`repeat`: {REPEAT_HINT}, or \"none\""),
+        ));
+    };
+    let kind = fields
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if !["daily", "weekdays", "weekly", "monthly"].contains(&kind) {
+        return Err(invalid(
+            tool,
+            format!("`repeat` kind {kind:?}: {REPEAT_HINT}"),
+        ));
+    }
+    fields.entry("at").or_insert_with(|| json!("00:00"));
+    serde_json::from_value::<Schedule>(Value::Object(fields))
+        .map(|schedule| Some(Some(schedule.normalized())))
+        .map_err(|e| invalid(tool, format!("`repeat`: {e}; {REPEAT_HINT}")))
+}
+
+/// "Repeats every Monday at 09:00" for a task due `due`.
+fn repeat_words(schedule: &Schedule, due: Option<&str>) -> String {
+    match due.and_then(parse_moment) {
+        Some(Moment::DateTime(at)) => schedule.clone().at_time(at.time()).describe(true),
+        _ => schedule.describe(false),
+    }
+}
+
+/// The repeating tasks, or an error the model can relay.
+async fn repeats_of(host: &AgentHost) -> Result<Arc<crate::task_repeat::Repeats>, ToolError> {
+    host.effects.task_repeats().await.ok_or_else(|| {
+        ToolError::Unavailable(
+            "Repeating tasks are unavailable: the app database could not be opened.".to_string(),
+        )
+    })
+}
+
+/// The answer `repeat_next` gives to a repeating task's question.
+fn repeat_next_arg(
+    tool: &str,
+    args: &Value,
+) -> Result<Option<crate::task_repeat::Choice>, ToolError> {
+    match str_arg(args, "repeat_next") {
+        None => Ok(None),
+        Some("make") => Ok(Some(crate::task_repeat::Choice::Make)),
+        Some("skip") => Ok(Some(crate::task_repeat::Choice::Skip)),
+        Some(other) => Err(invalid(
+            tool,
+            format!("`repeat_next` {other:?}: use make or skip (to mark the open copy done, call complete_task)"),
+        )),
+    }
+}
+
 // ── create_task ────────────────────────────────────────────────────────────
 
 pub struct CreateTaskTool {
@@ -308,7 +400,8 @@ impl HostTool for CreateTaskTool {
          timestamp), e.g. an hour before the due time. source_ref can hold the file the task came \
          from, e.g. a contract path. workspace files the task under a workspace (its id or name \
          from list_workspaces); in a workspace chat it defaults to that workspace, and null files \
-         it under no workspace."
+         it under no workspace. repeat makes it a repeating task (it needs a due date): the next \
+         copy is made when this one is done, at the next date of the repeat."
     }
     fn schema(&self) -> Value {
         json!({
@@ -320,7 +413,8 @@ impl HostTool for CreateTaskTool {
                 "notes": {"type": "string", "maxLength": 4000},
                 "reminder": {"type": "string", "minLength": 16, "maxLength": 40},
                 "source_ref": {"type": "string", "minLength": 1, "maxLength": 1024},
-                "workspace": {"type": ["string", "null"], "minLength": 1, "maxLength": 200}
+                "workspace": {"type": ["string", "null"], "minLength": 1, "maxLength": 200},
+                "repeat": repeat_schema()
             },
             "required": ["title"],
             "additionalProperties": false
@@ -337,7 +431,12 @@ impl HostTool for CreateTaskTool {
         args: &Value,
         ctx: &ToolContext,
     ) -> Result<ApprovalPreview, ToolError> {
-        let workspace = new_task_workspace(&self.host, app_tools::CREATE_TASK, args, ctx).await?;
+        let tool = app_tools::CREATE_TASK;
+        let workspace = new_task_workspace(&self.host, tool, args, ctx).await?;
+        let repeat = match repeat_arg(tool, args)? {
+            Some(Some(schedule)) => Some(repeat_words(&schedule, str_arg(args, "due"))),
+            _ => None,
+        };
         Ok(ApprovalPreview {
             label: None,
             details: json!({
@@ -350,6 +449,7 @@ impl HostTool for CreateTaskTool {
                 "workspace": workspace
                     .map(|(_, name)| name)
                     .unwrap_or_else(|| NO_WORKSPACE.to_string()),
+                "repeat": repeat,
             }),
         })
     }
@@ -357,6 +457,18 @@ impl HostTool for CreateTaskTool {
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let tool = app_tools::CREATE_TASK;
         let title = str_arg(&args, "title").ok_or_else(|| invalid(tool, "`title` is required"))?;
+        let repeat = match repeat_arg(tool, &args)? {
+            Some(Some(schedule)) => {
+                if str_arg(&args, "due").and_then(parse_moment).is_none() {
+                    return Err(invalid(
+                        tool,
+                        "`repeat` needs a due date: each copy is due on the next date of the repeat",
+                    ));
+                }
+                Some((schedule, repeats_of(&self.host).await?))
+            }
+            _ => None,
+        };
         let workspace = new_task_workspace(&self.host, tool, &args, ctx).await?;
         let new = NewTask {
             title: title.to_string(),
@@ -385,12 +497,26 @@ impl HostTool for CreateTaskTool {
             .as_ref()
             .map(|(_, name)| format!(" in workspace “{name}”"))
             .unwrap_or_default();
+        let repeats_text = match repeat {
+            Some((schedule, repeats)) => {
+                let view = repeats
+                    .set(&task.id, schedule, CreatedBy::Agent)
+                    .await
+                    .map_err(|e| {
+                        ToolError::Failed(format!(
+                            "The task was created, but its repeat was not saved: {e}"
+                        ))
+                    })?;
+                format!(" {}.", view.description)
+            }
+            None => String::new(),
+        };
         Ok(ToolOutput {
             text_for_model: format!(
-                "Created task \"{}\" (id {}{due_text}){in_workspace}. In Tasks: {SHOWN_TO_USER}",
+                "Created task \"{}\" (id {}{due_text}){in_workspace}.{repeats_text} In Tasks: {SHOWN_TO_USER}",
                 task.title, task.id
             ),
-            summary_for_ui: format!("Created task “{}”{due_text}{in_workspace}", task.title),
+            summary_for_ui: format!("Created task “{}”{due_text}{in_workspace}{repeats_text}", task.title),
             detail: Some(json!({
                 "id": task.id,
                 "title": task.title,
@@ -516,7 +642,8 @@ impl HostTool for ListTasksTool {
          all tasks (up to limit) and says how many there are. Filter by status, an inclusive due-date range (YYYY-MM-DD; tasks without a \
          due date are left out when a range is given), text in the title, notes, tags or \
          project, and workspace (an id or name: only that workspace's tasks). Also use it to \
-         find a task's id before changing it, and to check your own changes."
+         find a task's id before changing it, and to check your own changes. A repeating task \
+         shows its repeat, its next due date and any question waiting for the user."
     }
     fn schema(&self) -> Value {
         json!({
@@ -565,11 +692,23 @@ impl HostTool for ListTasksTool {
                 .map(|w| workspace_names(&w));
         }
         let names = names.unwrap_or_default();
-        let shown: Vec<Value> = matched
+        let mut shown: Vec<Value> = matched
             .iter()
             .take(limit)
             .map(|t| task_line(t, &names))
             .collect();
+        if let Some(repeats) = self.host.effects.task_repeats().await {
+            for (line, task) in shown.iter_mut().zip(matched.iter()) {
+                if !repeats.is_latest_copy(&task.id) && !task.id.starts_with("rep-") {
+                    continue;
+                }
+                if let (Some(summary), Some(fields)) =
+                    (repeats.summary(&task.id).await, line.as_object_mut())
+                {
+                    fields.insert("repeat".to_string(), json!(summary));
+                }
+            }
+        }
         let more = if total > shown.len() {
             format!(
                 " Showing the first {}; narrow the filter to see the rest.",
@@ -670,6 +809,19 @@ fn nullable_arg(args: &Value, key: &str) -> Option<Option<String>> {
         _ => None,
     }
 }
+
+/// The fields of `update_task` that change the task itself (not its repeat).
+const TASK_PATCH_FIELDS: [&str; 9] = [
+    "title",
+    "notes",
+    "due",
+    "priority",
+    "status",
+    "project",
+    "workspace",
+    "reminder",
+    "subtasks",
+];
 
 async fn task_patch_from_args(
     host: &AgentHost,
@@ -783,6 +935,20 @@ fn save_task_patch(
     })
 }
 
+/// The task fields of an `update_task` call. `None` when it only changes the repeat
+/// (`repeat_only` says the call does): no field at all is an error.
+async fn update_patch(
+    host: &AgentHost,
+    tool: &str,
+    args: &Value,
+    repeat_only: bool,
+) -> Result<Option<TaskPatch>, ToolError> {
+    if repeat_only && !TASK_PATCH_FIELDS.iter().any(|key| args.get(*key).is_some()) {
+        return Ok(None);
+    }
+    task_patch_from_args(host, tool, args).await.map(Some)
+}
+
 pub struct UpdateTaskTool {
     host: Arc<AgentHost>,
 }
@@ -804,7 +970,11 @@ impl HostTool for UpdateTaskTool {
          subtask list (keep a subtask's id to keep it; omit the id to add one; leave one out to \
          remove it). null clears due, project, workspace or reminder. \
          reminder is when to notify the user, a local date-time YYYY-MM-DDTHH:MM (or RFC 3339); \
-         setting it again re-arms a reminder that already rang. Only the fields you pass change."
+         setting it again re-arms a reminder that already rang. repeat sets or changes the repeat \
+         (\"none\" stops it; the copies stay). When a repeating task's next date came while its \
+         latest copy is open, list_tasks shows the question: repeat_next make makes the next copy \
+         now, skip makes none this time (to mark the open copy done, call complete_task). Only the \
+         fields you pass change."
     }
     fn schema(&self) -> Value {
         json!({
@@ -819,6 +989,8 @@ impl HostTool for UpdateTaskTool {
                 "project": {"type": ["string", "null"], "maxLength": 200},
                 "workspace": {"type": ["string", "null"], "minLength": 1, "maxLength": 200},
                 "reminder": {"type": ["string", "null"], "maxLength": 40},
+                "repeat": {"anyOf": [repeat_schema(), {"type": "string", "enum": ["none"]}]},
+                "repeat_next": {"type": "string", "enum": ["make", "skip"]},
                 "subtasks": {
                     "type": "array",
                     "maxItems": 50,
@@ -845,17 +1017,69 @@ impl HostTool for UpdateTaskTool {
         let tool = app_tools::UPDATE_TASK;
         let task_id =
             str_arg(args, "task_id").ok_or_else(|| invalid(tool, "`task_id` is required"))?;
-        let patch = task_patch_from_args(&self.host, tool, args).await?;
-        let (before, mut changes) = preview_task_patch(&self.host, tool, task_id, &patch)?;
+        let repeat = repeat_arg(tool, args)?;
+        let next = repeat_next_arg(tool, args)?;
+        let patch =
+            update_patch(&self.host, tool, args, repeat.is_some() || next.is_some()).await?;
+        let data = store(&self.host).load().map_err(|e| tool_error(tool, e))?;
+        let task = data.task(task_id).map_err(|e| tool_error(tool, e))?.clone();
+        let mut changes = match &patch {
+            Some(patch) => preview_task_patch(&self.host, tool, task_id, patch)?.1,
+            None => Vec::new(),
+        };
         if changes.iter().any(|c| c.field == "workspace") {
             // Names read better than ids; the ids stay when the store is unavailable.
             if let Ok(workspaces) = all_workspaces(&self.host).await {
                 name_workspace_changes(&mut changes, &workspace_names(&workspaces));
             }
         }
+        let mut repeat_next = None;
+        if repeat.is_some() || next.is_some() {
+            let repeats = repeats_of(&self.host).await?;
+            let current = repeats.get(task_id).await.map_err(ToolError::Failed)?;
+            if let Some(repeat) = &repeat {
+                let before = current
+                    .as_ref()
+                    .map_or_else(|| "Doesn't repeat".to_string(), |v| v.description.clone());
+                let due = changes.iter().find(|c| c.field == "due").map_or_else(
+                    || task.due_date.clone(),
+                    |c| c.after.as_str().map(str::to_string),
+                );
+                let after = repeat.as_ref().map_or_else(
+                    || "Doesn't repeat".to_string(),
+                    |schedule| repeat_words(schedule, due.as_deref()),
+                );
+                changes.push(FieldChange {
+                    field: "repeat",
+                    before: json!(before),
+                    after: json!(after),
+                });
+            }
+            if let Some(choice) = next {
+                if current.as_ref().and_then(|v| v.decision.as_ref()).is_none() {
+                    return Err(invalid(
+                        tool,
+                        "repeat_next answers a repeating task's question, and none is waiting for this task",
+                    ));
+                }
+                repeat_next = Some(match choice {
+                    crate::task_repeat::Choice::Make => {
+                        format!(
+                            "Make the next “{}” now (the last one isn't done)",
+                            task.title
+                        )
+                    }
+                    _ => format!("Skip this one: no copy of “{}” this time", task.title),
+                });
+            }
+        }
         Ok(ApprovalPreview {
-            label: Some(format!("Update task “{}”", before.title)),
-            details: json!({ "task": before.title, "changes": changes_json(&changes) }),
+            label: Some(format!("Update task “{}”", task.title)),
+            details: json!({
+                "task": task.title,
+                "changes": changes_json(&changes),
+                "repeatNext": repeat_next,
+            }),
         })
     }
 
@@ -863,8 +1087,70 @@ impl HostTool for UpdateTaskTool {
         let tool = app_tools::UPDATE_TASK;
         let task_id =
             str_arg(&args, "task_id").ok_or_else(|| invalid(tool, "`task_id` is required"))?;
-        let patch = task_patch_from_args(&self.host, tool, &args).await?;
-        save_task_patch(&self.host, ctx, tool, task_id, &patch)
+        let repeat = repeat_arg(tool, &args)?;
+        let next = repeat_next_arg(tool, &args)?;
+        let patch =
+            update_patch(&self.host, tool, &args, repeat.is_some() || next.is_some()).await?;
+        let mut out = match &patch {
+            Some(patch) => Some(save_task_patch(&self.host, ctx, tool, task_id, patch)?),
+            None => None,
+        };
+        if repeat.is_none() && next.is_none() {
+            return out.ok_or_else(|| invalid(tool, "give at least one field to change"));
+        }
+        let repeats = repeats_of(&self.host).await?;
+        let data = store(&self.host).load().map_err(|e| tool_error(tool, e))?;
+        let task = data.task(task_id).map_err(|e| tool_error(tool, e))?.clone();
+        let mut said: Vec<String> = Vec::new();
+        match repeat {
+            Some(Some(schedule)) => {
+                let view = repeats
+                    .set(task_id, schedule, CreatedBy::Agent)
+                    .await
+                    .map_err(|e| invalid(tool, e))?;
+                said.push(format!("{}.", view.description));
+            }
+            Some(None) => {
+                if repeats.clear(task_id).await.map_err(ToolError::Failed)? {
+                    said.push("It no longer repeats; its copies stay.".to_string());
+                } else {
+                    said.push("It did not repeat.".to_string());
+                }
+            }
+            None => {}
+        }
+        if let Some(choice) = next {
+            let view = repeats
+                .get(task_id)
+                .await
+                .map_err(ToolError::Failed)?
+                .filter(|v| v.decision.is_some())
+                .ok_or_else(|| {
+                    invalid(tool, "repeat_next answers a repeating task's question, and none is waiting for this task")
+                })?;
+            repeats
+                .decide(&view.job_id, choice)
+                .await
+                .map_err(ToolError::Failed)?;
+            said.push(match choice {
+                crate::task_repeat::Choice::Make => "The next copy was made.".to_string(),
+                _ => "No copy this time; it asks again at the next date.".to_string(),
+            });
+        }
+        reveal_task(ctx, &task);
+        let said = said.join(" ");
+        Ok(match out.take() {
+            Some(mut done) => {
+                done.text_for_model = format!("{} {said}", done.text_for_model);
+                done.summary_for_ui = format!("{} · {said}", done.summary_for_ui);
+                done
+            }
+            None => ToolOutput {
+                text_for_model: format!("Task \"{}\" (id {}): {said}", task.title, task.id),
+                summary_for_ui: format!("“{}”: {said}", task.title),
+                detail: Some(json!({ "id": task.id, "title": task.title })),
+            },
+        })
     }
 }
 
@@ -1102,13 +1388,24 @@ impl HostTool for DeleteTaskTool {
             str_arg(args, "task_id").ok_or_else(|| invalid(tool, "`task_id` is required"))?;
         let data = store(&self.host).load().map_err(|e| tool_error(tool, e))?;
         let task = data.task(task_id).map_err(|e| tool_error(tool, e))?;
+        // Deleting a repeating task's latest copy stops the repeat; an older copy does not.
+        let stops_repeat = match self.host.effects.task_repeats().await {
+            Some(repeats) => repeats.is_latest_copy(task_id),
+            None => false,
+        };
+        let and_stop = if stops_repeat {
+            " and stop repeating"
+        } else {
+            ""
+        };
         Ok(ApprovalPreview {
-            label: Some(format!("Delete task “{}”", task.title)),
+            label: Some(format!("Delete task “{}”{and_stop}", task.title)),
             details: json!({
                 "title": task.title,
                 "due": task.due_date,
                 "status": task.status,
                 "subtasks": task.subtasks.len(),
+                "repeat": stops_repeat.then_some("and stop repeating"),
             }),
         })
     }
@@ -2088,5 +2385,196 @@ mod tests {
         let task = store(&t.host).load().unwrap().task(&id).unwrap().clone();
         assert_eq!(task.workspace_id, None);
         assert_eq!(task.title, "Read paper", "the task is kept");
+    }
+
+    // ── Repeats ────────────────────────────────────────────────────────
+
+    /// A weekly task due Monday 7 January 2030 at 09:00, repeating every Monday.
+    async fn weekly(t: &testing::TestHost) -> String {
+        let (ctx, _rx) = testing::ctx();
+        let out = CreateTaskTool {
+            host: t.host.clone(),
+        }
+        .execute(
+            json!({
+                "title": "Submit timesheet",
+                "due": "2030-01-07T09:00",
+                "repeat": {"kind": "weekly", "days": ["mon"]}
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+        out.detail.unwrap()["id"].as_str().unwrap().to_string()
+    }
+
+    #[tokio::test]
+    async fn create_task_with_repeat_previews_the_schedule() {
+        let t = testing::host().await;
+        let (ctx, _rx) = testing::ctx();
+        let tool = CreateTaskTool {
+            host: t.host.clone(),
+        };
+        let args = json!({
+            "title": "Submit timesheet",
+            "due": "2030-01-07T09:00",
+            "repeat": {"kind": "weekly", "days": ["mon"]}
+        });
+        let preview = tool.preview_in(&args, &ctx).await.unwrap();
+        assert_eq!(preview.details["repeat"], "Repeats every Monday at 09:00");
+        let out = tool.execute(args, &ctx).await.unwrap();
+        assert!(out
+            .text_for_model
+            .contains("Repeats every Monday at 09:00."));
+        let id = out.detail.unwrap()["id"].as_str().unwrap().to_string();
+        let view = t.effects.repeats.get(&id).await.unwrap().unwrap();
+        assert_eq!(view.label, "Every week on Mon at 09:00");
+        let history = t.effects.repeats.runs(&id, 10).await.unwrap();
+        assert_eq!(
+            history[0].run.summary.as_deref(),
+            Some("Repeat turned on by Shodh, with your approval")
+        );
+    }
+
+    #[tokio::test]
+    async fn repeat_on_a_task_without_due_is_refused_with_the_reason() {
+        let t = testing::host().await;
+        let (ctx, _rx) = testing::ctx();
+        let err = CreateTaskTool {
+            host: t.host.clone(),
+        }
+        .execute(
+            json!({"title": "Someday", "repeat": {"kind": "daily"}}),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("needs a due date"), "{err}");
+        assert!(
+            store(&t.host).load().unwrap().tasks.is_empty(),
+            "nothing was created"
+        );
+        let hourly = CreateTaskTool {
+            host: t.host.clone(),
+        }
+        .execute(
+            json!({"title": "Hourly", "due": "2030-01-07T09:00", "repeat": {"kind": "every_hours"}}),
+            &ctx,
+        )
+        .await;
+        assert!(hourly.is_err(), "tasks repeat on days, not hours");
+    }
+
+    #[tokio::test]
+    async fn update_task_repeat_none_stops_the_series() {
+        let t = testing::host().await;
+        let id = weekly(&t).await;
+        let tool = UpdateTaskTool {
+            host: t.host.clone(),
+        };
+        let args = json!({"task_id": id, "repeat": "none"});
+        let preview = tool.preview(&args).await.unwrap();
+        let changes = preview.details["changes"].as_array().unwrap();
+        assert_eq!(changes[0]["field"], "repeat");
+        assert_eq!(changes[0]["before"], "Repeats every Monday at 09:00");
+        assert_eq!(changes[0]["after"], "Doesn't repeat");
+        let (ctx, _rx) = testing::ctx();
+        let out = tool.execute(args, &ctx).await.unwrap();
+        assert!(out.text_for_model.contains("no longer repeats"));
+        assert!(t.effects.repeats.get(&id).await.unwrap().is_none());
+        assert_eq!(
+            store(&t.host).load().unwrap().tasks.len(),
+            1,
+            "the task stays"
+        );
+    }
+
+    #[tokio::test]
+    async fn repeat_next_make_and_skip_answer_the_decision_after_approval() {
+        let t = testing::host().await;
+        let id = weekly(&t).await;
+        let tool = UpdateTaskTool {
+            host: t.host.clone(),
+        };
+        let skip = json!({"task_id": id, "repeat_next": "skip"});
+        assert!(
+            tool.preview(&skip).await.is_err(),
+            "nothing is waiting before the next date comes"
+        );
+        // Monday 14 January passes with the first copy still open.
+        t.effects
+            .repeat_clock
+            .set(crate::task_repeat::testing::local(2030, 1, 14, 9, 1));
+        t.effects.repeats.tick().await.unwrap();
+        let preview = tool.preview(&skip).await.unwrap();
+        assert_eq!(
+            preview.details["repeatNext"],
+            "Skip this one: no copy of “Submit timesheet” this time"
+        );
+        assert_eq!(tool.tier(), RiskTier::Write, "asked before it runs");
+        let (ctx, _rx) = testing::ctx();
+        tool.execute(skip, &ctx).await.unwrap();
+        let view = t.effects.repeats.get(&id).await.unwrap().unwrap();
+        assert_eq!(view.state, "active");
+        // The next Monday asks again; this time the assistant makes the next copy.
+        t.effects
+            .repeat_clock
+            .set(crate::task_repeat::testing::local(2030, 1, 21, 9, 1));
+        t.effects.repeats.tick().await.unwrap();
+        let make = json!({"task_id": id, "repeat_next": "make"});
+        assert_eq!(
+            tool.preview(&make).await.unwrap().details["repeatNext"],
+            "Make the next “Submit timesheet” now (the last one isn't done)"
+        );
+        let out = tool.execute(make, &ctx).await.unwrap();
+        assert!(out.text_for_model.contains("The next copy was made."));
+        let tasks = store(&t.host).load().unwrap().tasks;
+        assert_eq!(tasks.len(), 2);
+        assert!(tasks
+            .iter()
+            .any(|task| task.due_date.as_deref() == Some("2030-01-28T09:00")));
+    }
+
+    #[tokio::test]
+    async fn list_tasks_shows_repeat_next_and_decision() {
+        let t = testing::host().await;
+        let id = weekly(&t).await;
+        let (ctx, _rx) = testing::ctx();
+        let tool = ListTasksTool {
+            host: t.host.clone(),
+        };
+        let out = tool.execute(json!({}), &ctx).await.unwrap();
+        assert!(
+            out.text_for_model
+                .contains("Repeats every Monday at 09:00; next due Mon 14 Jan"),
+            "{}",
+            out.text_for_model
+        );
+        t.effects
+            .repeat_clock
+            .set(crate::task_repeat::testing::local(2030, 1, 14, 9, 1));
+        t.effects.repeats.tick().await.unwrap();
+        let out = tool.execute(json!({}), &ctx).await.unwrap();
+        assert!(out.text_for_model.contains("waiting for the user's answer"));
+        assert!(out.text_for_model.contains(&id));
+    }
+
+    #[tokio::test]
+    async fn delete_task_preview_says_and_stop_repeating_for_the_latest_copy_only() {
+        let t = testing::host().await;
+        let id = weekly(&t).await;
+        let plain = create(&t, "Renew lease", "2030-01-08").await;
+        let tool = DeleteTaskTool {
+            host: t.host.clone(),
+        };
+        let preview = tool.preview(&json!({"task_id": id})).await.unwrap();
+        assert_eq!(
+            preview.label.as_deref(),
+            Some("Delete task “Submit timesheet” and stop repeating")
+        );
+        assert_eq!(preview.details["repeat"], "and stop repeating");
+        let preview = tool.preview(&json!({"task_id": plain})).await.unwrap();
+        assert_eq!(preview.label.as_deref(), Some("Delete task “Renew lease”"));
+        assert_eq!(preview.details["repeat"], Value::Null);
     }
 }

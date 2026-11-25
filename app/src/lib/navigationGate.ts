@@ -67,6 +67,11 @@ export function holdsDraft(element: EditableLike | null | undefined): boolean {
 export interface TypingTracker {
   /** An `input` event on `target` at `now`. */
   note(target: EditableLike | null | undefined, now: number): void;
+  /**
+   * The user typed in the floating chat over the embedded preview at `now`: its own webview
+   * holds the focus, so this window sees no input; it counts as typing for the quiet time.
+   */
+  noteRemote(now: number): void;
   /** Dictation into the composer started (`true`) or stopped. */
   setDictating(on: boolean): void;
   /** A message was sent: the recent typing is spent. */
@@ -78,18 +83,24 @@ export interface TypingTracker {
 export function createTypingTracker(quietMs: number = TYPING_QUIET_MS): TypingTracker {
   let lastInputAt: number | null = null;
   let dictating = false;
+  let lastRemoteAt: number | null = null;
   return {
     note(target, now) {
       if (isEditable(target)) lastInputAt = now;
+    },
+    noteRemote(now) {
+      lastRemoteAt = now;
     },
     setDictating(on) {
       dictating = on;
     },
     reset() {
       lastInputAt = null;
+      lastRemoteAt = null;
     },
     isTyping(focused, now) {
       if (dictating) return true;
+      if (lastRemoteAt !== null && now - lastRemoteAt < quietMs) return true;
       if (holdsDraft(focused)) return true;
       return isEditable(focused) && lastInputAt !== null && now - lastInputAt < quietMs;
     },
@@ -202,6 +213,28 @@ export function offerNavigation<N>(state: GateState<N>, move: Counted<N>, typing
     return { state: { held: { nav: move.nav, count } }, follow: null, appeared: state.held === null };
   }
   return { state: { held: null }, follow: move.nav, appeared: false };
+}
+
+/** What decides whether the page Creator builds opens by itself ({@link followsBuildOpen}). */
+export interface BuildOpenState {
+  /** The view on screen (null: not known yet). */
+  view: string | null;
+  /** The conversation on screen is the one building the page. */
+  watchingConversation: boolean;
+  /** The user is typing ({@link TypingTracker.isTyping}). */
+  typing: boolean;
+}
+
+/**
+ * Whether the page Creator builds opens by itself in Artifacts: only for a user watching it
+ * being made, on Ask in the conversation that builds it or already in Artifacts, and not
+ * typing. Anyone else gets the gate's chip ("Shodh has … to show you in Artifacts · Go there"),
+ * which is non-modal and moves nothing until clicked.
+ */
+export function followsBuildOpen(state: BuildOpenState): boolean {
+  if (state.typing) return false;
+  if (state.view === 'artifacts') return true;
+  return state.view === 'ask' && state.watchingConversation;
 }
 
 /** The user clicked "Go there": follow the held move, once. */

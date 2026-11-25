@@ -4,9 +4,10 @@ import { cn } from '../../lib/utils';
 import DetailSheet from './DetailSheet';
 import { ChipInput, DateTimeField, FIELD_LABEL, FOCUS_RING, INLINE_INPUT, InlineText, Segmented } from './fields';
 import { ReminderField } from './ReminderField';
+import { RepeatField, RepeatHistory, useRepeat } from './RepeatField';
 import { useTasksStore } from './TasksStore';
 import { useChatSession } from '../ask/ChatSessionContext';
-import { useFocus } from '../focus/FocusContext';
+import { useFocus } from '../focus/focusHost';
 import { taskTarget } from '../focus/targets';
 import { isTempSubtaskId } from './taskStore';
 import { workspaceChoices, workspaceName } from './board';
@@ -282,6 +283,7 @@ export default function TaskDetailSheet({ task, onClose }: { task: TodoItem | nu
   if (task) last.current = task;
   const shown = task ?? last.current;
   const projectListId = useId();
+  const repeat = useRepeat(shown?.id ?? null);
 
   if (!shown) return null;
   const projects = Array.from(new Set(tasks.map(t => t.project).filter((p): p is string => !!p))).sort();
@@ -349,6 +351,9 @@ export default function TaskDetailSheet({ task, onClose }: { task: TodoItem | nu
         />
       </div>
       <div className="px-2.5">
+        <RepeatField task={shown} repeat={repeat} />
+      </div>
+      <div className="px-2.5">
         <ReminderField task={shown} onChange={reminder => void updateTask(shown.id, { reminder })} />
       </div>
       <InlineText
@@ -384,6 +389,9 @@ export default function TaskDetailSheet({ task, onClose }: { task: TodoItem | nu
         />
       </div>
       <SubtaskList task={shown} />
+      <div className="px-2.5">
+        <RepeatHistory repeat={repeat} />
+      </div>
     </DetailSheet>
   );
 }

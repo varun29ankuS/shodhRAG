@@ -3,7 +3,7 @@ import * as Dialog from '@radix-ui/react-dialog';
 import { FileText, Scissors, X } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { useChatSession } from '../ask/ChatSessionContext';
-import { useFocus } from '../focus/FocusContext';
+import { useFocus } from '../focus/focusHost';
 import { isInFocusOverlay } from '../focus/focusDom';
 import type { FileHighlight } from '../library/FileViewer';
 import { OPEN_SNIPPET_EVENT, SHOW_SOURCE_EVENT, onWindowEvent } from './snippetBus';

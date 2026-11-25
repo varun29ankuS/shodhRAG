@@ -207,6 +207,8 @@ impl HostEffects for TauriEffects {
         let deleted = folders
             .remove_source(rag, &indexing, source_id, path.as_deref())
             .await?;
+        // Its new files leave What's new with it.
+        crate::whats_new::source_removed(&self.app, source_id).await;
         self.emit_library(library_removed_payload(source_id));
         Ok(deleted)
     }
@@ -280,6 +282,22 @@ impl HostEffects for TauriEffects {
         }
     }
 
+    async fn task_repeats(&self) -> Option<std::sync::Arc<crate::task_repeat::Repeats>> {
+        crate::engine_commands::repeats(&self.app).await
+    }
+
+    async fn whats_new(&self) -> Option<std::sync::Arc<crate::whats_new::WhatsNew>> {
+        crate::engine_commands::whats_new(&self.app).await
+    }
+
+    async fn paper_alerts(&self) -> Option<std::sync::Arc<crate::paper_alerts::PaperAlerts>> {
+        crate::engine_commands::paper_alerts(&self.app).await
+    }
+
+    fn watched_folders(&self) -> Vec<(String, String)> {
+        crate::whats_new::watched_folders(&self.app.state::<FolderSyncState>())
+    }
+
     fn calendar_changed(&self, change: CalendarChange) {
         spawn_reindex(&self.app, &change);
         // Every task/event change (UI, agent tools, subtasks) goes through
@@ -289,6 +307,8 @@ impl HostEffects for TauriEffects {
         }
         // A reminder may have been set, moved or removed.
         crate::reminders::wake(&self.app);
+        // The latest copy of a repeating task may have been completed, edited or deleted.
+        crate::task_repeat::on_calendar_change(&self.app, &change);
         // A reminder that rang for a task now done or deleted waits on nothing.
         if let Some(id) = settled_reminder(&change) {
             let app = self.app.clone();

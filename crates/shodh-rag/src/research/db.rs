@@ -260,6 +260,16 @@ impl ResearchDb {
             .optional()?)
     }
 
+    /// The JSON of every stored scan (each library PDF's identity and references).
+    pub fn citation_scan_jsons(&self) -> ResearchResult<Vec<String>> {
+        let conn = self.conn.read()?;
+        let mut stmt = conn.prepare("SELECT scan_json FROM citation_scans ORDER BY file_path")?;
+        let rows = stmt
+            .query_map([], |r| r.get(0))?
+            .collect::<Result<Vec<String>, _>>()?;
+        Ok(rows)
+    }
+
     /// Stores the scan of a file.
     pub fn put_citation_scan(
         &self,

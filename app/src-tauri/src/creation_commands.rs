@@ -12,7 +12,8 @@ use tauri::{AppHandle, Emitter, Manager, State, Url};
 use crate::agent_session_commands::AgentSessions;
 use crate::agent_tools::export::EXPORTS_FOLDER;
 use crate::creations::preview::{self, Grant, PREVIEWS};
-use crate::creations::preview_window;
+use crate::creations::preview_embed;
+use crate::creations::preview_window::{self, Place};
 use crate::creations::{
     creations_root, valid_id, Creation, CreationStore, FileChange, FileContent, FileEntry,
     MAX_TITLE_CHARS,
@@ -300,6 +301,10 @@ pub struct PreviewInfo {
     pub network: bool,
     /// The page the preview opens.
     pub page: &'static str,
+    /// Its page finished loading already: a preview kept from before, or a
+    /// first load faster than this answer. Its `loaded` report may have gone
+    /// out before the pane knew the label, so the pane reads it here.
+    pub loaded: bool,
 }
 
 /// Show a preview in its own window and bring it to the front. The same
@@ -314,9 +319,77 @@ pub async fn creation_preview(
     network: bool,
     dark: bool,
 ) -> CreationResult<PreviewInfo> {
-    let id = checked_id(&id)?.to_string();
-    let data_dir = data_dir(&app)?;
-    let root = root(&app)?;
+    show_preview(&app, &id, version, network, dark, Place::Window).await
+}
+
+/// Show a preview inside the main window over the Artifacts pane
+/// ([`crate::creations::preview_embed`]). It is hidden until the pane
+/// reports its place with [`creation_preview_place`]. The same preview
+/// already embedded keeps its page; any other one (a window included)
+/// closes first.
+#[tauri::command]
+pub async fn creation_preview_embed(
+    app: AppHandle,
+    id: String,
+    version: Option<u32>,
+    network: bool,
+    dark: bool,
+) -> CreationResult<PreviewInfo> {
+    show_preview(&app, &id, version, network, dark, Place::Embedded).await
+}
+
+/// Where the Artifacts pane of the embedded preview `label` is, in the main
+/// page's CSS pixels, and whether something of main's is above it. Rust
+/// scales and clamps it, and shows the page only while it is on screen and
+/// uncovered.
+#[tauri::command]
+pub async fn creation_preview_place(
+    app: AppHandle,
+    label: String,
+    placement: preview_embed::Placement,
+) -> CreationResult<()> {
+    if !preview::is_preview_webview(&label) {
+        return Err("That is not a preview.".into());
+    }
+    Ok(preview_embed::place(&app, &label, placement)?)
+}
+
+/// Move the embedded preview `label` to a window of its own: the embedded
+/// page closes and the window opens on the same creation, version and
+/// switch (its page loads again there).
+#[tauri::command]
+pub async fn creation_preview_pop_out(
+    app: AppHandle,
+    label: String,
+) -> CreationResult<PreviewInfo> {
+    let shown = preview_window::shown()
+        .filter(|s| s.label == label && s.place == Place::Embedded)
+        .ok_or_else(|| CreationError::from("This preview has closed."))?;
+    show_preview(
+        &app,
+        &shown.creation_id,
+        shown.version,
+        shown.network,
+        preview_embed::dark(),
+        Place::Window,
+    )
+    .await
+}
+
+/// Show the preview of `id` (a version, or the folder now) at `place`. The
+/// same preview already showing there is kept (a window comes to the
+/// front); any other one closes first.
+pub(crate) async fn show_preview(
+    app: &AppHandle,
+    id: &str,
+    version: Option<u32>,
+    network: bool,
+    dark: bool,
+    place: Place,
+) -> CreationResult<PreviewInfo> {
+    let id = checked_id(id)?.to_string();
+    let data_dir = data_dir(app)?;
+    let root = root(app)?;
     let store = CreationStore::in_dir(&data_dir);
     let creation = {
         let id = id.clone();
@@ -334,17 +407,28 @@ pub async fn creation_preview(
     }
     let _changing = preview_window::changing().await;
     if let Some(shown) = preview_window::shown() {
-        let same = shown.creation_id == id && shown.version == version && shown.network == network;
-        // A window that went away meanwhile is opened again below.
-        if same && preview_window::focus(&app, &shown.label).is_ok() {
+        let same = shown.creation_id == id
+            && shown.version == version
+            && shown.network == network
+            && shown.place == place;
+        // One that went away meanwhile is opened again below.
+        let kept = same
+            && match place {
+                Place::Window => preview_window::focus(app, &shown.label).is_ok(),
+                Place::Embedded => {
+                    preview_embed::current().0.as_deref() == Some(shown.label.as_str())
+                }
+            };
+        if kept {
             return Ok(PreviewInfo {
+                loaded: preview_window::has_loaded(&shown.label),
                 label: shown.label,
                 network,
                 page: "index.html",
             });
         }
     }
-    preview_window::close(&app, None);
+    preview_window::close(app, None);
     let label = preview_window::new_label();
     let (token, url) = PREVIEWS.grant(Grant {
         creation_id: id.clone(),
@@ -357,26 +441,28 @@ pub async fn creation_preview(
     let opened = Url::parse(&url)
         .map_err(|e| format!("The preview address is not valid ({e})"))
         .and_then(|url| {
-            preview_window::open(
-                &app,
-                preview_window::Opening {
-                    label: &label,
-                    token: &token,
-                    url,
-                    title: &creation.title,
-                    version,
-                    network,
-                    dark,
-                    data_dir: preview_window::data_folder(&data_dir, network),
-                },
-                &id,
-            )
+            let opening = preview_window::Opening {
+                label: &label,
+                token: &token,
+                url,
+                title: &creation.title,
+                version,
+                network,
+                dark,
+                data_dir: preview_window::data_folder(&data_dir, network),
+                place,
+            };
+            match place {
+                Place::Window => preview_window::open(app, opening, &id),
+                Place::Embedded => preview_embed::embed(app, opening, &id),
+            }
         });
     if let Err(e) = opened {
         PREVIEWS.end(&label);
         return Err(e.into());
     }
     Ok(PreviewInfo {
+        loaded: preview_window::has_loaded(&label),
         label,
         network,
         page: "index.html",

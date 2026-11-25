@@ -98,12 +98,16 @@ async fn wait_ready(answer: oneshot::Receiver<()>, limit: Duration) -> bool {
 /// they are written, at most [`SAVE_WAIT`]. Returns at once without a main
 /// window.
 pub async fn flush_frontend(app: &AppHandle) {
-    if app.get_webview_window(MAIN_WINDOW).is_none() {
+    if crate::background::main_webview(app).is_none() {
         return;
     }
     let state = app.state::<ShutdownState>();
     let (request_id, answer) = state.register();
-    if let Err(e) = app.emit_to(MAIN_WINDOW, APP_QUITTING_EVENT, QuitRequest { request_id }) {
+    // To the main webview alone (not a child webview of its window).
+    let main = tauri::EventTarget::Webview {
+        label: MAIN_WINDOW.to_string(),
+    };
+    if let Err(e) = app.emit_to(main, APP_QUITTING_EVENT, QuitRequest { request_id }) {
         tracing::warn!(error = %e, "could not ask the window to save before quitting");
         state.forget(request_id);
         return;
@@ -208,7 +212,7 @@ fn exit_decision(
 /// requested code (0 when none was given).
 pub fn on_exit_requested(app: &AppHandle, code: Option<i32>) -> bool {
     let state = app.state::<ShutdownState>();
-    let has_main_window = app.get_webview_window(MAIN_WINDOW).is_some();
+    let has_main_window = crate::background::main_webview(app).is_some();
     let decision = exit_decision(
         state.exit_ready.load(Ordering::SeqCst),
         code == Some(tauri::RESTART_EXIT_CODE),

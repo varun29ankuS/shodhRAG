@@ -2,7 +2,7 @@ import React, { useCallback, useRef } from 'react';
 import { MessageSquareText } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import type { FocusTarget } from './focusTypes';
-import { notifyDepthLimit, useFocus, useFocusAnchor, useFocusDrill } from './FocusContext';
+import { notifyDepthLimit, useFocus, useFocusAnchor, useFocusDrill } from './focusHost';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-ground';

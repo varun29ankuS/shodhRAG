@@ -33,8 +33,14 @@ tauri-build = { version = "2.0", features = [] }
 audit-encryption = ["shodh-rag/sqlcipher"]
 
 [dependencies]
-# image-png: the clipboard plugin decodes PNG bytes for Copy image of a snippet
-tauri = { version = "2.0", features = ["tray-icon", "image-png"] }
+# image-png: the clipboard plugin decodes PNG bytes for Copy image of a snippet.
+# unstable: the Artifacts preview and the floating chat over it are child
+# webviews of the main window (`Window::add_child`, `WebviewBuilder`). That
+# multi-webview API is unstable and may change in a Tauri minor release, so
+# Tauri is pinned exactly: re-check creations/preview_embed.rs, dock_layer.rs
+# and every main-window lookup (a window holding child webviews is no longer
+# a "webview window" to Tauri) on every Tauri bump.
+tauri = { version = "=2.12.5", features = ["tray-icon", "image-png", "unstable"] }
 tauri-plugin-opener = "2.2"
 tauri-plugin-fs = "2.0"
 tauri-plugin-dialog = "2.0"
@@ -119,6 +125,8 @@ windows = { version = "0.58", features = [
     # "Stay available for my phone": keeping the computer awake on mains power
     # (phone_link/stay_available.rs).
     "Win32_System_Power",
+    # The launch probe's hit test of the main window's child webviews (launch_probe.rs).
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 # A creation file opened without following a final link, and its real path read

@@ -131,6 +131,10 @@ fn finished_item(
     // already says so): no desktop notification for either.
     if removed || matches!(result, Ok(done) if done.stopped) {
         item.data = serde_json::json!({ "quiet": true });
+    } else if result.is_err() {
+        // Nothing of the folder was indexed and it stays so until the user indexes it
+        // again: the Inbox keeps it under Attention, like a sync that failed outright.
+        item.data = serde_json::json!({ "failure": "index" });
     }
     item
 }
@@ -292,6 +296,24 @@ mod tests {
         );
         assert_eq!(failed.status, InboxStatus::Failed);
         assert!(memory.outcome(&failed).is_some());
+    }
+
+    #[test]
+    fn only_a_first_index_that_failed_outright_is_marked_a_failure_to_index() {
+        let item = |removed: bool, result: Result<IndexingResult, String>| {
+            finished_item("indexing:s1".to_string(), "Papers", None, removed, &result)
+        };
+        let outright = item(false, Err("disk full".to_string()));
+        assert_eq!(outright.status, InboxStatus::Failed);
+        assert_eq!(outright.title, "Papers was not indexed");
+        assert_eq!(outright.data["failure"], "index");
+        // Indexed with some files failing, or removed part way: not marked.
+        let partial = item(false, Ok(done(3, 0, 1)));
+        assert_eq!(partial.status, InboxStatus::Failed);
+        assert!(partial.data.get("failure").is_none());
+        let removed = item(true, Err("removed".to_string()));
+        assert!(removed.data.get("failure").is_none());
+        assert_eq!(removed.data["quiet"], true);
     }
 
     #[test]

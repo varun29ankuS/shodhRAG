@@ -75,6 +75,9 @@ import type { FileNode } from './features/library/fileTree';
 import { errorMessage as searchErrorMessage } from './features/setup/searchModels';
 import Sidebar from './components/shell/Sidebar';
 import { ConversationDock } from './components/shell/ConversationDock';
+import { DockBridge } from './features/dock/useDockBridge';
+import { useDockLayerActive } from './features/dock/layerState';
+import { useSidePaneWidth } from './lib/sidePane';
 import { MODEL_CHANGED_EVENT } from './features/modelPicker/modelApi';
 import { normalizeViewTab, VIEW_TAB_LABELS } from './lib/viewTabs';
 import { agentItemKey, revealAgentItem } from './lib/agentHighlight';
@@ -92,6 +95,7 @@ import { FocusProvider } from './features/focus/FocusContext';
 import { SystemStatusProvider } from './features/status/SystemStatusContext';
 import { CodeReviewProvider } from './features/code/CodeReviewContext';
 import { ReviewPane } from './features/code/ReviewPane';
+import { LaunchProbeHost } from './features/launch/LaunchProbeHost';
 import { VisualNavigator } from './features/visuals/VisualNavigator';
 import { SnippetHost } from './features/research/SnippetHost';
 import { ReminderAlerts } from './features/tasks/ReminderAlerts';
@@ -173,6 +177,10 @@ function AppSplitView() {
   // Theme
   const { theme, colors, toggleTheme } = useTheme();
   const { collapsed, toggleSidebar } = useSidebar();
+  // The floating chat over the embedded Artifacts preview is up (features/dock).
+  const dockLayerActive = useDockLayerActive();
+  // The pane docked at the right, if one is open (lib/sidePane): its width is kept clear.
+  const sidePaneWidth = useSidePaneWidth();
   const { config: searchConfig, updateConfig: updateSearchConfig, resetConfig: resetSearchConfig } = useSearchConfig();
 
   // Conversations and the active chat session
@@ -938,17 +946,19 @@ function AppSplitView() {
     }
   };
 
-  // Tauri file drop event listener using getCurrentWebview
+  // Tauri file drop event listener, on the main window
   useEffect(() => {
-    debugLog('🔧 Setting up Tauri drag-drop listeners using webview API...');
+    debugLog('🔧 Setting up Tauri drag-drop listeners using window API...');
     let unlistenDrop: (() => void) | undefined;
 
     (async () => {
       try {
-        // Use getCurrentWebview() not getCurrentWebviewWindow()
-        const { getCurrentWebview } = await import('@tauri-apps/api/webview');
-        const webview = getCurrentWebview();
-        debugLog('✅ Got current webview');
+        // The window's drop events, not the webview's: while the embedded Artifacts preview
+        // or the floating chat is a child webview of this window, Tauri sends drops on the
+        // app's page to the window only (a webview-target listener would hear none).
+        const { getCurrentWindow } = await import('@tauri-apps/api/window');
+        const webview = getCurrentWindow();
+        debugLog('✅ Got current window');
 
         // Register file drop handler using onDragDropEvent
         unlistenDrop = await webview.onDragDropEvent(async (event: any) => {
@@ -1540,7 +1550,7 @@ function AppSplitView() {
   return (
     <div
       className="h-screen flex transition-colors duration-200"
-      style={{ backgroundColor: colors.bg, color: colors.text }}
+      style={{ backgroundColor: colors.bg, color: colors.text, paddingRight: sidePaneWidth }}
     >
       <a
         href="#main-content"
@@ -1610,11 +1620,9 @@ function AppSplitView() {
               );
             })()}
           </div>
+          {/* Ask's own actions, then Sources, then the Inbox last: nothing to the bell's
+              right changes width, so it stays at one x on every view (UI audit rule 2). */}
           <div className="flex items-center gap-2">
-            <InboxButton
-              onNavigate={setActiveTab}
-              onOpenConversation={id => { switchConversation(id); setActiveTab('ask'); }}
-            />
             {viewTab === 'ask' && activeConversationId && (
               <ChatActionsMenu
                 conversationId={activeConversationId}
@@ -1831,6 +1839,10 @@ function AppSplitView() {
                 </Badge>
               );
             })()}
+            <InboxButton
+              onNavigate={setActiveTab}
+              onOpenConversation={id => { switchConversation(id); setActiveTab('ask'); }}
+            />
           </div>
         </div>
 
@@ -2014,7 +2026,10 @@ function AppSplitView() {
       <TableModelPrompt />
 
       {/* Active conversation while another view is open */}
-      <ConversationDock activeTab={viewTab} sources={sources} onExpand={() => setActiveTab('ask')} />
+      {/* Over the embedded preview the chat floats in a layer of its own, which this window runs. */}
+      {dockLayerActive
+        ? <DockBridge active sources={sources} onExpand={() => setActiveTab('ask')} />
+        : <ConversationDock activeTab={viewTab} sources={sources} onExpand={() => setActiveTab('ask')} />}
 
     </div>
   );
@@ -2032,6 +2047,7 @@ function AppSplitViewRoot() {
               <VisualNavigator />
               <SnippetHost />
               <ReviewPane />
+              <LaunchProbeHost />
             </CodeReviewProvider>
           </FocusProvider>
         </SystemStatusProvider>

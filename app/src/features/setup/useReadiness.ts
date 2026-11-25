@@ -1,6 +1,6 @@
 import { useCallback, useMemo } from 'react';
 import { useSearchModels } from './SearchModelsContext';
-import { useRuntimeSetup } from './RuntimeSetupContext';
+import { useRuntimeSetup } from './runtimeSetupHost';
 import { partsToInstall, readiness } from './readiness';
 import type { Readiness } from './readiness';
 

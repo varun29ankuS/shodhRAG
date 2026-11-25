@@ -22,6 +22,8 @@ import {
 import type { EventPatch, PendingOp, StoreState, TaskPatch } from './taskStore';
 import type { CalendarEvent, TodoItem } from './types';
 import { agentItemKey, revealAgentItem } from '../../lib/agentHighlight';
+import { deleteToastText } from './repeat';
+import { repeatGet } from './repeatApi';
 
 export type { EventPatch, TaskPatch } from './taskStore';
 
@@ -442,7 +444,11 @@ export function TasksStoreProvider({ children, followAgent = true }: { children:
 
   const deleteTask = useCallback((id: string) => {
     const task = latest.current.tasks.find(t => t.id === id);
-    if (task) scheduleDelete('task', id, task.title);
+    if (!task) return;
+    // Deleting a repeating task's latest copy also stops the repeat: the undo toast says so.
+    repeatGet(id)
+      .then(view => scheduleDelete('task', id, deleteToastText(task.title, view?.isLatest === true)))
+      .catch(() => scheduleDelete('task', id, task.title));
   }, [scheduleDelete]);
 
   const deleteEvent = useCallback((id: string) => {

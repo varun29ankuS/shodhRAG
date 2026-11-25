@@ -64,6 +64,11 @@ pub mod app_tools {
     pub const SHOW_SETTING: &str = "show_setting";
     pub const SHOW_PAPER: &str = "show_paper";
     pub const SHOW_SNIPPET: &str = "show_snippet";
+    pub const WHATS_NEW: &str = "whats_new";
+    pub const SET_FOLDER_WATCH: &str = "set_folder_watch";
+    pub const CREATE_PAPER_ALERT: &str = "create_paper_alert";
+    pub const UPDATE_PAPER_ALERT: &str = "update_paper_alert";
+    pub const DELETE_PAPER_ALERT: &str = "delete_paper_alert";
     /// The tokens Code mode's output compression saved: a conversation's and the total.
     pub const CODE_TOKENS_SAVED: &str = "code_tokens_saved";
     /// Shodh's bundled Code skills: which are on, what each does, where it came from.
@@ -82,7 +87,7 @@ pub mod app_tools {
     pub const REVIEW_CODE: &str = "review_code";
 
     /// Every app-layer tool, in registration order.
-    pub const ALL: [&str; 61] = [
+    pub const ALL: [&str; 66] = [
         CREATE_TASK,
         CREATE_EVENT,
         LIST_TASKS,
@@ -144,6 +149,11 @@ pub mod app_tools {
         RECALL_SEARCH,
         RECALL_SCOPE,
         RECALL_OPEN,
+        WHATS_NEW,
+        SET_FOLDER_WATCH,
+        CREATE_PAPER_ALERT,
+        UPDATE_PAPER_ALERT,
+        DELETE_PAPER_ALERT,
     ];
 }
 

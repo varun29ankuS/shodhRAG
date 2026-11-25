@@ -1,5 +1,8 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import type React from 'react';
+import { createPortal } from 'react-dom';
+import { placeMenu } from '../../lib/menuPlacement';
+import type { MenuPlacement } from '../../lib/menuPlacement';
 import { Check, ChevronDown, FilePen, Hammer, ListChecks, ShieldCheck, Zap } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { cn } from '../../lib/utils';
@@ -40,17 +43,41 @@ export function ModePicker({ mode, onChange, answerRunning }: ModePickerProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  // The menu is portaled to the body (fixed), so no scrolling or clipped container
+  // around the composer cuts it off; it is placed beside the pill on each open.
+  const menuPanelRef = useRef<HTMLDivElement>(null);
+  const [placement, setPlacement] = useState<MenuPlacement | null>(null);
   const menuId = useId();
   useEffect(() => {
-    if (!open) setConfirming(null);
+    if (!open) {
+      setConfirming(null);
+      setPlacement(null);
+    }
   }, [open]);
+  // Measured before paint, and again when the confirm row changes its height or
+  // the window is resized: above the pill when it fits, else below, else capped
+  // to the larger side with the menu scrolling inside.
+  useLayoutEffect(() => {
+    if (!open) return;
+    const place = () => {
+      const anchor = buttonRef.current?.getBoundingClientRect();
+      const panel = menuPanelRef.current;
+      if (!anchor || !panel) return;
+      setPlacement(placeMenu(anchor, panel.scrollHeight, panel.offsetWidth, window.innerWidth, window.innerHeight));
+    };
+    place();
+    window.addEventListener('resize', place);
+    return () => window.removeEventListener('resize', place);
+  }, [open, confirming]);
   useEffect(() => {
     if (!open) return;
     const items = menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]');
     const selected = menuRef.current?.querySelector<HTMLButtonElement>('[aria-checked="true"]');
-    (selected ?? items?.[0])?.focus();
+    (selected ?? items?.[0])?.focus({ preventScroll: true });
     const onPointer = (e: PointerEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+      const target = e.target as Node;
+      if (rootRef.current?.contains(target) || menuPanelRef.current?.contains(target)) return;
+      setOpen(false);
     };
     document.addEventListener('pointerdown', onPointer);
     return () => document.removeEventListener('pointerdown', onPointer);
@@ -135,8 +162,19 @@ export function ModePicker({ mode, onChange, answerRunning }: ModePickerProps) {
         {current.label}
         <ChevronDown className="w-3 h-3 shrink-0 opacity-70" aria-hidden="true" />
       </button>
-      {open && (
-        <div className="shell-pop absolute left-0 bottom-full mb-1.5 z-50 w-[320px] max-w-[calc(100vw-32px)] rounded-lg border border-shodh-border-strong bg-shodh-raised shadow-lg overflow-hidden">
+      {open && createPortal(
+        <div
+          ref={menuPanelRef}
+          data-esc-local=""
+          className="shell-pop fixed z-50 w-[320px] max-w-[calc(100vw-16px)] rounded-lg border border-shodh-border-strong bg-shodh-raised shadow-lg overflow-y-auto overscroll-contain scrollbar-thin"
+          style={{
+            top: placement?.top ?? 0,
+            left: placement?.left ?? 0,
+            maxHeight: placement?.maxHeight,
+            // Hidden for the one measuring pass before it is placed.
+            visibility: placement ? 'visible' : 'hidden',
+          }}
+        >
           <div id={menuId} ref={menuRef} role="menu" aria-label="Mode" onKeyDown={onMenuKeyDown} className="py-1">
             {AGENT_MODES.map(info => {
               const ItemIcon = MODE_ICONS[info.id];
@@ -198,7 +236,8 @@ export function ModePicker({ mode, onChange, answerRunning }: ModePickerProps) {
               <span>in an empty message box switches between Ask, Accept edits and Plan</span>
             </p>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

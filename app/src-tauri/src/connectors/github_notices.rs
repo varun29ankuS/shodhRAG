@@ -18,6 +18,7 @@ use shodh_rag::inbox::{InboxKind, InboxLink, InboxStatus, NewInboxItem};
 use tauri::{AppHandle, Manager};
 
 use super::slack_notices::{Alert, Delivery};
+use crate::inbox_commands::one_off;
 use crate::notifications::{self, Category, Notice};
 
 /// The tabs of the GitHub page an item can open (`features/connectors/navigation.ts`).
@@ -92,13 +93,14 @@ pub fn delivery(notice: &GitHubNotice) -> Delivery {
             let branch = notifications::one_line(branch);
             let id = format!("github:push:{repo}:{branch}");
             Delivery {
-                item: item(
+                // One push was refused and nothing was overwritten: nothing stays stopped.
+                item: one_off(item(
                     id.clone(),
                     InboxStatus::Failed,
                     format!("Push to {branch} was rejected"),
                     format!("GitHub rejected the push to {branch} on github.com/{repo}: {}", notifications::one_line(reason)),
                     GitHubTab::Activity,
-                ),
+                )),
                 alert: Alert::Problem {
                     source: id,
                     notice: Notice {
@@ -111,7 +113,8 @@ pub fn delivery(notice: &GitHubNotice) -> Delivery {
         GitHubNotice::RateLimited { reset_at } => {
             let id = "github:rate-limit".to_string();
             Delivery {
-                item: item(
+                // The limit lifts by itself: nothing for the user to fix.
+                item: one_off(item(
                     id.clone(),
                     InboxStatus::Failed,
                     "GitHub is rate limiting Shodh".into(),
@@ -120,7 +123,7 @@ pub fn delivery(notice: &GitHubNotice) -> Delivery {
                         until(reset_at)
                     ),
                     GitHubTab::Overview,
-                ),
+                )),
                 alert: Alert::Problem {
                     source: format!("{id}:{}", reset_at.map(|at| at.timestamp()).unwrap_or_default()),
                     notice: Notice {
@@ -233,5 +236,20 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("until 14:05 UTC"));
+    }
+
+    #[test]
+    fn a_rejected_push_and_a_rate_limit_are_one_offs_and_a_refused_sign_in_is_not() {
+        let push = delivery(&GitHubNotice::PushRejected {
+            repo: "octo-org/hello".into(),
+            branch: "shodh/fix".into(),
+            reason: "behind".into(),
+        });
+        assert_eq!(push.item.data["oneOff"], true);
+        assert_eq!(push.item.data["connector"], "github");
+        let limit = delivery(&GitHubNotice::RateLimited { reset_at: None });
+        assert_eq!(limit.item.data["oneOff"], true);
+        let sign_in = delivery(&GitHubNotice::SignInRefused);
+        assert!(sign_in.item.data.get("oneOff").is_none());
     }
 }

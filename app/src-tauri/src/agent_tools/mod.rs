@@ -15,7 +15,7 @@ mod calendar;
 mod code_intel;
 mod code_map;
 mod code_review;
-mod design_check;
+pub(crate) mod design_check;
 pub(crate) mod export;
 mod figures;
 pub(crate) mod files;
@@ -26,11 +26,13 @@ mod memory;
 mod papers;
 mod recall;
 mod research;
+pub(crate) use research::download_into;
 mod settings;
 mod sources;
 mod tauri_host;
 mod visuals;
 mod web;
+mod whats_new;
 mod workspaces;
 
 use std::path::PathBuf;
@@ -153,6 +155,22 @@ pub struct IndexJob {
 pub trait HostEffects: Send + Sync {
     /// A calendar record changed: re-index it and refresh open views.
     fn calendar_changed(&self, change: CalendarChange);
+    /// The repeating tasks (the scheduler engine), when the app database can be opened.
+    async fn task_repeats(&self) -> Option<Arc<crate::task_repeat::Repeats>> {
+        None
+    }
+    /// What's new (the scheduler engine and its feed), when the app database can be opened.
+    async fn whats_new(&self) -> Option<Arc<crate::whats_new::WhatsNew>> {
+        None
+    }
+    /// Paper alerts, when the app database can be opened.
+    async fn paper_alerts(&self) -> Option<Arc<crate::paper_alerts::PaperAlerts>> {
+        None
+    }
+    /// The Library's folders kept in sync now, as `(source id, folder)`.
+    fn watched_folders(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
     /// Index a folder in the background and audit the outcome in `ctx`'s
     /// run scope.
     fn start_indexing(&self, ctx: &ToolContext, job: IndexJob);
@@ -291,13 +309,15 @@ pub fn build_registry(host: Arc<AgentHost>) -> Result<ToolRegistry, RegistryErro
     code_review::register(&mut registry, &host)?;
     code_intel::register(&mut registry, &host)?;
     recall::register(&mut registry, &host)?;
+    whats_new::register(&mut registry, &host)?;
     shodh_rag::connectors::github::tools::register(&mut registry, host.github.clone())?;
     Ok(registry)
 }
 
 /// The parts of the Library a navigation opens (`LIBRARY_SECTIONS` in the frontend's
 /// navigation; the coverage test checks the two agree).
-pub(crate) const LIBRARY_SECTIONS: [&str; 4] = ["snippets", "graph", "paper", "recall"];
+pub(crate) const LIBRARY_SECTIONS: [&str; 5] =
+    ["snippets", "graph", "paper", "recall", "whats_new"];
 
 /// Show a part of the Library ([`LIBRARY_SECTIONS`]) with `item` (a snippet or paper
 /// id) highlighted or opened.
@@ -373,6 +393,14 @@ pub(crate) mod testing {
         pub review_target: Mutex<Option<ReviewTarget>>,
         /// The ids of the design checks the assistant ran, as the pane keeps them.
         pub design_checks: Mutex<Vec<String>>,
+        /// Repeating tasks over this host's data folder, on a clock the test moves.
+        pub repeats: Arc<crate::task_repeat::Repeats>,
+        pub repeat_clock: Arc<crate::task_repeat::testing::TestClock>,
+        /// What's new over this host's `shodh.db`, on the same clock.
+        pub whats_new: Arc<crate::whats_new::WhatsNew>,
+        /// Paper alerts over this host's `shodh.db`, with no network.
+        pub paper_alerts: Arc<crate::paper_alerts::PaperAlerts>,
+        pub alert_env: Arc<crate::paper_alerts::testing::TestEnv>,
     }
 
     #[async_trait::async_trait]
@@ -420,6 +448,18 @@ pub(crate) mod testing {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .push(change);
+        }
+        async fn task_repeats(&self) -> Option<Arc<crate::task_repeat::Repeats>> {
+            Some(self.repeats.clone())
+        }
+        async fn whats_new(&self) -> Option<Arc<crate::whats_new::WhatsNew>> {
+            Some(self.whats_new.clone())
+        }
+        async fn paper_alerts(&self) -> Option<Arc<crate::paper_alerts::PaperAlerts>> {
+            Some(self.paper_alerts.clone())
+        }
+        fn watched_folders(&self) -> Vec<(String, String)> {
+            crate::whats_new::watched_folders(&self.folder_sync)
         }
         fn start_indexing(&self, _ctx: &ToolContext, job: IndexJob) {
             self.indexing
@@ -534,6 +574,15 @@ pub(crate) mod testing {
         let rag = RAGEngine::new(config).await.unwrap();
         let audit = Arc::new(AuditLog::open(dir.path().join("shodh.db"), None).unwrap());
         let memory = memory_state(dir.path(), Some(audit.clone())).await;
+        let repeat_clock = Arc::new(crate::task_repeat::testing::TestClock(Mutex::new(
+            crate::task_repeat::testing::local(2030, 1, 1, 10, 0),
+        )));
+        let repeats = Arc::new(crate::task_repeat::testing::repeats(
+            dir.path(),
+            repeat_clock.clone(),
+        ));
+        let alert_env =
+            crate::paper_alerts::testing::env(crate::paper_alerts::testing::offline_client());
         let effects = Arc::new(Recorder {
             documents: dir.path().join("Documents"),
             calendar: Mutex::default(),
@@ -551,6 +600,29 @@ pub(crate) mod testing {
             reviews: Mutex::default(),
             review_target: Mutex::default(),
             design_checks: Mutex::default(),
+            whats_new: Arc::new(crate::whats_new::testing::whats_new(
+                dir.path(),
+                repeat_clock.clone(),
+            )),
+            paper_alerts: Arc::new(crate::paper_alerts::testing::alerts(
+                dir.path(),
+                Arc::new(shodh_rag::engine::runner::Engine::with_clock(
+                    Arc::new(
+                        shodh_rag::engine::store::EngineStore::open(
+                            &dir.path().join("shodh.db"),
+                            None,
+                        )
+                        .unwrap(),
+                    ),
+                    repeat_clock.clone(),
+                    "agent-alerts-test",
+                )),
+                alert_env.clone(),
+                Arc::new(crate::whats_new::testing::QuietSink),
+            )),
+            alert_env,
+            repeats,
+            repeat_clock,
         });
         std::fs::create_dir_all(&effects.documents).unwrap();
         let roots = Arc::new(FixedRoots::default());

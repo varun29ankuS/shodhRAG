@@ -17,6 +17,7 @@ import {
   designFixProblem,
   filesWithIssues,
   isUiFile,
+  opensPaneForAssistant,
   totalIssues,
 } from '../src/features/code/designModel.ts';
 import type { DesignFinding, StoredDesignCheck } from '../src/features/code/designModel.ts';
@@ -142,4 +143,22 @@ test('the design check reads UI files only', () => {
   for (const other of ['main.rs', 'app.ts', 'notes.md', 'vendor/app.min.css', 'README']) {
     assert.ok(!isUiFile(other), other);
   }
+});
+
+test("the assistant's check of a creation never covers its page", () => {
+  // A creation's check shows as the badge on its page in Artifacts: the page always wins, and the
+  // user opens the findings from the badge. A project's check opens the pane, as before.
+  assert.equal(opensPaneForAssistant(check([finding()], { workspaceId: null, creationId: 'cr_1', byAgent: true })), false);
+  assert.equal(opensPaneForAssistant(check([finding()], { byAgent: true })), true);
+  const context = readFileSync(new URL('../src/features/code/CodeReviewContext.tsx', import.meta.url), 'utf8');
+  const handler = context.slice(context.indexOf("useNavigationTarget('design_check'"));
+  assert.ok(handler.indexOf('opensPaneForAssistant(found)') > 0, 'the navigation asks first');
+  assert.ok(handler.indexOf('opensPaneForAssistant(found)') < handler.indexOf('openDesign(found)'));
+  // The pane is docked: it takes its own column and reports its width, so the page beside it
+  // narrows and the floating chat moves left of it, instead of the pane lying over the page.
+  const pane = readFileSync(new URL('../src/features/code/ReviewPane.tsx', import.meta.url), 'utf8');
+  assert.equal((pane.match(/useDockedWidth\(/g) ?? []).length, 1);
+  assert.doesNotMatch(pane, /shadow-2xl/);
+  const shell = readFileSync(new URL('../src/App-SplitView.tsx', import.meta.url), 'utf8');
+  assert.match(shell, /paddingRight: sidePaneWidth/);
 });

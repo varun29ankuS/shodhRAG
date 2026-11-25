@@ -20,6 +20,8 @@ import type { TranscriptState } from '../agent/reducer';
 import { SetupCard } from '../setup/SetupCard';
 import { useQueuedQuestion } from '../setup/useQueuedQuestion';
 import { useCodeModeEnabled } from '../../hooks/useCodeModeEnabled';
+import { setCodeMode } from '../../lib/appSettings';
+import { sendBlock } from './sendBlock';
 import { matchesShortcut } from '../../lib/shortcuts';
 import { StatusLine } from '../agent/StatusLine';
 import { SuggestionsBadge } from '../memory/SuggestionsBadge';
@@ -29,7 +31,7 @@ import { UsedMemoriesChip } from '../memory/UsedMemoriesChip';
 import { linesOfRuns, runIdsOf, turnIdsOf } from '../memory/turnMemories';
 import { useTurnMemories } from '../memory/useTurnMemories';
 import { Transcript } from '../agent/Transcript';
-import { FocusAnchorProvider, useFocus } from '../focus/FocusContext';
+import { FocusAnchorProvider, useFocus } from '../focus/focusHost';
 import type { FocusThread } from '../focus/focusTypes';
 import { sourceTarget } from '../focus/targets';
 import { activeRootThreads, descendantCount, nodeLabel } from '../focus/threadTree';
@@ -38,6 +40,7 @@ import type { SideSummaryRef } from '../focus/summary';
 import { UserText } from './UserText';
 import { useChatSession } from './ChatSessionContext';
 import { useDraft } from './useDraft';
+import { useVoiceInput } from './useVoiceInput';
 import { useSendOptions } from './useSendOptions';
 import { AttachmentChips, FileRefChip, useChatFileScope, useImageAttachments } from './AttachmentChips';
 import type { ConversationFile } from './fileQuestion';
@@ -696,6 +699,11 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
 
   // Kept per conversation outside this view, which unmounts on every view switch.
   const [draft, setDraft] = useDraft(session.activeConversationId);
+  // Dictation into the draft (the composer shows the microphone it is given).
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  const getDraft = useCallback(() => draftRef.current, []);
+  const voice = useVoiceInput(getDraft, setDraft);
   // Text read from images, sent with the next question as the user's own context.
   const attachments = useImageAttachments(session.activeConversationId);
   // The file the next question is about ("Ask about this file"): its search limit.
@@ -796,19 +804,33 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
   // A question asked before the search models and the answer engine are in place
   // waits for them (and starts their download) instead of failing.
   const queued = useQueuedQuestion(session.activeConversationId);
-  const blockedReason = queued.waiting
-    ? 'Your question is sent as soon as Shodh is ready.'
-    : agentMode === null
-    ? 'Reading your default mode…'
-    : sideRun
-    ? `Answering your side question about “${sideRun.label}”. You can send once it finishes; to stop it, reopen that discussion and press Esc.`
-    : busyElsewhere
-      ? 'An answer is still being written in another conversation. You can send once it finishes.'
-      : mode === 'code' && codeModeEnabled === false && !isStreaming
-        ? 'Code mode is off. Turn it on in Settings → Privacy, or switch this conversation to Research.'
-      : mode === 'code' && codeProblem && !isStreaming
-        ? `${codeProblem} Or switch this conversation to Research.`
-        : null;
+  const blocked = sendBlock({
+    waiting: queued.waiting,
+    agentMode,
+    sideRunLabel: sideRun?.label ?? null,
+    busyElsewhere,
+    conversationMode: mode,
+    codeModeEnabled,
+    codeProblem,
+    streaming: isStreaming,
+  });
+  const blockedReason = blocked?.reason ?? null;
+  // "Turn on Code mode" beside the reason: the same setting as Settings → Privacy,
+  // turned on by the user's click (the agent cannot call it).
+  const [turningOnCode, setTurningOnCode] = useState(false);
+  const turnOnCodeMode = useCallback(() => {
+    setTurningOnCode(true);
+    setCodeMode(true)
+      .catch((error: unknown) => {
+        notify.error('Code mode could not be turned on', {
+          description: error instanceof Error ? error.message : String(error),
+        });
+      })
+      .finally(() => setTurningOnCode(false));
+  }, []);
+  const blockedAction = blocked?.fix === 'turnOnCodeMode'
+    ? { label: 'Turn on Code mode', onClick: turnOnCodeMode, busy: turningOnCode }
+    : null;
 
   // Whether there is anything to search, as the sources chip reads it
   // (`librarySourcesChip`), so the empty state never shows beside "All sources · N".
@@ -1300,8 +1322,10 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
         canSteer={liveTranscript?.status === 'running'}
         approvalPending={waitingStepId !== null}
         blockedReason={blockedReason}
+        blockedAction={blockedAction}
         placeholder={messages.length === 0 ? 'Ask about your files…' : 'Ask a follow-up…'}
         onCycleMode={conversationId ? cycleAgentMode : undefined}
+        voice={voice}
         modelChip={(
           <>
             {conversationId && <ModePicker mode={agentMode} onChange={changeAgentMode} answerRunning={isStreaming} />}

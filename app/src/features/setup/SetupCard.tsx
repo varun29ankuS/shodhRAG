@@ -2,7 +2,7 @@ import React from 'react';
 import { CheckCircle2, Download, Loader2, RotateCcw, TriangleAlert, WifiOff, X } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { useSearchModels } from './SearchModelsContext';
-import { useRuntimeSetup } from './RuntimeSetupContext';
+import { useRuntimeSetup } from './runtimeSetupHost';
 import { useReadiness } from './useReadiness';
 import { SEARCH_MODELS_SOURCE, setupDisclosure, setupHeading, waitingLine } from './readiness';
 import type { PartView } from './readiness';

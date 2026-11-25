@@ -44,11 +44,13 @@ impl StartupTimings {
 /// The main window reached every startup milestone (each page load reports
 /// once: the first, and a reload).
 #[tauri::command]
-pub fn startup_ready(timings: StartupTimings) {
+pub fn startup_ready(app: tauri::AppHandle, timings: StartupTimings) {
     tracing::info!(
         "{READY_LINE} (ms since the page started loading: {})",
         timings.summary()
     );
+    // The launch test's embedded-preview probe, on its own profile only (launch_probe.rs).
+    crate::launch_probe::start(&app);
 }
 
 #[cfg(test)]

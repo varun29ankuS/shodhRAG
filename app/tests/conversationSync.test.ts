@@ -176,7 +176,7 @@ test('a turn is saved by the agent session only when the backend says so', () =>
   assert.equal(backendSavesTurn(false, null), false);
   assert.equal(backendSavesTurn(false, { turnSaved: true }), false);
   // The error the window reads keeps what the backend said.
-  const client = read('../src/features/agent/useAgentSession.ts');
+  const client = read('../src/features/agent/agentApi.ts');
   assert.match(client, /const saved = error\.turnSaved === true \? \{ turnSaved: true \} : \{\};/);
 });
 

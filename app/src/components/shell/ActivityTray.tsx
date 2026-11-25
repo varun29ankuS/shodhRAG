@@ -6,7 +6,7 @@ import { formatMs } from '../../features/agent/format';
 import { currentStep, pendingApproval } from '../../features/agent/reducer';
 import type { TranscriptState } from '../../features/agent/reducer';
 import { useChatSession } from '../../features/ask/ChatSessionContext';
-import { useSessionCounts } from '../../features/agent/useAgentSession';
+import { useSessionCounts } from '../../features/agent/agentApi';
 import { sessionCountsLabel } from '../../features/agent/sessionCounts';
 import { countOf } from '../../lib/plural';
 import { useSystemStatusContext } from '../../features/status/SystemStatusContext';

@@ -793,9 +793,9 @@ jobs:
       && (needs.pr-key.result == 'success' || needs.pr-key.result == 'skipped')
       && (needs.create-release.result == 'success' || needs.create-release.result == 'skipped') }}
     runs-on: ubuntu-latest
-    # No run history yet: a cold release build of the phone app's Rust
-    # library for one target, the Gradle build and the checks; ci.yml's
-    # android job builds two debug targets and boots an emulator in 90.
+    # A cold release build of the phone app's Rust library for one target,
+    # the Gradle build and the checks: 8 minutes (job 138377458438). It keeps
+    # no Rust cache entry (see the cache budget at the top of ci.yml).
     timeout-minutes: 90
     # The Android key and the release key are read from here on publishing
     # runs only.
@@ -840,17 +840,6 @@ jobs:
         with:
           toolchain: 1.97.1  # keep in sync with rust-toolchain.toml
           targets: aarch64-linux-android
-
-      - uses: ./.github/actions/only-pinned-rust
-
-      # Saved by master runs only (ci.yml calls this workflow on every
-      # push), restored by pull requests and releases: the release profile's
-      # entry, apart from ci.yml's debug one.
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2  # zizmor: ignore[cache-poisoning]
-        with:
-          workspaces: mobile/src-tauri -> target
-          shared-key: android-release
-          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Generate the Android project
         working-directory: mobile

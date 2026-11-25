@@ -59,8 +59,9 @@ env:
 #                            test and test-app
 #   release-x86_64-pc-windows-msvc  1.79 GB  footprint, release.yml (Windows)
 #   release-aarch64-apple-darwin    1.63 GB  release.yml (macOS)
-# With the two search-model entries (0.55 GB each), Gradle's (0.41 GB) and
-# the small npm and ONNX Runtime ones, about 8.6 GB. Check, upgrade and the
+# With the two search-model entries (0.55 GB each), Gradle's two (0.41 GB
+# for the debug build, about as much for release.yml's release build) and
+# the small npm and ONNX Runtime ones, about 9 GB. Check, upgrade and the
 # Android builds keep no Rust entry: their cold builds fit their limits
 # (noted per job) and their entries would push the total over 10 GB again.
 # After a Cargo.lock change the old entries stay until evicted, as the least
@@ -1661,9 +1662,23 @@ jobs:
               # A minidump there names the emulator thread that died.
               echo "== emulator crash reports"; ls -laR /tmp/android-runner/emu-crash-*.db || echo "none"
             } > "$evidence/host.txt" 2>&1 || true
+            # Where the emulator died: the runner's kernel pipes a dying
+            # process's core to systemd-coredump (the kernel traces show it
+            # starting right after the RenderThread's SIGSEGV), which
+            # writes every thread's stack, by library and symbol, to the
+            # journal. The process is not gone until its core is read, so
+            # this waits for systemd-coredump to finish (3 minutes at
+            # most) before asking for the report. Evidence only.
+            {
+              echo "== core_pattern: $(cat /proc/sys/kernel/core_pattern)"
+              timeout -k 5 180 sh -c 'while pgrep -x systemd-coredum > /dev/null; do sleep 1; done' || echo "systemd-coredump was still running after 180 s"
+              echo "== coredumpctl info $qemu_pid"
+              timeout -k 5 120 sudo -n coredumpctl info --no-pager "$qemu_pid" || echo "no core dump of the emulator's process"
+            } > "$evidence/emulator-core.txt" 2>&1 || true
             cp -r /tmp/android-runner/emu-crash-*.db "$evidence/" 2>/dev/null || true
             echo "::group::Evidence (all of it is in the $evidence_artifact artifact)"
             tail -n 80 "$evidence/host.txt" || true
+            head -n 150 "$evidence/emulator-core.txt" || true
             echo "== the app's deaths in the streamed log"
             grep -E "Killing [0-9]+:$ANDROID_PACKAGE|Process $ANDROID_PACKAGE .*has died|FATAL EXCEPTION|Fatal signal" "$evidence/logcat.txt" | tail -n 20 || true
             echo "::endgroup::"

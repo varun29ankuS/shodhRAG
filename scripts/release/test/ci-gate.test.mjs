@@ -1,40 +1,16 @@
 import assert from 'node:assert/strict';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, relative, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
 import { GateError, NIGHTLY_CHECK, NOT_REQUIRED_CHECKS, REQUIRED_CHECKS, evaluateChecks, waitForCi } from '../ci-gate.mjs';
+import { ROOT, WORKFLOWS, jobsOf } from './workflow-jobs.mjs';
 
 const SHA = 'a'.repeat(40);
 let nextId = 1;
 const run = (name, status, conclusion = null, slug = 'github-actions') => ({ id: nextId++, name, status, conclusion, app: { slug } });
 const allPassed = () => REQUIRED_CHECKS.map((n) => run(n, 'completed', 'success'));
 
-const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
-const WORKFLOWS = join(ROOT, '.github', 'workflows');
-const workflow = (file) => readFileSync(join(WORKFLOWS, file), 'utf8');
-
-// A workflow's jobs: each id, its block (up to the next job) and its name
-// (quotes and a trailing comment removed). Fails when there is no jobs: key,
-// so a test over a workflow can never pass on nothing.
-function jobsOf(file) {
-  const yml = workflow(file);
-  const start = yml.search(/^jobs:[ \t]*(#.*)?$/m);
-  assert.ok(start >= 0, `${file} has a top-level jobs: key`);
-  const section = yml.slice(start);
-  const starts = [...section.matchAll(/^ {2}([A-Za-z_][A-Za-z0-9_-]*):[ \t]*(#.*)?$/gm)];
-  assert.ok(starts.length > 0, `${file} has jobs`);
-  return starts.map((m, i) => {
-    const block = section.slice(m.index, starts[i + 1]?.index ?? section.length);
-    const raw = block.match(/^ {4}name:[ \t]*(.+)$/m)?.[1];
-    const name = raw
-      ?.replace(/[ \t]+#.*$/, '')
-      .trim()
-      .replace(/^(['"])(.*)\1$/, '$2');
-    return { id: m[1], block, name, calls: /^ {4}uses:[ \t]/m.test(block) };
-  });
-}
 const ciJobs = () => jobsOf('ci.yml');
 
 test("the required checks are exactly ci.yml's jobs (a reusable workflow call's checks are its jobs')", () => {

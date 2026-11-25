@@ -88,7 +88,7 @@ If #208 or another PR takes a number first, the numbers move up. Every new table
 5. **Waiting runs have no timer.** `Handled::Waiting` stores `next_attempt_at = None`, and only `serve_event` (hard-wired to `WaitReason::Decision`) and `settle` touch waiting runs. Approvals need a resume path (**E2**).
 6. **Events carry nothing.** `Engine::event(job_id)` has no payload and runs have no input column. `files_added` and paper findings are direct calls inside `whats_new.rs` and `paper_alerts.rs`, not generic events. **E3** (4c) stores triggers in `trigger_json`, dispatches from those two call sites, and keeps a run's event subjects as its step 0 input (no `ALTER`).
 7. **One loop ticks every kind inline** (`engine_commands::spawn`). A playbook's agent step, minutes long, would delay a repeating task's question. **E4** gives playbooks their own loop on the same `Engine`.
-8. **`RunnerSource`/`RunEvents` stayed in `research::tables`** (PR 1's D1). A `table_add_rows_and_fill` step needs them made generic, or the fill job's state polled. It is out of v1 (Q9).
+8. **`RunnerSource`/`RunEvents` stayed in `research::tables`** (PR 1's D1). A `table_add_rows_and_fill` step needs them made generic, or the fill job's state polled. It is out of v1 (Q7).
 9. **The ledger today:**
    - Only tables count, in `table_calls`.
    - Slack and Telegram count *answers*, not calls (UTC days, their own stores).

@@ -229,17 +229,15 @@ export function librarySourcesChip(searched: SearchedSources): { label: string; 
     const count = searched.files === null ? '' : ` · ${countOf(searched.files, 'file')}`;
     return {
       label: `${searched.included.toLocaleString()} of ${countOf(searched.folders, 'folder')}${count}`,
-      title: `Answers search only the ${countOf(searched.included, 'folder')} included in Ask${files}. Manage sources in Library.`,
+      title: `Answers search only the ${countOf(searched.included, 'folder')} included in Ask${files}`,
     };
   }
   if (searched.files === null) {
-    return { label: 'All sources', title: 'Answers search everything you have indexed. Manage sources in Library.' };
+    return { label: 'All sources', title: 'Answers search everything you have indexed' };
   }
-  const unlisted = searched.unlisted > 0
-    ? ` ${countOf(searched.unlisted, 'file')} ${searched.unlisted === 1 ? 'is' : 'are'} in no folder listed in Library.`
-    : '';
+  const unlisted = searched.unlisted > 0 ? ` (${countOf(searched.unlisted, 'file')} in no listed folder)` : '';
   return {
     label: `All sources · ${countOf(searched.files, 'file')}`,
-    title: `Answers search the ${countOf(searched.files, 'file')} you have indexed.${unlisted} Manage sources in Library.`,
+    title: `Answers search the ${countOf(searched.files, 'file')} you have indexed${unlisted}`,
   };
 }

@@ -18,6 +18,9 @@ import { useTheme } from '../../contexts/ThemeContext';
 import { snapshotOf } from '../../lib/dockProtocol';
 import type { DockAction } from '../../lib/dockProtocol';
 import { DockPanel, blockedReasonOf } from './DockPanel';
+import { useConversationModes } from '../../features/ask/useConversationModes';
+import { ModelChip } from '../../features/modelPicker/ModelChip';
+import { useModelLabel } from '../../features/modelPicker/useModelLabel';
 import type { DockModel } from './DockPanel';
 
 /**
@@ -124,6 +127,9 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
   }, [offAsk, isStreaming]);
 
   const visible = offAsk && !dismissed && messages.length > 0;
+  // The composer's mode menu and model, as Ask shows them.
+  const modes = useConversationModes();
+  const modelLabel = useModelLabel(visible);
   // Each visit starts minimised; an expand or collapse made on another view
   // does not carry over.
   const open = override !== null && override.tab === activeTab && override.open;
@@ -197,7 +203,11 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
     unread,
     theme,
     runtime: runtimeSetupState(runtime),
-  }, false), [session.activeConversationId, session.activeConversation?.title, messages, isStreaming, streamingConversationId, sideRun, readOnlySource?.connector, draft, open, unread, theme, runtime]);
+    work: modes.work,
+    permission: modes.permission,
+    codeAvailable: modes.codeAvailable,
+    model: modelLabel,
+  }, false), [session.activeConversationId, session.activeConversation?.title, messages, isStreaming, streamingConversationId, sideRun, readOnlySource?.connector, draft, open, unread, theme, runtime, modes.work, modes.permission, modes.codeAvailable, modelLabel]);
 
   const onAction = (action: DockAction) => {
     switch (action.kind) {
@@ -214,6 +224,8 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
       case 'openInAsk': onExpand(); break;
       case 'runtimeInstalled': setRuntimeInstalled(action.installed); break;
       case 'openSettings': window.dispatchEvent(new CustomEvent('switchTab', { detail: 'settings' })); break;
+      case 'setWork': modes.pickWork(action.work); break;
+      case 'setPermission': modes.changeAgentMode(action.mode); break;
       // The in-page chat's runtime card, review button, web sources and commands act in
       // this window directly; only the floating chat sends these.
       default: break;
@@ -232,6 +244,14 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
         {aboutFile && <FileRefChip conversationId={session.activeConversationId} file={aboutFile} compact onRemove={fileScope.remove} />}
         <AttachmentChips conversationId={session.activeConversationId} attachments={attachments} compact />
       </>
+    ),
+    // The model menu itself, as in Ask (this chat runs in the main window).
+    modelControl: (
+      <ModelChip
+        answerRunning={isStreaming}
+        takesPickerRequests={false}
+        onOpenSettings={() => window.dispatchEvent(new CustomEvent('switchTab', { detail: 'settings' }))}
+      />
     ),
     wrapComposer: composer => (
       <SnippetDropZone onInsert={text => setDraft(prev => appendToDraft(prev, text))}>{composer}</SnippetDropZone>

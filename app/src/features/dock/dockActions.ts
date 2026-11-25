@@ -5,6 +5,8 @@
  * as the same click in the in-page chat would. Pure, so the Node tests load it.
  */
 import type { DockAction, RuntimeOp } from '../../lib/dockProtocol';
+import type { WorkKind } from '../agent/composerRow';
+import type { AgentMode } from '../agent/agentModes';
 
 /** What main runs the floating chat's actions on. */
 export interface DockTarget {
@@ -33,6 +35,11 @@ export interface DockTarget {
   openUrl: (url: string) => void;
   stopCommand: (commandId: string) => void;
   openSettings: () => void;
+  /** The mode menu's pick, through the same path as Ask's (`useConversationModes`). */
+  setWork: (work: WorkKind) => void;
+  setPermission: (mode: AgentMode) => void;
+  /** Show Ask with its model menu open. */
+  pickModel: () => void;
 }
 
 export function applyDockAction(action: DockAction, target: DockTarget): void {
@@ -87,6 +94,15 @@ export function applyDockAction(action: DockAction, target: DockTarget): void {
       return;
     case 'openSettings':
       target.openSettings();
+      return;
+    case 'setWork':
+      target.setWork(action.work);
+      return;
+    case 'setPermission':
+      target.setPermission(action.mode);
+      return;
+    case 'pickModel':
+      target.pickModel();
       return;
   }
 }

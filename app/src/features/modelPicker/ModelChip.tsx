@@ -1,15 +1,12 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ChevronDown } from 'lucide-react';
-import { cn } from '../../lib/utils';
 import { notify } from '../../lib/notify';
+import { ModelTrigger } from './ModelTrigger';
 import { OPEN_MODEL_PICKER_EVENT, useModelPicker } from './modelApi';
 import { ChipMenu } from './ChipMenu';
-import { modelName, sourceText } from './modelFormat';
+import { sourceText } from './modelFormat';
+import { modelLabelOf } from './useModelLabel';
 import { OPEN_PICKER_REQUEST_EVENT, takeModelPickerRequest } from './navigation';
-
-const FOCUS_RING =
-  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-shodh-surface';
 
 const PANEL_WIDTH = 340;
 const EDGE = 8;
@@ -19,6 +16,11 @@ interface ModelChipProps {
   answerRunning: boolean;
   /** Open Settings → Model. */
   onOpenSettings: () => void;
+  /**
+   * Opens for "Switch model" (`requestModelPicker`, which shows Ask). Only Ask's chip
+   * does: the floating chat's chip unmounts as Ask opens, and would take the request away.
+   */
+  takesPickerRequests?: boolean;
 }
 
 /**
@@ -28,7 +30,7 @@ interface ModelChipProps {
  * "Manage…" (Settings → Model); a choice applies from the next answer,
  * without a restart, and never interrupts the answer in progress.
  */
-export function ModelChip({ answerRunning, onOpenSettings }: ModelChipProps) {
+export function ModelChip({ answerRunning, onOpenSettings, takesPickerRequests = true }: ModelChipProps) {
   const picker = useModelPicker();
   const { view } = picker;
   const [open, setOpen] = useState(false);
@@ -77,13 +79,14 @@ export function ModelChip({ answerRunning, onOpenSettings }: ModelChipProps) {
   // "Switch model" in the top bar's connection status: asked for before or
   // after this chip mounted.
   useEffect(() => {
+    if (!takesPickerRequests) return;
     if (takeModelPickerRequest()) setOpen(true);
     const onRequest = () => {
       if (takeModelPickerRequest()) setOpen(true);
     };
     window.addEventListener(OPEN_PICKER_REQUEST_EVENT, onRequest);
     return () => window.removeEventListener(OPEN_PICKER_REQUEST_EVENT, onRequest);
-  }, []);
+  }, [takesPickerRequests]);
 
   // Reopening shows current prices and installed local models.
   useEffect(() => {
@@ -92,30 +95,22 @@ export function ModelChip({ answerRunning, onOpenSettings }: ModelChipProps) {
   }, [open, picker.reload]);
 
   const active = view?.active ?? null;
-  const label = active ? modelName(view?.models ?? [], active.model) : view ? 'Choose a model' : 'Model';
+  const { label, ready } = modelLabelOf(view);
   const source = sourceText(active);
 
   return (
     <>
-      <button
+      <ModelTrigger
         ref={triggerRef}
-        type="button"
+        label={label}
+        ready={ready}
         onClick={() => setOpen(o => !o)}
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-controls={open ? panelId : undefined}
         aria-label={`Model: ${label}${source ? ` (${source.toLowerCase()})` : ''}. Change model`}
-        title={source ? `${label} (${source})` : label}
-        className={cn(
-          'inline-flex items-center gap-[7px] h-[30px] px-2.5 rounded-full bg-shodh-raised-2 text-small text-shodh-text-secondary hover:bg-shodh-pressed hover:text-shodh-text transition-colors duration-micro min-w-0',
-          FOCUS_RING,
-        )}
-      >
-        <span className={cn('w-[7px] h-[7px] rounded-full shrink-0', active ? 'bg-shodh-info' : 'bg-shodh-warning')} aria-hidden="true" />
-        <span className="truncate max-w-[200px]">{label}</span>
-        {source && <span className="shrink-0 text-caption text-shodh-text-faint">· {source}</span>}
-        <ChevronDown className="w-3 h-3 shrink-0" aria-hidden="true" />
-      </button>
+        title={source ? `${label} · ${source}` : label}
+      />
       {open &&
         createPortal(
           <div

@@ -12,6 +12,7 @@ import {
   confirmCreator,
   creatorConfirmed,
   CREATOR_CONFIRM_TEXT,
+  AUTO_CONFIRM_TEXT,
   DEFAULTABLE_MODES,
   DEFAULT_AGENT_MODE,
   PLAN_RUN_MODES,
@@ -39,10 +40,17 @@ test('the modes are Ask, Accept edits, Plan, Auto and Creator; Shift+Tab never t
   }
   // Both take a confirming click, and the confirmation says what Creator does.
   assert.deepEqual([...CONFIRMED_MODES].sort(), ['auto', 'creator']);
+  // One line, and it keeps the safety facts: its own new folder, and what still asks.
   assert.match(CREATOR_CONFIRM_TEXT, /new folder/);
-  assert.match(CREATOR_CONFIRM_TEXT, /on Windows each one asks/);
-  assert.match(CREATOR_CONFIRM_TEXT, /Package installs, GitHub and anything outside the folder still ask/);
-  for (const mode of AGENT_MODES) assert.ok(mode.hint.length > 0 && mode.label.length > 0);
+  assert.match(CREATOR_CONFIRM_TEXT, /Installs, GitHub and anything outside the folder still ask/);
+  assert.ok(CREATOR_CONFIRM_TEXT.length <= 120, CREATOR_CONFIRM_TEXT);
+  assert.ok(AUTO_CONFIRM_TEXT.length <= 120, AUTO_CONFIRM_TEXT);
+  for (const mode of AGENT_MODES) {
+    assert.ok(mode.hint.length > 0 && mode.label.length > 0);
+    // The menu's tooltip: a few words, never a paragraph.
+    assert.ok(mode.short.length > 0 && mode.short.split(' ').length <= 5, mode.short);
+  }
+  assert.equal(AGENT_MODES[0].label, 'Ask first');
   // There is no mode that bypasses everything.
   for (const name of ['bypass', 'Creator', 'yolo', 'Auto', '', null, 3]) {
     assert.equal(isAgentMode(name), false, String(name));
@@ -85,9 +93,9 @@ test('the confirming click is remembered per conversation for this app session o
   confirmCreator('c-new');
   assert.equal(creatorConfirmed('c-new'), true);
   assert.equal(creatorConfirmed('c-other'), false);
-  // The picker confirms before it hands Creator over (ModePicker), and the view
-  // records it (AskView): a saved "creator" alone never starts a build.
-  const view = readFileSync(new URL('../src/features/ask/AskView.tsx', import.meta.url), 'utf8');
+  // The menu confirms before it hands Creator over (ModePicker), and the shared mode hook
+  // records it (useConversationModes): a saved "creator" alone never starts a build.
+  const view = readFileSync(new URL('../src/features/ask/useConversationModes.ts', import.meta.url), 'utf8');
   assert.match(view, /if \(next === 'creator'\) \{\s*confirmCreator\(id\);/);
   const session = readFileSync(new URL('../src/features/ask/ChatSessionContext.tsx', import.meta.url), 'utf8');
   assert.match(session, /creatorConfirmed\(conversationId\)\) \?\? 'ask'/);

@@ -27,9 +27,8 @@ export interface SendBlock {
   fix: 'turnOnCodeMode' | null;
 }
 
-export const CODE_MODE_OFF_REASON = 'Code mode is off, so this conversation cannot change files or run commands. Turn it on, or switch this conversation to Research.';
-export const CREATOR_CODE_MODE_OFF_REASON =
-  'Creator builds files and runs commands in its own folder, which needs Code mode. Code mode is off: turn it on, or pick another mode.';
+export const CODE_MODE_OFF_REASON = 'Code mode is off.';
+export const CREATOR_CODE_MODE_OFF_REASON = 'Creator needs Code mode, which is off.';
 
 /**
  * Whether Send is blocked. Creator builds in the conversation's own creation folder,
@@ -39,15 +38,13 @@ export const CREATOR_CODE_MODE_OFF_REASON =
  */
 export function sendBlock(input: SendBlockInput): SendBlock | null {
   const plain = (reason: string): SendBlock => ({ reason, fix: null });
-  if (input.waiting) return plain('Your question is sent as soon as Shodh is ready.');
+  if (input.waiting) return plain('Sends when Shodh is ready.');
   if (input.agentMode === null) return plain('Reading your default mode…');
   if (input.sideRunLabel !== null) {
-    return plain(
-      `Answering your side question about “${input.sideRunLabel}”. You can send once it finishes; to stop it, reopen that discussion and press Esc.`,
-    );
+    return plain(`Answering your side question about “${input.sideRunLabel}”.`);
   }
   if (input.busyElsewhere) {
-    return plain('An answer is still being written in another conversation. You can send once it finishes.');
+    return plain('Answering in another conversation.');
   }
   if (input.streaming) return null;
   const creator = input.agentMode === 'creator';
@@ -55,7 +52,7 @@ export function sendBlock(input: SendBlockInput): SendBlock | null {
     return { reason: creator ? CREATOR_CODE_MODE_OFF_REASON : CODE_MODE_OFF_REASON, fix: 'turnOnCodeMode' };
   }
   if (!creator && input.conversationMode === 'code' && input.codeProblem) {
-    return plain(`${input.codeProblem} Or switch this conversation to Research.`);
+    return plain(input.codeProblem);
   }
   return null;
 }

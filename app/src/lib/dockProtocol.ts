@@ -9,6 +9,9 @@
 import type { TranscriptState } from '../features/agent/reducer';
 import type { ChatMessage } from '../features/ask/types';
 import type { RuntimeSetupState } from '../features/setup/runtimeSetupHost';
+import { isPermissionMode, isWorkKind } from '../features/agent/composerRow.ts';
+import type { WorkKind } from '../features/agent/composerRow';
+import type { AgentMode } from '../features/agent/agentModes';
 
 /** The largest snapshot or action relayed, in bytes of JSON (Rust's `MAX_RELAY_BYTES`). */
 export const MAX_SNAPSHOT_BYTES = 262144;
@@ -50,6 +53,20 @@ export interface DockSnapshot {
   /** New activity while minimised. */
   unread: number;
   theme: 'light' | 'dark';
+  /** What the next answer works on, as the composer's mode menu shows it. */
+  work: WorkKind;
+  /** Its permission (never Creator); null while the default is read. */
+  permission: AgentMode | null;
+  /** Code mode in Settings; null until read. */
+  codeAvailable: boolean | null;
+  /** The model the next answer uses, as the composer's model control shows it. */
+  model: DockModelLabel;
+}
+
+/** The model control's text: the model's name, and whether one answers. */
+export interface DockModelLabel {
+  label: string;
+  ready: boolean;
 }
 
 /** What the dock may ask main to do. Anything else is refused. */
@@ -73,7 +90,13 @@ export type DockAction =
   | { kind: 'openUrl'; url: string }
   /** Stop a command the answer is running (Code mode). */
   | { kind: 'stopCommand'; id: string }
-  | { kind: 'openSettings' };
+  | { kind: 'openSettings' }
+  /** The mode menu: what the next answer works on (Creator after its confirming click). */
+  | { kind: 'setWork'; work: WorkKind }
+  /** The mode menu: the permission (Auto after its confirming click; never Creator). */
+  | { kind: 'setPermission'; mode: AgentMode }
+  /** The model control: main shows Ask with its model menu open. */
+  | { kind: 'pickModel' };
 
 export const RUNTIME_OPS = ['install', 'refresh', 'dismissInstalled'] as const;
 export type RuntimeOp = typeof RUNTIME_OPS[number];
@@ -102,6 +125,9 @@ const ACTION_FIELDS: Record<Kind, Record<string, Field>> = {
   openUrl: { url: { type: 'string' } },
   stopCommand: { id: { type: 'string' } },
   openSettings: {},
+  setWork: { work: { type: 'string' } },
+  setPermission: { mode: { type: 'string' } },
+  pickModel: {},
 };
 
 /** An approval, review token or command id: 1 to 128 printable ASCII characters, no spaces. */
@@ -158,6 +184,12 @@ export function parseDockAction(value: unknown): DockAction | null {
       break;
     case 'stopCommand':
       if (!ID.test(value.id as string)) return null;
+      break;
+    case 'setWork':
+      if (!isWorkKind(value.work)) return null;
+      break;
+    case 'setPermission':
+      if (!isPermissionMode(value.mode)) return null;
       break;
     default:
       break;
@@ -216,8 +248,13 @@ export function parseDockSnapshot(value: unknown): DockSnapshot | null {
     && typeof s.voiceSupported === 'boolean'
     && typeof s.open === 'boolean'
     && typeof s.unread === 'number' && Number.isFinite(s.unread) && s.unread >= 0
-    && (s.theme === 'light' || s.theme === 'dark');
+    && (s.theme === 'light' || s.theme === 'dark')
+    && isWorkKind(s.work)
+    && (s.permission === null || isPermissionMode(s.permission))
+    && (s.codeAvailable === null || typeof s.codeAvailable === 'boolean')
+    && isRecord(s.model) && typeof s.model.label === 'string' && typeof s.model.ready === 'boolean';
   if (!ok) return null;
+  const model = s.model as { label: string; ready: boolean };
   return {
     v: 1,
     conversationId: s.conversationId as string | null,
@@ -236,6 +273,10 @@ export function parseDockSnapshot(value: unknown): DockSnapshot | null {
     open: s.open as boolean,
     unread: s.unread as number,
     theme: s.theme as 'light' | 'dark',
+    work: s.work as WorkKind,
+    permission: s.permission as AgentMode | null,
+    codeAvailable: s.codeAvailable as boolean | null,
+    model: { label: model.label, ready: model.ready },
   };
 }
 
@@ -256,6 +297,10 @@ export interface SnapshotInput {
   unread: number;
   theme: 'light' | 'dark';
   runtime: RuntimeSetupState;
+  work: WorkKind;
+  permission: AgentMode | null;
+  codeAvailable: boolean | null;
+  model: DockModelLabel;
 }
 
 function jsonBytes(value: unknown): number {
@@ -347,6 +392,10 @@ export function snapshotOf(input: SnapshotInput, relay = true): DockSnapshot {
     open: input.open,
     unread: input.unread,
     theme: input.theme,
+    work: input.work,
+    permission: input.permission,
+    codeAvailable: input.codeAvailable,
+    model: { label: input.model.label, ready: input.model.ready },
   };
   const transcript = lastAnswer?.transcript ?? null;
   if (!transcript) return base;

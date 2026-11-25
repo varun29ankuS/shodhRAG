@@ -19,7 +19,6 @@ import { recordCitationCorrection } from '../audit/api';
 import type { TranscriptState } from '../agent/reducer';
 import { SetupCard } from '../setup/SetupCard';
 import { useQueuedQuestion } from '../setup/useQueuedQuestion';
-import { useCodeModeEnabled } from '../../hooks/useCodeModeEnabled';
 import { setCodeMode } from '../../lib/appSettings';
 import { sendBlock } from './sendBlock';
 import { matchesShortcut } from '../../lib/shortcuts';
@@ -65,8 +64,6 @@ import type { MessageReveal } from '../visuals/reveal';
 import { scrollBehavior } from './viewer/sourceAccess';
 import type { ChatMessage, SearchHit, SendOptions } from './types';
 import { useWorkspaces } from '../workspaces/WorkspaceContext';
-import { scopeChip } from '../workspaces/model';
-import { librarySourcesChip } from '../library/reconcile';
 import type { SearchedSources } from '../library/reconcile';
 import { SnippetDropZone } from '../research/SnippetDropZone';
 import { exportPdf } from '../print/exportPdf';
@@ -74,22 +71,23 @@ import { answerTitle, buildPrintDocument } from '../print/printModel';
 import { COMPOSER_INSERT_EVENT, onWindowEvent, takePendingInserts } from '../research/snippetBus';
 import { appendToDraft } from '../research/snippetModel';
 import { ModelChip } from '../modelPicker/ModelChip';
-import { CodeModeSwitch } from '../agent/CodeModeSwitch';
+import { createPortal } from 'react-dom';
+import { CodeBranchChip, useCodeStatus } from '../agent/CodeBranchChip';
+import { ModePicker } from '../agent/ModePicker';
+import { useConversationModes } from './useConversationModes';
+import { useSearchAll } from './searchAllStore';
 import { TokensSavedChip } from '../codeIntel/TokensSavedChip';
 import { CodeMapChip } from '../codeIntel/CodeMapChip';
 import { DesignCheckChip } from '../code/DesignCheckChip';
-import { ModePicker } from '../agent/ModePicker';
 import { ModeActions } from '../agent/ModeActions';
 import { CreatorFinishCard } from '../artifacts/CreatorFinishCard';
 import { CHANGE_DRAFT, finishCard } from '../artifacts/model';
-import { PLAN_APPROVED_TEXT, confirmCreator, creatorConfirmed, modeSuggestion, nextAgentMode, resolveAgentMode } from '../agent/agentModes';
+import { PLAN_APPROVED_TEXT, modeSuggestion } from '../agent/agentModes';
 import type { AgentMode } from '../agent/agentModes';
-import { useDefaultAgentMode } from '../../hooks/useDefaultAgentMode';
 import { DiagramHostContext } from './visual/diagramHost';
 import type { ConversationLogHandle } from './ConversationLog';
 import { CONVERSATION_TOP_PX, MESSAGE_INDEX_ATTR } from './windowLayout';
 import { ToolsChip } from '../tools/ToolsChip';
-import type { ConversationMode } from '../../hooks/useConversations';
 import { readLibraryKind, starterPrompts } from './starterPrompts';
 import { stripTextMarks } from './visual/marks';
 import type { LibraryKind } from './starterPrompts';
@@ -153,6 +151,8 @@ export interface AskViewProps {
   draftRequest?: AskDraftRequest | null;
   /** The draft request was placed in the composer. */
   onDraftApplied?: () => void;
+  /** Ask's slot in the top bar, for the conversation's context (Code branch, code map, tools). */
+  topBarSlot?: HTMLElement | null;
 }
 
 interface PreviewTarget {
@@ -690,7 +690,7 @@ function SystemNotice({ message }: { message: ChatMessage }) {
  * (centered 700px column) with a floating composer and a source preview
  * slide-over.
  */
-export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage, onPasteImage, isDraggingFile = false, dropHandlers, draftRequest = null, onDraftApplied }: AskViewProps) {
+export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage, onPasteImage, isDraggingFile = false, dropHandlers, draftRequest = null, onDraftApplied, topBarSlot = null }: AskViewProps) {
   const { theme } = useTheme();
   const session = useChatSession();
   const { messages, isStreaming, streamingConversationId, sideRun, send, retry, cancel, steer, approve, setRuntimeInstalled, updateMessage } = session;
@@ -747,49 +747,21 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
   // "Include this source when answering": the same options as the dock's replies.
   const sendOptions: SendOptions = useSendOptions(sources);
 
-  // Research or Code, per conversation (Code works in the workspace's code folder).
-  const mode = session.activeConversation?.mode ?? 'research';
-  // Code mode is opt-in (Settings → Privacy): its switch shows once it is on, or for a
-  // conversation already in Code mode so it can be switched back to Research.
-  const codeModeEnabled = useCodeModeEnabled();
-  const [codeProblem, setCodeProblem] = useState<string | null>(null);
+  // What the answer works on (Research, Code, Creator) and its permission, per
+  // conversation: one hook for Ask and both floating chats.
+  const modes = useConversationModes();
+  const mode = modes.conversationMode;
+  const codeModeEnabled = modes.codeAvailable;
+  const agentMode: AgentMode | null = modes.agentMode;
+  const changeAgentMode = modes.changeAgentMode;
+  const cycleAgentMode = modes.cycle;
   const codeWorkspaceId = mode === 'code' ? session.activeConversation?.workspaceId ?? null : null;
   const diagramHost = useMemo(() => ({ codeWorkspaceId }), [codeWorkspaceId]);
-  const { updateConversationMeta } = session;
-  const changeMode = useCallback((next: ConversationMode) => {
-    const id = session.activeConversationId;
-    if (id) updateConversationMeta(id, { mode: next });
-  }, [session.activeConversationId, updateConversationMeta]);
-
-  // What runs without asking (Ask, Accept edits, Plan, Auto), per conversation; a
-  // conversation without its own mode follows the default in Settings. Only the user
-  // changes it: the picker, Shift+Tab in the composer, or a suggestion's button.
-  const defaultAgentMode = useDefaultAgentMode();
-  // Bumped when the user turns Creator on, so the view reads the confirmation.
-  const [creatorTurnedOn, setCreatorTurnedOn] = useState(0);
-  // Null while the default is read (the picker says so, and nothing is sent).
-  const agentMode: AgentMode | null = resolveAgentMode(
-    session.activeConversation?.agentMode,
-    messages.length > 0,
-    defaultAgentMode,
-    creatorTurnedOn >= 0 && creatorConfirmed(session.activeConversationId),
-  );
-  const changeAgentMode = useCallback((next: AgentMode) => {
-    const id = session.activeConversationId;
-    if (!id) return;
-    // The picker hands Creator over only after its confirming click.
-    if (next === 'creator') {
-      confirmCreator(id);
-      setCreatorTurnedOn(n => n + 1);
-    }
-    updateConversationMeta(id, { agentMode: next });
-  }, [session.activeConversationId, updateConversationMeta]);
-  const agentModeRef = useRef(agentMode);
-  agentModeRef.current = agentMode;
-  const cycleAgentMode = useCallback(() => {
-    const current = agentModeRef.current;
-    if (current) changeAgentMode(nextAgentMode(current));
-  }, [changeAgentMode]);
+  // The code folder's state (Code mode): its problem blocks Send; its branch shows in the top bar.
+  const codeStatus = useCodeStatus(session.activeConversationId, session.activeConversation?.workspaceId ?? null, mode, isStreaming);
+  const codeProblem = codeStatus.status?.problem ?? null;
+  const { setStatus: setCodeStatus } = codeStatus;
+  const clearCodeBranch = useCallback(() => setCodeStatus(prev => (prev ? { ...prev, branch: null } : prev)), [setCodeStatus]);
   // "Approve plan · <mode>": the mode changes first; the approval is sent once the
   // conversation answers in that mode, so the plan never runs in Plan mode's session.
   const [planApproval, setPlanApproval] = useState<{ conversationId: string; mode: AgentMode } | null>(null);
@@ -857,11 +829,10 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
   }, [showStarters, readySourcesKey]);
   // In a workspace chat, answers search only the workspace's sources unless "Search all my
   // library" is on for the next question (it switches off again once that is sent).
-  const { byId: workspaceById, openWorkspace } = useWorkspaces();
+  const { byId: workspaceById } = useWorkspaces();
   const workspaceName = useCallback((id: string) => workspaceById(id)?.name, [workspaceById]);
   const workspace = workspaceById(session.activeConversation?.workspaceId);
-  const [searchAll, setSearchAll] = useState(false);
-  const chip = scopeChip(workspace, searchAll, librarySourcesChip(searched));
+  const [searchAll, setSearchAll] = useSearchAll(session.activeConversationId);
 
   // Reset per-conversation UI when the conversation changes.
   const conversationId = session.activeConversationId;
@@ -1326,65 +1297,17 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
         placeholder={messages.length === 0 ? 'Ask about your files…' : 'Ask a follow-up…'}
         onCycleMode={conversationId ? cycleAgentMode : undefined}
         voice={voice}
-        modelChip={(
-          <>
-            {conversationId && <ModePicker mode={agentMode} onChange={changeAgentMode} answerRunning={isStreaming} />}
-            <ModelChip answerRunning={isStreaming} onOpenSettings={() => onNavigate('settings')} />
-            {(codeModeEnabled === true || mode === 'code') && <CodeModeSwitch
-              conversationId={conversationId}
-              workspaceId={session.activeConversation?.workspaceId ?? null}
-              mode={mode}
-              onChange={changeMode}
-              answerRunning={isStreaming}
-              onProblem={setCodeProblem}
-            />}
-            {mode === 'code' && conversationId && (
-              <TokensSavedChip
-                conversationId={conversationId}
-                answerRunning={isStreaming}
-                onOpenActivity={() => onNavigate('activity')}
-              />
-            )}
-            {mode === 'code' && codeWorkspaceId && <CodeMapChip workspaceId={codeWorkspaceId} />}
-            {conversationId && (mode === 'code' || agentMode === 'creator') && (
-              <DesignCheckChip
-                conversationId={conversationId}
-                workspaceId={agentMode === 'creator' ? null : codeWorkspaceId ?? null}
-                creates={agentMode === 'creator'}
-                answerRunning={isStreaming}
-              />
-            )}
-            <ToolsChip
-              workspaceId={session.activeConversation?.workspaceId ?? null}
-              mode={mode}
-              answerRunning={isStreaming}
-              onOpenSettings={section => {
-                requestSettingsSection(section);
-                onNavigate('settings');
-              }}
-            />
-          </>
+        modeControl={(
+          <ModePicker
+            work={modes.work}
+            permission={modes.permission}
+            codeAvailable={codeModeEnabled}
+            onPickWork={modes.pickWork}
+            onPickPermission={changeAgentMode}
+            answerRunning={isStreaming}
+          />
         )}
-        scopeLabel={chip.label}
-        scopeTitle={chip.title}
-        onOpenLibrary={() => (workspace ? openWorkspace(workspace.id, 'sources') : onNavigate('library'))}
-        scopeAction={workspace && (
-          <button
-            type="button"
-            aria-pressed={searchAll}
-            onClick={() => setSearchAll(on => !on)}
-            title="For the next question only: search your whole library instead of this workspace's sources"
-            className={cn(
-              'h-7 px-2.5 shrink-0 whitespace-nowrap inline-flex items-center gap-1 rounded-full text-caption font-medium border transition-colors duration-micro focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-              searchAll
-                ? 'bg-shodh-accent-soft border-shodh-accent text-shodh-accent-text'
-                : 'border-shodh-border text-shodh-text-muted hover:text-shodh-text hover:bg-shodh-raised',
-            )}
-          >
-            <Globe className="w-3 h-3" aria-hidden="true" />
-            Search all my library
-          </button>
-        )}
+        modelControl={<ModelChip answerRunning={isStreaming} onOpenSettings={() => onNavigate('settings')} />}
         onPickImage={onPickImage}
         onPasteImage={onPasteImage}
         attachments={(
@@ -1396,6 +1319,32 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
         autoFocus={autoFocus}
       />
     </SnippetDropZone>
+  );
+
+  // The conversation's context in the top bar (Ask's slot, left of its actions): the Code
+  // branch with Discard, the code map and the tools this chat can use.
+  const topBarContext = topBarSlot && createPortal(
+    <>
+      {conversationId && codeStatus.status && (
+        <CodeBranchChip
+          conversationId={conversationId}
+          status={codeStatus.status}
+          answerRunning={isStreaming}
+          onDiscarded={clearCodeBranch}
+        />
+      )}
+      {mode === 'code' && codeWorkspaceId && <CodeMapChip workspaceId={codeWorkspaceId} />}
+      <ToolsChip
+        workspaceId={session.activeConversation?.workspaceId ?? null}
+        mode={mode}
+        answerRunning={isStreaming}
+        onOpenSettings={section => {
+          requestSettingsSection(section);
+          onNavigate('settings');
+        }}
+      />
+    </>,
+    topBarSlot,
   );
 
   const dropOverlay = isDraggingFile && (
@@ -1504,11 +1453,39 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
         onChangeCreation={changeCreation}
       />
     );
-    if (!learned || learned.length === 0) return answer;
+    // The answer's status ("Done · model · $ · time") under the answer it belongs to; the
+    // newest answer also carries what its run produced (design check, tokens saved) and the
+    // memories waiting for review.
+    const newest = index === messages.length - 1;
+    const statusRow = message.transcript && (
+      <div data-testid="answer-status" className="flex flex-wrap items-center gap-x-2 gap-y-1.5 min-w-0">
+        <div className="min-w-0 flex-1">
+          <StatusLine transcript={message.transcript} fallbackModel={newest && llmStatus.connected ? llmStatus.model : null} />
+        </div>
+        {newest && conversationId && mode === 'code' && (
+          <TokensSavedChip
+            conversationId={conversationId}
+            answerRunning={isStreaming}
+            onOpenActivity={() => onNavigate('activity')}
+          />
+        )}
+        {newest && conversationId && (mode === 'code' || agentMode === 'creator') && (
+          <DesignCheckChip
+            conversationId={conversationId}
+            workspaceId={agentMode === 'creator' ? null : codeWorkspaceId ?? null}
+            creates={agentMode === 'creator'}
+            answerRunning={isStreaming}
+          />
+        )}
+        {newest && <SuggestionsBadge onOpen={openMemorySettings} />}
+      </div>
+    );
+    if ((!learned || learned.length === 0) && !statusRow) return answer;
     return (
       <div className="flex flex-col gap-2">
         {answer}
-        <TurnMemoryLines lines={learned} align="start" onReview={openMemorySettings} />
+        {statusRow}
+        {learned && learned.length > 0 && <TurnMemoryLines lines={learned} align="start" onReview={openMemorySettings} />}
       </div>
     );
   };
@@ -1545,6 +1522,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
             <SetupCard waiting={queued.waiting} onCancelWaiting={queued.cancel} />
             {seedNotice}
             {composer(true)}
+            {topBarContext}
             {!hasSources ? (
               <div className="flex flex-col items-center gap-3 text-center">
                 <p className="text-body text-shodh-text-muted">
@@ -1630,14 +1608,9 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
         <div className="max-w-[700px] mx-auto pointer-events-auto flex flex-col gap-2">
           <SetupCard compact waiting={queued.waiting} onCancelWaiting={queued.cancel} />
           {composer(true)}
-          <div className="min-h-[18px] px-2 flex items-center justify-between gap-2">
-            <div className="min-w-0">
-              {latest && <StatusLine transcript={latest} fallbackModel={llmStatus.connected ? llmStatus.model : null} />}
-            </div>
-            <SuggestionsBadge onOpen={openMemorySettings} />
-          </div>
         </div>
       </div>
+      {topBarContext}
 
       {wide && latest?.plan && (
         <aside className="absolute right-6 top-[18px] z-10" aria-label="Plan of the latest answer">

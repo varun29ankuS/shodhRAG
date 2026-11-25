@@ -1674,11 +1674,34 @@ jobs:
               timeout -k 5 180 sh -c 'while pgrep -x systemd-coredum > /dev/null; do sleep 1; done' || echo "systemd-coredump was still running after 180 s"
               echo "== coredumpctl info $qemu_pid"
               timeout -k 5 120 sudo -n coredumpctl info --no-pager "$qemu_pid" || echo "no core dump of the emulator's process"
+              # systemd-coredump's own stack reader was killed on this
+              # runner (run 45664734252: one frame, no library), so gdb
+              # reads the core: the libraries loaded and where, every
+              # thread's stack, and the instruction that faulted. The
+              # emulator's own libraries are found beside its binary.
+              emulator_dir="$ANDROID_HOME/emulator"
+              core_file="$RUNNER_TEMP/emulator.core"
+              if timeout -k 5 240 sudo -n apt-get install -y -q gdb > /dev/null 2>&1 \
+                && timeout -k 5 240 sudo -n coredumpctl dump "$qemu_pid" -o "$core_file" > /dev/null 2>&1; then
+                echo "== gdb"
+                timeout -k 5 300 sudo -n gdb -batch -nx \
+                  -iex "set solib-search-path $emulator_dir/lib64:$emulator_dir/lib64/gles_swiftshader:$emulator_dir/lib64/vulkan:$emulator_dir/lib64/qt/lib" \
+                  -ex "info registers rip rsp rbp rax rdi rsi" \
+                  -ex "x/6i \$pc" \
+                  -ex "bt 40" \
+                  -ex "info sharedlibrary" \
+                  -ex "thread apply all bt 12" \
+                  "$emulator_dir/qemu/linux-x86_64/qemu-system-x86_64-headless" "$core_file" 2>&1 | head -c 400000 \
+                  || echo "gdb could not read the core"
+                sudo -n rm -f "$core_file"
+              else
+                echo "gdb or the core file is not available on this runner"
+              fi
             } > "$evidence/emulator-core.txt" 2>&1 || true
             cp -r /tmp/android-runner/emu-crash-*.db "$evidence/" 2>/dev/null || true
             echo "::group::Evidence (all of it is in the $evidence_artifact artifact)"
             tail -n 80 "$evidence/host.txt" || true
-            head -n 150 "$evidence/emulator-core.txt" || true
+            head -n 220 "$evidence/emulator-core.txt" || true
             echo "== the app's deaths in the streamed log"
             grep -E "Killing [0-9]+:$ANDROID_PACKAGE|Process $ANDROID_PACKAGE .*has died|FATAL EXCEPTION|Fatal signal" "$evidence/logcat.txt" | tail -n 20 || true
             echo "::endgroup::"

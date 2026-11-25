@@ -7,14 +7,13 @@
 </p>
 
 <p align="center">
-  <strong>An open-source, local-first alternative to NotebookLM for your research papers and folders.<br />Every answer is cited to the exact page, and every cited statement is checked against its source.</strong>
+  <strong>An open-source, local-first alternative to ChatGPT and NotebookLM. Chat, research and build with the model you choose, local or cloud.<br />Every answer from your papers and folders is cited to the exact page, and every cited statement is checked against its source.</strong>
 </p>
 
 <p align="center">
   <a href="https://github.com/varun29ankuS/shodhRAG/releases/latest"><img src="https://img.shields.io/github/v/release/varun29ankuS/shodhRAG?label=release" alt="Latest release" /></a>
   <a href="https://github.com/varun29ankuS/shodhRAG/actions/workflows/ci.yml?query=branch%3Amaster"><img src="https://github.com/varun29ankuS/shodhRAG/actions/workflows/ci.yml/badge.svg?branch=master&amp;event=push" alt="CI" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/varun29ankuS/shodhRAG" alt="License: Apache-2.0" /></a>
-  <a href="https://github.com/varun29ankuS/shodhRAG/releases"><img src="https://img.shields.io/github/downloads/varun29ankuS/shodhRAG/total" alt="Downloads" /></a>
 </p>
 
 <p align="center">

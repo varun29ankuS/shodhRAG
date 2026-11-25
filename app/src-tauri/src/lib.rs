@@ -1107,6 +1107,8 @@ pub fn run() {
             paper_alerts::paper_alert_delete,
             paper_alerts::paper_alert_suggestions,
             paper_alerts::whats_new_add_to_library,
+            // The ledger of model calls
+            engine_commands::model_usage_today,
             // Background mode (tray, start with Windows)
             background::get_background_status,
             background::set_close_to_tray,

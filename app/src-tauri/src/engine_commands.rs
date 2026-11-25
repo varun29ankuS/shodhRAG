@@ -18,6 +18,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use shodh_rag::audit::AuditKey;
+use shodh_rag::engine::clock::{next_utc_midnight, utc_day};
+use shodh_rag::engine::ledger::{DayCalls, Ledger, Spender, SpenderCalls};
 use shodh_rag::engine::plan::sleep_for;
 use shodh_rag::engine::runner::{Engine, JobHandler};
 use shodh_rag::engine::store::{EngineError, EngineResult, EngineStore, JobKind};
@@ -50,6 +52,8 @@ struct Inner {
     repeats: OnceCell<Arc<Repeats>>,
     whats_new: OnceCell<Arc<WhatsNew>>,
     paper_alerts: OnceCell<Arc<PaperAlerts>>,
+    /// The ledger of model calls.
+    ledger: OnceCell<Arc<Ledger>>,
     wake: Notify,
 }
 
@@ -67,6 +71,7 @@ impl EngineState {
                 repeats: OnceCell::new(),
                 whats_new: OnceCell::new(),
                 paper_alerts: OnceCell::new(),
+                ledger: OnceCell::new(),
                 wake: Notify::new(),
             }),
         }
@@ -87,6 +92,25 @@ impl EngineState {
                         .map_err(|e| e.to_string())?
                         .map_err(|e| e.to_string())?;
                 Ok(Arc::new(Engine::new(Arc::new(store))))
+            })
+            .await
+            .cloned()
+    }
+
+    async fn ledger(&self) -> Result<Arc<Ledger>, String> {
+        self.inner
+            .ledger
+            .get_or_try_init(|| async {
+                let (path, key) = self
+                    .inner
+                    .database
+                    .clone()
+                    .ok_or_else(|| DATABASE_UNAVAILABLE.to_string())?;
+                let ledger = tokio::task::spawn_blocking(move || Ledger::open(&path, key.as_ref()))
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .map_err(|e| e.to_string())?;
+                Ok(Arc::new(ledger))
             })
             .await
             .cloned()
@@ -224,6 +248,122 @@ pub async fn paper_alerts_for_command(app: &AppHandle) -> Result<Arc<PaperAlerts
         .inner()
         .clone();
     state.paper_alerts(app).await
+}
+
+/// Records one model call of `spender` in `pool` today (UTC). Counting never stops a
+/// call: a ledger that cannot be opened or written is logged and the call goes on.
+pub async fn record_call(app: &AppHandle, spender: Spender, pool: String) {
+    let Some(state) = app.try_state::<EngineState>().map(|s| s.inner().clone()) else {
+        return;
+    };
+    let ledger = match state.ledger().await {
+        Ok(ledger) => ledger,
+        Err(e) => {
+            tracing::debug!(error = %e, "the ledger of model calls is unavailable");
+            return;
+        }
+    };
+    let day = utc_day(Utc::now());
+    let recorded = tokio::task::spawn_blocking(move || ledger.record(day, spender, &pool, 1)).await;
+    match recorded {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, spender = spender.as_str(), "a model call could not be counted")
+        }
+        Err(e) => tracing::warn!(error = %e, "counting a model call stopped"),
+    }
+}
+
+/// Today's model calls (UTC day), by spender and by pool.
+pub async fn calls_today(app: &AppHandle) -> Result<DayCalls, String> {
+    let state = app
+        .try_state::<EngineState>()
+        .ok_or_else(|| DATABASE_UNAVAILABLE.to_string())?
+        .inner()
+        .clone();
+    let ledger = state.ledger().await?;
+    let day = utc_day(Utc::now());
+    tokio::task::spawn_blocking(move || ledger.day(day))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+/// Today's model calls for the counter (Settings → Model, `system_status`).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelUsageToday {
+    /// The UTC day, `YYYY-MM-DD`.
+    pub day: String,
+    pub total: u32,
+    /// The spenders that made calls today, in the counter's order.
+    pub by_spender: Vec<SpenderCalls>,
+    /// When the day's count starts again (the next 00:00 UTC), RFC 3339.
+    pub resets_at: String,
+}
+
+/// The ledger's day, with learning's own count of its calls (kept in its own store
+/// until it moves into the ledger) in its place among the spenders.
+pub fn usage_today(day: DayCalls, learning_calls: u32, now: DateTime<Utc>) -> ModelUsageToday {
+    let mut by_spender = day.by_spender;
+    if learning_calls > 0 && !by_spender.iter().any(|s| s.spender == Spender::Learning) {
+        by_spender.push(SpenderCalls {
+            spender: Spender::Learning,
+            calls: learning_calls,
+        });
+        by_spender.sort_by_key(|s| Spender::ALL.iter().position(|a| *a == s.spender));
+    }
+    ModelUsageToday {
+        day: day.day,
+        total: by_spender
+            .iter()
+            .map(|s| s.calls)
+            .fold(0, u32::saturating_add),
+        by_spender,
+        resets_at: next_utc_midnight(now).to_rfc3339(),
+    }
+}
+
+impl ModelUsageToday {
+    /// The counter in words, for the assistant: "Today: 23 model calls (chat 9, tables 8).
+    /// The count starts again at 00:00 UTC."
+    pub fn sentence(&self) -> String {
+        let counted = if self.total == 0 {
+            "Today: no model calls yet.".to_string()
+        } else {
+            let parts: Vec<String> = self
+                .by_spender
+                .iter()
+                .map(|s| format!("{} {}", s.spender.as_str(), s.calls))
+                .collect();
+            let noun = if self.total == 1 {
+                "model call"
+            } else {
+                "model calls"
+            };
+            format!("Today: {} {noun} ({}).", self.total, parts.join(", "))
+        };
+        format!("{counted} The count starts again at 00:00 UTC.")
+    }
+}
+
+/// Today's model calls, with learning's own count.
+pub async fn read_usage_today(app: &AppHandle) -> Result<ModelUsageToday, String> {
+    let day = calls_today(app).await?;
+    let learning = match app.try_state::<crate::memory_learn::LearnState>() {
+        Some(learn) => learn.calls_today().await.unwrap_or_else(|e| {
+            tracing::debug!(error = %e, "learning's calls today could not be read");
+            0
+        }),
+        None => 0,
+    };
+    Ok(usage_today(day, learning, Utc::now()))
+}
+
+/// Today's model calls: chat, tables and the other spenders.
+#[tauri::command]
+pub async fn model_usage_today(app: AppHandle) -> Result<ModelUsageToday, String> {
+    read_usage_today(&app).await
 }
 
 /// One tick for every kind of job, in turn. A kind that fails does not keep the others
@@ -498,6 +638,52 @@ mod tests {
         assert_eq!(next, Some(local(24, 7, 0)));
         let repeats_only = next_wake_all(&engine, &[JobKind::TaskRepeat]).unwrap();
         assert_eq!(repeats_only, Some(local(24, 9, 0)));
+    }
+
+    #[test]
+    fn usage_today_puts_learning_among_the_spenders_and_resets_at_utc_midnight() {
+        let calls = |spender, calls| SpenderCalls { spender, calls };
+        let day = DayCalls {
+            day: "2026-11-25".into(),
+            total: 17,
+            by_spender: vec![calls(Spender::Chat, 9), calls(Spender::Tables, 8)],
+            by_pool: Default::default(),
+        };
+        let now = DateTime::parse_from_rfc3339("2026-11-25T18:30:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let usage = usage_today(day.clone(), 3, now);
+        assert_eq!(usage.total, 20);
+        assert_eq!(
+            usage.by_spender,
+            vec![
+                calls(Spender::Chat, 9),
+                calls(Spender::Tables, 8),
+                calls(Spender::Learning, 3)
+            ]
+        );
+        assert_eq!(usage.resets_at, "2026-11-26T00:00:00+00:00");
+        assert_eq!(
+            usage.sentence(),
+            "Today: 20 model calls (chat 9, tables 8, learning 3). The count starts again at \
+             00:00 UTC."
+        );
+        let quiet = usage_today(day, 0, now);
+        assert_eq!(quiet.by_spender.len(), 2, "no learning, no row");
+        let none = usage_today(
+            DayCalls {
+                day: "2026-11-25".into(),
+                total: 0,
+                by_spender: Vec::new(),
+                by_pool: Default::default(),
+            },
+            0,
+            now,
+        );
+        assert_eq!(
+            none.sentence(),
+            "Today: no model calls yet. The count starts again at 00:00 UTC."
+        );
     }
 
     #[tokio::test]

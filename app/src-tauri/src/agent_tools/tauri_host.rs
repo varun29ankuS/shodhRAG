@@ -102,7 +102,16 @@ impl HostEffects for TauriEffects {
     }
 
     async fn system_status(&self) -> serde_json::Value {
-        crate::indexing_control::status_json(&self.app).await
+        let mut status = crate::indexing_control::status_json(&self.app).await;
+        // The model calls Shodh made today, so the assistant can answer what was spent.
+        let calls = match crate::engine_commands::read_usage_today(&self.app).await {
+            Ok(usage) => serde_json::json!({ "summary": usage.sentence(), "usage": usage }),
+            Err(e) => serde_json::json!({ "unavailable": e }),
+        };
+        if let Some(fields) = status.as_object_mut() {
+            fields.insert("modelCallsToday".to_string(), calls);
+        }
+        status
     }
 
     fn design_check_done(&self, check: &crate::design_check_commands::StoredDesignCheck) {

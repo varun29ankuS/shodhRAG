@@ -4,10 +4,12 @@ import { ConnectPanel } from './ConnectPanel';
 import { ModelPicks } from './ModelPicks';
 import { AdvancedModelSettings } from './AdvancedModelSettings';
 import { BackupModels } from './BackupModels';
+import { CallsToday } from './CallsToday';
 
 /**
  * Settings → Model, in four parts: Connect (a subscription, an API key or
- * a model on this computer), Model (four picks from what is connected),
+ * a model on this computer), Model (four picks from what is connected, and
+ * today's model calls),
  * Backup models (what is tried when a model can't answer) and Advanced
  * (collapsed).
  */
@@ -28,6 +30,7 @@ export function ModelSettingsSection() {
           Model
         </h3>
         <ModelPicks picker={picker} />
+        <CallsToday />
       </section>
       <BackupModels picker={picker} />
       <AdvancedModelSettings picker={picker} />

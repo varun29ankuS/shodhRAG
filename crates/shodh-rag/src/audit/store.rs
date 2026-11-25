@@ -45,7 +45,8 @@ const SQLITE_HEADER: &[u8; 16] = b"SQLite format 3\0";
 /// the learning model's rejected answers (10), forgotten suggestions (11), the statement
 /// store's state (12), what happened to memories in each answer (13), evidence tables
 /// (14), the evidence tables' daily call counter and fill-job state (15) and the captures
-/// of their hand fills with the `model_unavailable` pause (16) use one version sequence,
+/// of their hand fills with the `model_unavailable` pause (16), and later the scheduler
+/// engine (19), What's new (20) and the ledger of model calls (21) use one version sequence,
 /// so every component that opens it sees the same schema.
 const MIGRATIONS: &[(i64, &str)] = &[
     (
@@ -780,6 +781,34 @@ const MIGRATIONS: &[(i64, &str)] = &[
         CREATE UNIQUE INDEX IF NOT EXISTS feed_item_ref ON feed_item(kind, source_ref);
         CREATE INDEX IF NOT EXISTS feed_item_job ON feed_item(job_id, posted_run_id);
         CREATE INDEX IF NOT EXISTS feed_item_found ON feed_item(found_at);",
+    ),
+    (
+        21,
+        // One ledger of model calls (`crate::engine::ledger`): the calls each spender made
+        // per UTC day (the provider's daily window) and per quota pool (the provider limit
+        // the calls count against, such as OpenRouter's free models; '' when not known).
+        // It replaces the evidence tables' `table_calls`, whose counts are copied in as
+        // the tables' (the table cap reads them from here); chat is counted too, never
+        // capped. The step can be applied again safely: the copy keeps the larger count when
+        // it meets a row, and an absent `table_calls` (dropped by an earlier application) is
+        // made empty first, so there is always one to copy from and drop.
+        "CREATE TABLE IF NOT EXISTS table_calls (
+            utc_day TEXT PRIMARY KEY,
+            calls INTEGER NOT NULL CHECK (calls >= 0)
+        );
+        CREATE TABLE IF NOT EXISTS model_calls (
+            utc_day TEXT NOT NULL,
+            spender TEXT NOT NULL CHECK (spender IN ('chat', 'tables', 'automations',
+                'review', 'slack', 'telegram', 'learning')),
+            pool TEXT NOT NULL DEFAULT '',
+            calls INTEGER NOT NULL CHECK (calls >= 0),
+            PRIMARY KEY (utc_day, spender, pool)
+        );
+        INSERT INTO model_calls(utc_day, spender, pool, calls)
+            SELECT utc_day, 'tables', '', calls FROM table_calls WHERE 1
+            ON CONFLICT(utc_day, spender, pool) DO UPDATE
+                SET calls = MAX(calls, excluded.calls);
+        DROP TABLE table_calls;",
     ),
 ];
 
@@ -2583,6 +2612,87 @@ mod tests {
         );
     }
 
+    /// The database back at version 20, with the tables' call counter holding `rows`.
+    fn back_to_version_20(dir: &tempfile::TempDir, rows: &[(&str, i64)]) {
+        let conn = raw(dir);
+        conn.execute_batch(
+            "DROP TABLE IF EXISTS table_calls;
+             DELETE FROM schema_version WHERE version >= 21;
+             CREATE TABLE table_calls (
+                 utc_day TEXT PRIMARY KEY,
+                 calls INTEGER NOT NULL CHECK (calls >= 0)
+             );",
+        )
+        .unwrap();
+        for (day, calls) in rows {
+            conn.execute(
+                "INSERT INTO table_calls(utc_day, calls) VALUES (?1, ?2)",
+                rusqlite::params![day, calls],
+            )
+            .unwrap();
+        }
+    }
+
+    fn ledger_rows(dir: &tempfile::TempDir) -> Vec<(String, String, String, i64)> {
+        raw(dir)
+            .prepare("SELECT utc_day, spender, pool, calls FROM model_calls ORDER BY utc_day")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn migration_21_moves_the_table_counts_into_the_ledger() {
+        let (dir, log) = temp_log();
+        drop(log);
+        raw(&dir).execute_batch("DROP TABLE model_calls;").unwrap();
+        back_to_version_20(&dir, &[("2026-11-24", 7), ("2026-11-25", 3)]);
+        drop(AuditLog::open(dir.path().join("shodh.db"), None).unwrap());
+        let tables =
+            |day: &str, calls: i64| (day.to_string(), "tables".to_string(), String::new(), calls);
+        assert_eq!(
+            ledger_rows(&dir),
+            vec![tables("2026-11-24", 7), tables("2026-11-25", 3)]
+        );
+        let old: i64 = raw(&dir)
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'table_calls'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(old, 0, "the old counter is dropped");
+        let insert = |spender: &str| {
+            raw(&dir).execute(
+                "INSERT INTO model_calls(utc_day, spender, pool, calls)
+                 VALUES ('2026-11-25', ?1, 'openrouter:free', 1)",
+                rusqlite::params![spender],
+            )
+        };
+        insert("chat").unwrap();
+        assert!(insert("chat").is_err(), "one row per day, spender and pool");
+        assert!(insert("cron").is_err(), "an unknown spender is refused");
+    }
+
+    #[test]
+    fn reapplying_migration_21_keeps_the_larger_count() {
+        let (dir, log) = temp_log();
+        drop(log);
+        raw(&dir)
+            .execute(
+                "INSERT INTO model_calls(utc_day, spender, pool, calls)
+                 VALUES ('2026-11-24', 'tables', '', 9), ('2026-11-25', 'tables', '', 2)",
+                [],
+            )
+            .unwrap();
+        back_to_version_20(&dir, &[("2026-11-24", 4), ("2026-11-25", 5)]);
+        drop(AuditLog::open(dir.path().join("shodh.db"), None).unwrap());
+        let calls: Vec<i64> = ledger_rows(&dir).into_iter().map(|r| r.3).collect();
+        assert_eq!(calls, vec![9, 5]);
+    }
+
     #[test]
     fn the_index_refuses_a_second_active_run() {
         let (dir, log) = temp_log();
@@ -2655,7 +2765,7 @@ mod tests {
                  DROP TABLE table_cell;
                  DROP TABLE table_fill_job;
                  DROP TABLE fill_cache;
-                 DROP TABLE table_calls;
+                 DROP TABLE model_calls;
                  DROP TABLE table_fill_capture;
                  DROP TABLE slack_index_channel;
                  DROP TABLE slack_index_thread;

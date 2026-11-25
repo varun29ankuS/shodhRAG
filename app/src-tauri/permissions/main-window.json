@@ -177,6 +177,7 @@
           "model_set_fallback",
           "model_set_favourite",
           "model_set_provider_order",
+          "model_usage_today",
           "model_use_pick",
           "open_notification_settings",
           "optimize_storage",

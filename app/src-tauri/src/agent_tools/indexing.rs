@@ -233,7 +233,9 @@ impl HostTool for StatusTool {
          what is running; the System status panel opens for the user. `modelSwitch` says \
          whether the faster, slightly less accurate search model is offered (`offered`, \
          `target`) or a re-index to it is running: you may suggest it, but only the user \
-         starts it, with the button in the panel that opens."
+         starts it, with the button in the panel that opens. `modelCallsToday` counts the \
+         model calls Shodh made today (UTC day) by spender (chat, tables, learning, ...): use \
+         its `summary` to answer how much was spent."
     }
     fn schema(&self) -> Value {
         json!({ "type": "object", "properties": {}, "additionalProperties": false })

@@ -1,8 +1,9 @@
 import React, { forwardRef, useImperativeHandle, useLayoutEffect, useRef } from 'react';
-import { ArrowUp, CornerDownRight, Folder, ImagePlus, Mic, MicOff, Square } from 'lucide-react';
+import { ArrowUp, CornerDownRight, ImagePlus, Mic, MicOff, Square } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { pasteDecision } from '../ask/imageNotice';
-import { IS_MAC_PLATFORM, matchesShortcut, shortcutText, withShortcut } from '../../lib/shortcuts';
+import { IS_MAC_PLATFORM, matchesShortcut, withShortcut } from '../../lib/shortcuts';
+import { COMPOSER_ICON_CONTROL, COMPOSER_ROW_CLASS, COMPOSER_TEST_IDS } from './composerRow';
 
 /** The engine grows the field with its content (no per-keystroke measuring). */
 const NATIVE_FIELD_SIZING = typeof CSS !== 'undefined' && CSS.supports('field-sizing', 'content');
@@ -49,26 +50,23 @@ interface AgentComposerProps {
   /** A one-click fix shown with `blockedReason`, e.g. "Turn on Code mode". */
   blockedAction?: { label: string; onClick: () => void; busy: boolean } | null;
   placeholder: string;
-  /** The model chip (Ask only): shows and changes the model the next answer uses. */
-  modelChip?: React.ReactNode;
-  scopeLabel?: string;
-  scopeTitle?: string;
-  onOpenLibrary?: () => void;
-  /** A control next to the scope chip (e.g. "Search all my library" in a workspace). */
-  scopeAction?: React.ReactNode;
+  /** The mode menu (`ModePicker`), third in the row. */
+  modeControl?: React.ReactNode;
+  /** The model control, fourth in the row: Ask's model chip, or the floating chat's trigger. */
+  modelControl?: React.ReactNode;
   onPickImage?: () => void;
   /** An image (with no text) was pasted; the paste itself is cancelled. Text pastes are untouched. */
   onPasteImage?: (image: PastedImage) => void;
   /** Shown above the input: what goes out with the next question (image text chips). */
   attachments?: React.ReactNode;
   autoFocus?: boolean;
-  /** Dense variant for the conversation dock: no chips, smaller type. */
+  /** Dense variant for the floating chat: the same row, smaller type. */
   compact?: boolean;
   /** Placeholder while an answer runs and cannot be steered from here. */
   runningPlaceholder?: string;
   /**
-   * Shift+Tab in the empty input: switch to the next of Ask, Accept edits and Plan (the
-   * user's key, never the agent's; Auto is picked in the menu).
+   * Shift+Tab in the empty input: switch to the next of Ask first, Accept edits and Plan
+   * (the user's key, never the agent's; Auto is picked in the menu).
    */
   onCycleMode?: () => void;
   /**
@@ -80,9 +78,11 @@ interface AgentComposerProps {
 }
 
 /**
- * Message input. Idle: Enter sends. While an answer runs: Enter steers it,
- * Esc interrupts it (handled by the hosting view), and with an approval
- * pending an empty Enter approves. Shift+Enter inserts a newline.
+ * Message input: the text on top, and under it one row of controls, all one height, that
+ * never wraps: `[+] [mic] [Mode] [Model] … [Send]`, Send pinned at the far right. Ask and
+ * the floating chat both render it. Idle: Enter sends. While an answer runs: Enter steers
+ * it, Esc interrupts it (handled by the hosting view), and with an approval pending an
+ * empty Enter approves. Shift+Enter inserts a newline.
  */
 export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>(function AgentComposer(
   {
@@ -99,11 +99,8 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
     blockedReason,
     blockedAction = null,
     placeholder,
-    modelChip,
-    scopeLabel,
-    scopeTitle,
-    onOpenLibrary,
-    scopeAction,
+    modeControl,
+    modelControl,
     onPickImage,
     onPasteImage,
     attachments,
@@ -121,7 +118,6 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
   const maxHeight = compact ? MAX_COMPACT_HEIGHT : MAX_TEXTAREA_HEIGHT;
 
   useImperativeHandle(ref, () => ({ focus: () => textareaRef.current?.focus() }), []);
-
 
   // Grow with content up to a cap, then scroll. Where the engine sizes the
   // field itself (CSS field-sizing) nothing is measured per keystroke;
@@ -178,16 +174,13 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
     : placeholder;
 
   const iconButton = cn(
-    'w-[34px] h-[34px] shrink-0 inline-flex items-center justify-center rounded-[10px] text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
-    FOCUS_RING,
-  );
-  const chip = cn(
-    'inline-flex items-center gap-[7px] h-[30px] px-2.5 rounded-full bg-shodh-raised-2 text-small text-shodh-text-secondary hover:bg-shodh-pressed hover:text-shodh-text transition-colors duration-micro min-w-0',
+    COMPOSER_ICON_CONTROL,
+    'shrink-0 inline-flex items-center justify-center rounded-full text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
     FOCUS_RING,
   );
   const roundButton = cn(
+    COMPOSER_ICON_CONTROL,
     'shrink-0 rounded-full inline-flex items-center justify-center bg-shodh-text text-shodh-ground hover:opacity-90 transition-opacity duration-micro disabled:bg-shodh-raised-2 disabled:text-shodh-text-faint disabled:cursor-not-allowed',
-    compact ? 'w-8 h-8' : 'w-9 h-9',
     FOCUS_RING,
   );
 
@@ -198,6 +191,28 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
         compact ? 'rounded-[14px]' : 'rounded-[22px] shadow-[0_12px_40px_rgba(0,0,0,0.35)]',
       )}
     >
+      {/* Above the text, so a reason that comes and goes never moves the row of controls. */}
+      {blockedReason && (
+        <div className={cn('flex items-center gap-2 min-w-0', compact ? 'px-3 pt-2' : 'px-[18px] pt-3')}>
+          <p id={blockedId} className="m-0 min-w-0 truncate text-caption text-shodh-text-muted" title={blockedReason}>
+            {blockedReason}
+          </p>
+          {blockedAction && (
+            <button
+              type="button"
+              onClick={blockedAction.onClick}
+              disabled={blockedAction.busy}
+              aria-busy={blockedAction.busy}
+              className={cn(
+                'shrink-0 whitespace-nowrap inline-flex items-center h-6 px-2.5 rounded-full text-caption font-medium bg-shodh-accent text-white hover:opacity-90 disabled:opacity-60 disabled:cursor-wait',
+                FOCUS_RING,
+              )}
+            >
+              {blockedAction.label}
+            </button>
+          )}
+        </div>
+      )}
       {attachments}
       <label htmlFor={inputId} className="sr-only">
         {running ? 'Steer the running answer' : 'Message Shodh'}
@@ -219,13 +234,17 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
         )}
         style={NATIVE_FIELD_SIZING ? { maxHeight, minHeight: compact ? MIN_COMPACT_HEIGHT : MIN_TEXTAREA_HEIGHT } : { maxHeight }}
       />
-      <div className={cn('flex flex-wrap items-center gap-x-1.5 gap-y-2 min-w-0', compact ? 'px-2 pt-1 pb-2' : 'px-2.5 pt-1.5 pb-2.5')}>
-        {!compact && onPickImage && (
+      <div
+        data-testid={COMPOSER_TEST_IDS.row}
+        className={cn(COMPOSER_ROW_CLASS, 'box-content', compact ? 'px-2 pt-1 pb-2' : 'px-2.5 pt-1.5 pb-2.5')}
+      >
+        {onPickImage && (
           <button
             type="button"
             onClick={onPickImage}
-            aria-label="Add an image: its text is attached to your next question"
-            title="Add an image (its text is attached to your next question)"
+            aria-label="Add an image"
+            title="Add an image"
+            data-testid={COMPOSER_TEST_IDS.image}
             className={iconButton}
           >
             <ImagePlus className="w-[17px] h-[17px]" aria-hidden="true" />
@@ -238,26 +257,20 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
             aria-pressed={voice.listening}
             aria-label={voice.listening ? 'Stop dictation' : 'Dictate'}
             title={voice.listening ? 'Stop dictation' : 'Dictate'}
+            data-testid={COMPOSER_TEST_IDS.dictate}
             className={cn(iconButton, voice.listening && 'text-shodh-error bg-shodh-raised')}
           >
             {voice.listening ? <MicOff className="w-[17px] h-[17px]" aria-hidden="true" /> : <Mic className="w-[17px] h-[17px]" aria-hidden="true" />}
           </button>
         )}
-        {!compact && modelChip}
-        {!compact && scopeLabel && onOpenLibrary && (
-          <button
-            type="button"
-            onClick={onOpenLibrary}
-            className={chip}
-            title={scopeTitle}
-            aria-label={scopeTitle ? `${scopeLabel}. ${scopeTitle}` : scopeLabel}
-          >
-            <Folder className="w-3 h-3 shrink-0" strokeWidth={2.2} aria-hidden="true" />
-            <span className="truncate max-w-[200px]">{scopeLabel}</span>
-          </button>
+        {/* Mode and model share what is left; their labels truncate, the row never wraps. */}
+        {(modeControl || modelControl) && (
+          <div className="flex flex-nowrap items-center gap-1.5 min-w-0 flex-1">
+            {modeControl}
+            {modelControl}
+          </div>
         )}
-        {!compact && scopeAction}
-        <div className="ml-auto flex items-center gap-1.5">
+        <div className="ml-auto shrink-0 flex flex-nowrap items-center gap-1.5">
           {running && hasText && (
             <button
               type="button"
@@ -265,43 +278,23 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
               disabled={!canSteerNow}
               aria-label={withShortcut('Steer the answer', 'steer', IS_MAC_PLATFORM)}
               title={withShortcut('Steer', 'steer', IS_MAC_PLATFORM)}
+              data-testid={COMPOSER_TEST_IDS.steer}
               className={roundButton}
             >
               <CornerDownRight className="w-4 h-4" strokeWidth={2.4} aria-hidden="true" />
             </button>
           )}
           {running ? (
-            <button type="button" onClick={onStop} aria-label={withShortcut('Interrupt the answer', 'interrupt', IS_MAC_PLATFORM)} title={withShortcut('Interrupt', 'interrupt', IS_MAC_PLATFORM)} className={roundButton}>
+            <button type="button" onClick={onStop} aria-label={withShortcut('Interrupt the answer', 'interrupt', IS_MAC_PLATFORM)} title={withShortcut('Interrupt', 'interrupt', IS_MAC_PLATFORM)} data-testid={COMPOSER_TEST_IDS.stop} className={roundButton}>
               <Square className="w-3.5 h-3.5" fill="currentColor" aria-hidden="true" />
             </button>
           ) : (
-            <button type="button" onClick={onSubmit} disabled={!canSend} aria-label="Send" title={withShortcut('Send', 'send', IS_MAC_PLATFORM)} className={roundButton}>
+            <button type="button" onClick={onSubmit} disabled={!canSend} aria-label="Send" title={withShortcut('Send', 'send', IS_MAC_PLATFORM)} data-testid={COMPOSER_TEST_IDS.send} className={roundButton}>
               <ArrowUp className="w-4 h-4" strokeWidth={2.6} aria-hidden="true" />
             </button>
           )}
         </div>
       </div>
-      {blockedReason && (
-        <div className={cn('-mt-1 flex flex-wrap items-center gap-x-2 gap-y-1', compact ? 'px-3 pb-2' : 'px-[18px] pb-3')}>
-          <p id={blockedId} className="m-0 text-caption text-shodh-text-muted">
-            {blockedReason}
-          </p>
-          {blockedAction && (
-            <button
-              type="button"
-              onClick={blockedAction.onClick}
-              disabled={blockedAction.busy}
-              aria-busy={blockedAction.busy}
-              className={cn(
-                'inline-flex items-center h-6 px-2.5 rounded-full text-caption font-medium bg-shodh-accent text-white hover:opacity-90 disabled:opacity-60 disabled:cursor-wait',
-                FOCUS_RING,
-              )}
-            >
-              {blockedAction.label}
-            </button>
-          )}
-        </div>
-      )}
     </div>
   );
 });

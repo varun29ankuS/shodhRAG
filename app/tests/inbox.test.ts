@@ -190,7 +190,7 @@ test('irreversible actions still ask first', () => {
   assert.match(read('components/DataManagement.tsx'), /setConfirmAction\('clear_docs'\)/);
   assert.match(read('components/DataManagement.tsx'), /setConfirmAction\('reset'\)/);
   // Discarding Code changes (a second press within the window).
-  assert.match(read('features/agent/CodeModeSwitch.tsx'), /Confirm discard/);
+  assert.match(read('features/agent/CodeBranchChip.tsx'), /Confirm discard/);
   // Forgetting a memory with every earlier version, and stopping learning.
   assert.match(read('components/MemorySettings.tsx'), /title: 'Forget memory'/);
   assert.match(read('components/SuggestedMemories.tsx'), /title: 'Stop learning'/);

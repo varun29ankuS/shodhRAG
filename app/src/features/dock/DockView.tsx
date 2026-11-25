@@ -14,6 +14,7 @@ import { ThemeProvider } from '../../contexts/ThemeContext';
 import { DockPanel, PANEL_HEIGHT, PANEL_WIDTH, blockedReasonOf } from '../../components/shell/DockPanel';
 import type { DockModel } from '../../components/shell/DockPanel';
 import type { AgentComposerHandle } from '../agent/AgentComposer';
+import { ModelTrigger } from '../modelPicker/ModelTrigger';
 import { TranscriptEffectsContext } from '../agent/transcriptEffects';
 import type { TranscriptEffects } from '../agent/transcriptEffects';
 import { RuntimeSetupContext } from '../setup/runtimeSetupHost';
@@ -180,6 +181,16 @@ export default function DockView() {
     snapshot,
     onAction,
     blockedReason: blockedReasonOf(snapshot, false),
+    // The model menu needs main's model list: main shows Ask with it open.
+    modelControl: (
+      <ModelTrigger
+        label={snapshot.model.label}
+        ready={snapshot.model.ready}
+        onClick={() => onAction({ kind: 'pickModel' })}
+        aria-label={`Model: ${snapshot.model.label}. Change model in Ask`}
+        title={`${snapshot.model.label} · change in Ask`}
+      />
+    ),
   };
 
   return (

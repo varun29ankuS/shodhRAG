@@ -1,15 +1,12 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ChevronDown } from 'lucide-react';
-import { cn } from '../../lib/utils';
 import { notify } from '../../lib/notify';
+import { ModelTrigger } from './ModelTrigger';
 import { OPEN_MODEL_PICKER_EVENT, useModelPicker } from './modelApi';
 import { ChipMenu } from './ChipMenu';
-import { modelName, sourceText } from './modelFormat';
+import { sourceText } from './modelFormat';
+import { modelLabelOf } from './useModelLabel';
 import { OPEN_PICKER_REQUEST_EVENT, takeModelPickerRequest } from './navigation';
-
-const FOCUS_RING =
-  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-shodh-surface';
 
 const PANEL_WIDTH = 340;
 const EDGE = 8;
@@ -92,30 +89,22 @@ export function ModelChip({ answerRunning, onOpenSettings }: ModelChipProps) {
   }, [open, picker.reload]);
 
   const active = view?.active ?? null;
-  const label = active ? modelName(view?.models ?? [], active.model) : view ? 'Choose a model' : 'Model';
+  const { label, ready } = modelLabelOf(view);
   const source = sourceText(active);
 
   return (
     <>
-      <button
+      <ModelTrigger
         ref={triggerRef}
-        type="button"
+        label={label}
+        ready={ready}
         onClick={() => setOpen(o => !o)}
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-controls={open ? panelId : undefined}
         aria-label={`Model: ${label}${source ? ` (${source.toLowerCase()})` : ''}. Change model`}
-        title={source ? `${label} (${source})` : label}
-        className={cn(
-          'inline-flex items-center gap-[7px] h-[30px] px-2.5 rounded-full bg-shodh-raised-2 text-small text-shodh-text-secondary hover:bg-shodh-pressed hover:text-shodh-text transition-colors duration-micro min-w-0',
-          FOCUS_RING,
-        )}
-      >
-        <span className={cn('w-[7px] h-[7px] rounded-full shrink-0', active ? 'bg-shodh-info' : 'bg-shodh-warning')} aria-hidden="true" />
-        <span className="truncate max-w-[200px]">{label}</span>
-        {source && <span className="shrink-0 text-caption text-shodh-text-faint">· {source}</span>}
-        <ChevronDown className="w-3 h-3 shrink-0" aria-hidden="true" />
-      </button>
+        title={source ? `${label} · ${source}` : label}
+      />
       {open &&
         createPortal(
           <div

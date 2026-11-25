@@ -80,6 +80,10 @@ function input(messages: ChatMessage[], extra: Partial<SnapshotInput> = {}): Sna
     unread: 0,
     theme: 'dark',
     runtime: RUNTIME,
+    work: 'research',
+    permission: 'ask',
+    codeAvailable: true,
+    model: { label: 'Gemma 4 31B', ready: true },
     ...extra,
   };
 }
@@ -109,6 +113,12 @@ test('every action round-trips', () => {
     { kind: 'openUrl', url: 'https://example.com/page?q=1' },
     { kind: 'stopCommand', id: 'cmd-42' },
     { kind: 'openSettings' },
+    { kind: 'setWork', work: 'research' },
+    { kind: 'setWork', work: 'code' },
+    { kind: 'setWork', work: 'creator' },
+    { kind: 'setPermission', mode: 'ask' },
+    { kind: 'setPermission', mode: 'auto' },
+    { kind: 'pickModel' },
   ];
   for (const action of actions) {
     assert.deepEqual(parseDockAction(JSON.parse(JSON.stringify(action))), action);
@@ -138,6 +148,12 @@ test('unknown or malformed actions are refused', () => {
     { kind: 'openUrl', url: 'javascript:alert(1)' },
     { kind: 'openUrl', url: 'https://user:pw@example.com/' },
     { kind: 'openUrl', url: 'not a url' },
+    // The mode menu: only the three kinds of work, and never Creator as a permission.
+    { kind: 'setWork', work: 'yolo' },
+    { kind: 'setWork' },
+    { kind: 'setPermission', mode: 'creator' },
+    { kind: 'setPermission', mode: 'bypass' },
+    { kind: 'pickModel', model: 'x' },
     { kind: 'stopCommand', id: '' },
     { kind: 'toString' },
     { kind: '__proto__' },
@@ -235,6 +251,11 @@ test('a malformed snapshot is not read', () => {
     { ...good, trimmed: 'no' },
     { ...good, runtime: null },
     { ...good, runtime: { ...RUNTIME, installing: 'yes' } },
+    { ...good, work: 'yolo' },
+    { ...good, permission: 'creator' },
+    { ...good, codeAvailable: 'yes' },
+    { ...good, model: null },
+    { ...good, model: { label: 1, ready: true } },
   ]) {
     assert.equal(parseDockSnapshot(bad), null, JSON.stringify(bad)?.slice(0, 80));
   }

@@ -35,6 +35,9 @@ function recording(state: Partial<Pick<DockTarget, 'isStreaming' | 'draft'>> & {
     openUrl: url => calls.push(`openUrl(${url})`),
     stopCommand: id => calls.push(`stopCommand(${id})`),
     openSettings: () => calls.push('openSettings()'),
+    setWork: work => calls.push(`setWork(${work})`),
+    setPermission: mode => calls.push(`setPermission(${mode})`),
+    pickModel: () => calls.push('pickModel()'),
   };
   return { target, calls };
 }
@@ -104,6 +107,9 @@ test("the transcript's buttons in the floating chat act in main", () => {
   act({ kind: 'openUrl', url: 'https://example.com/' }, target);
   act({ kind: 'stopCommand', id: 'cmd-1' }, target);
   act({ kind: 'openSettings' }, target);
+  act({ kind: 'setWork', work: 'code' }, target);
+  act({ kind: 'setPermission', mode: 'plan' }, target);
+  act({ kind: 'pickModel' }, target);
   assert.deepEqual(calls, [
     'setOpen(false)',
     'openInAsk()',
@@ -114,6 +120,9 @@ test("the transcript's buttons in the floating chat act in main", () => {
     'openUrl(https://example.com/)',
     'stopCommand(cmd-1)',
     'openSettings()',
+    'setWork(code)',
+    'setPermission(plan)',
+    'pickModel()',
   ]);
 });
 

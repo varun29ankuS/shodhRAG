@@ -35,7 +35,7 @@ test('Creator is not blocked by the workspace code-folder problem: it builds in 
 
 test('a Code conversation in another mode is still blocked by the code-folder problem', () => {
   const block = sendBlock({ ...ready, agentMode: 'acceptEdits', conversationMode: 'code', codeProblem: FOLDER_PROBLEM });
-  assert.deepEqual(block, { reason: `${FOLDER_PROBLEM} Or switch this conversation to Research.`, fix: null });
+  assert.deepEqual(block, { reason: FOLDER_PROBLEM, fix: null });
 });
 
 test('Creator with Code mode off is blocked before sending, with the fix offered', () => {
@@ -58,11 +58,11 @@ test('a running answer can be steered: Code checks do not block it', () => {
 });
 
 test('waiting, reading the mode, a side question and another answer come first, in that order', () => {
-  assert.equal(sendBlock({ ...ready, waiting: true, agentMode: null })?.reason, 'Your question is sent as soon as Shodh is ready.');
+  assert.equal(sendBlock({ ...ready, waiting: true, agentMode: null })?.reason, 'Sends when Shodh is ready.');
   assert.equal(sendBlock({ ...ready, agentMode: null, busyElsewhere: true })?.reason, 'Reading your default mode…');
   assert.match(sendBlock({ ...ready, sideRunLabel: 'gradient', busyElsewhere: true })?.reason ?? '', /side question about “gradient”/);
   assert.equal(
     sendBlock({ ...ready, busyElsewhere: true, codeModeEnabled: false, conversationMode: 'code' })?.reason,
-    'An answer is still being written in another conversation. You can send once it finishes.',
+    'Answering in another conversation.',
   );
 });

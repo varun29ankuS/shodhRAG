@@ -7,6 +7,7 @@ import type { AgentComposerHandle } from '../../features/agent/AgentComposer';
 import { passageHits } from '../../features/agent/citations';
 import { currentStep, isLive, pendingApproval } from '../../features/agent/reducer';
 import { StatusLine } from '../../features/agent/StatusLine';
+import { ModePicker } from '../../features/agent/ModePicker';
 import { Transcript } from '../../features/agent/Transcript';
 import { Kbd, IS_MAC } from '../ui/Kbd';
 import { ariaKeyShortcuts, withShortcut } from '../../lib/shortcuts';
@@ -39,16 +40,21 @@ export interface DockModel {
   setupCard?: React.ReactNode;
   /** Wraps the composer (the in-page chat's snippet drop zone). */
   wrapComposer?: (composer: React.ReactNode) => React.ReactNode;
+  /**
+   * The composer row's model control: the in-page chat's own model menu, or the floating
+   * chat's trigger, which asks main to show Ask with its model menu open.
+   */
+  modelControl: React.ReactNode;
 }
 
 /** Why the chat cannot send now, as the in-page chat has always said it. */
 export function blockedReasonOf(snapshot: DockSnapshot, queuedWaiting: boolean): string | null {
   if (snapshot.readOnlyConnector) {
-    return `This conversation happened in ${connectorName(snapshot.readOnlyConnector)}. Open it in Ask and choose Continue in Ask to reply.`;
+    return `From ${connectorName(snapshot.readOnlyConnector)}: reply with Continue in Ask.`;
   }
-  if (queuedWaiting) return 'Your question is sent as soon as Shodh is ready.';
+  if (queuedWaiting) return 'Sends when Shodh is ready.';
   if (snapshot.sideRunLabel) return `Answering your side question about “${snapshot.sideRunLabel}”.`;
-  if (snapshot.busyElsewhere) return 'An answer is running in another conversation.';
+  if (snapshot.busyElsewhere) return 'Answering in another conversation.';
   return null;
 }
 
@@ -169,6 +175,17 @@ export function DockPanel({ model, onExpandAsk, fixed, maxHeight, pillRef, panel
       voice={snapshot.voiceSupported
         ? { supported: true, listening: snapshot.dictating, toggle: () => onAction({ kind: 'dictate', on: !snapshot.dictating }) }
         : undefined}
+      modeControl={(
+        <ModePicker
+          work={snapshot.work}
+          permission={snapshot.permission}
+          codeAvailable={snapshot.codeAvailable}
+          onPickWork={work => onAction({ kind: 'setWork', work })}
+          onPickPermission={mode => onAction({ kind: 'setPermission', mode })}
+          answerRunning={snapshot.isStreaming}
+        />
+      )}
+      modelControl={model.modelControl}
       compact
     />
   );
@@ -246,15 +263,15 @@ export function DockPanel({ model, onExpandAsk, fixed, maxHeight, pillRef, panel
             compact
           />
         )}
+        {transcript && (
+          <div data-testid="answer-status">
+            <StatusLine transcript={transcript} fallbackModel={null} compact />
+          </div>
+        )}
       </div>
 
       <div className="shrink-0 border-t border-shodh-border bg-shodh-surface px-2.5 pt-2 pb-2.5 flex flex-col gap-1.5">
         {model.setupCard}
-        {transcript && (
-          <div className="px-1">
-            <StatusLine transcript={transcript} fallbackModel={null} compact />
-          </div>
-        )}
         {model.wrapComposer ? model.wrapComposer(composer) : composer}
       </div>
     </div>

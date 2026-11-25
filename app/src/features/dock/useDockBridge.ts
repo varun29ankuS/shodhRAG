@@ -25,6 +25,9 @@ import { parseDockAction, snapshotOf } from '../../lib/dockProtocol';
 import { applyDockAction } from './dockActions';
 import type { DockTarget } from './dockActions';
 import { useDraftSubmit } from './useDraftSubmit';
+import { useConversationModes } from '../ask/useConversationModes';
+import { useModelLabel } from '../modelPicker/useModelLabel';
+import { requestModelPicker } from '../modelPicker/navigation';
 
 /** dock → main (`dock_layer::DOCK_ACTION_EVENT`). */
 export const DOCK_ACTION_EVENT = 'dock-action';
@@ -59,6 +62,9 @@ export function useDockBridge({ active, sources, onExpand }: DockBridgeOptions):
   const review = useCodeReview();
   const { theme } = useTheme();
   const { submit } = useDraftSubmit(sources);
+  // The composer's mode menu and model control, as Ask shows them.
+  const modes = useConversationModes();
+  const modelLabel = useModelLabel(active);
   // The layer shows while the assistant builds the page the user is watching: open at first.
   const [open, setOpen] = useState(true);
   const [unreadBase, setUnreadBase] = useState<number | null>(null);
@@ -93,7 +99,11 @@ export function useDockBridge({ active, sources, onExpand }: DockBridgeOptions):
     unread,
     theme,
     runtime: runtimeSetupState(runtime),
-  }), [conversationId, session.activeConversation?.title, session.activeConversation?.source?.connector, messages, isStreaming, streamingConversationId, sideRun, draft, voice.listening, voice.supported, open, unread, theme, runtime]);
+    work: modes.work,
+    permission: modes.permission,
+    codeAvailable: modes.codeAvailable,
+    model: modelLabel,
+  }), [conversationId, session.activeConversation?.title, session.activeConversation?.source?.connector, messages, isStreaming, streamingConversationId, sideRun, draft, voice.listening, voice.supported, open, unread, theme, runtime, modes.work, modes.permission, modes.codeAvailable, modelLabel]);
 
   // At most one publish a frame, the latest snapshot.
   useEffect(() => {
@@ -141,6 +151,9 @@ export function useDockBridge({ active, sources, onExpand }: DockBridgeOptions):
     openSettings: () => {
       window.dispatchEvent(new CustomEvent('switchTab', { detail: 'settings' }));
     },
+    setWork: modes.pickWork,
+    setPermission: modes.changeAgentMode,
+    pickModel: requestModelPicker,
   };
   const targetRef = useRef(target);
   targetRef.current = target;

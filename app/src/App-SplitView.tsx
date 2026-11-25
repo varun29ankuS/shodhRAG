@@ -7,11 +7,10 @@ import { writeTextFile } from "@tauri-apps/plugin-fs";
 
 // UI Components
 import { Button } from "./components/ui/button";
-import { Badge } from "./components/ui/badge";
 import { Input } from "./components/ui/input";
 import { Progress } from "./components/ui/progress";
 import {
-  MessageSquare, Bot, FolderOpen, FileText, Code, Terminal, Plus, Check, X, Loader2, Pencil, ChevronDown, ChevronUp, Database, FileCode, BookOpen, FileSpreadsheet, Presentation, Trash2, Braces, Coffee,
+  MessageSquare, Bot, FolderOpen, FileText, Code, Terminal, Plus, Check, X, Loader2, Pencil, ChevronDown, ChevronUp, FileCode, BookOpen, FileSpreadsheet, Presentation, Trash2, Braces, Coffee,
   FolderPlus, PanelLeftOpen, PanelLeftClose, Sun, Moon, Bug, Search, Sparkles, AlertTriangle, RotateCcw, Layers, MessageCircle, Bell, ListTodo, CalendarDays
 } from 'lucide-react';
 
@@ -89,7 +88,9 @@ import { useQueuedQuestionSender } from './features/setup/useQueuedQuestion';
 import { useTextSizeShortcuts } from './hooks/useTextSize';
 import { ChatSessionProvider, useChatSession } from './features/ask/ChatSessionContext';
 import { WorkspaceProvider, useWorkspaces } from './features/workspaces/WorkspaceContext';
-import { sourceSummary, workspaceForNewChat } from './features/workspaces/model';
+import { scopeChip, sourceSummary, workspaceForNewChat } from './features/workspaces/model';
+import { useSearchAll } from './features/ask/searchAllStore';
+import { SourcesControl } from './components/shell/SourcesControl';
 import { WorkspaceIcon } from './features/workspaces/WorkspaceIcon';
 import { FocusProvider } from './features/focus/FocusContext';
 import { SystemStatusProvider } from './features/status/SystemStatusContext';
@@ -219,6 +220,10 @@ function AppSplitView() {
     openWorkspaceId,
     requestNewWorkspace,
   } = useWorkspaces();
+  // "Search all my library" for the next question of a workspace chat (top bar, read by Ask).
+  const [searchAllNext, setSearchAllNext] = useSearchAll(activeConversationId);
+  // Where Ask puts its conversation context in the top bar (left of its actions).
+  const [askTopBarSlot, setAskTopBarSlot] = useState<HTMLDivElement | null>(null);
 
   // Move API keys saved by older builds out of localStorage into the OS keychain.
   useEffect(() => {
@@ -1591,11 +1596,12 @@ function AppSplitView() {
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Thin Title Bar */}
+        {/* One fixed height, whatever it holds, so the page below never moves. */}
         <div
-          className="flex items-center justify-between px-5 py-2 border-b"
+          className="shrink-0 h-11 flex items-center justify-between gap-3 px-5 border-b"
           style={{ borderColor: colors.border, backgroundColor: colors.bg }}
         >
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 shrink-0">
             <span className="inline-flex items-center">
               <span className="text-xs font-semibold tracking-wide" style={{ color: colors.text }}>
                 {VIEW_TAB_LABELS[viewTab]}
@@ -1622,7 +1628,10 @@ function AppSplitView() {
           </div>
           {/* Ask's own actions, then Sources, then the Inbox last: nothing to the bell's
               right changes width, so it stays at one x on every view (UI audit rule 2). */}
-          <div className="flex items-center gap-2">
+          <div className="flex items-center justify-end gap-2 min-w-0">
+            {/* Ask's conversation context (the Code branch, code map, tools), portaled in by
+                AskView; empty on every other view. */}
+            <div ref={setAskTopBarSlot} data-testid="topbar-ask-slot" className="flex items-center gap-1.5 min-w-0 overflow-hidden empty:hidden" />
             {viewTab === 'ask' && activeConversationId && (
               <ChatActionsMenu
                 conversationId={activeConversationId}
@@ -1826,17 +1835,17 @@ function AppSplitView() {
               </div>
             )}
             {(() => {
-              const chip = librarySourcesChip(searched);
+              // On Ask, what the active conversation searches (its workspace's sources, or
+              // the whole library for the next question); elsewhere, the Library's sources.
+              const askWorkspace = viewTab === 'ask' ? workspaceById(activeConversation?.workspaceId) ?? null : null;
+              const chip = scopeChip(askWorkspace, askWorkspace !== null && searchAllNext, librarySourcesChip(searched));
               return (
-                <Badge
-                  variant="outline"
-                  className="text-caption px-2 py-0.5 h-auto"
-                  style={{ borderColor: colors.border, color: colors.textMuted }}
+                <SourcesControl
+                  label={chip.label}
                   title={chip.title}
-                >
-                  <Database className="w-3 h-3 mr-1" />
-                  {chip.label}
-                </Badge>
+                  onOpen={() => (askWorkspace ? openWorkspace(askWorkspace.id, 'sources') : setActiveTab('library'))}
+                  searchAll={askWorkspace ? { on: searchAllNext, toggle: () => setSearchAllNext(!searchAllNext) } : null}
+                />
               );
             })()}
             <InboxButton
@@ -1887,6 +1896,7 @@ function AppSplitView() {
               onPasteImage={image => void handlePasteImage(image)}
               draftRequest={askDraft}
               onDraftApplied={clearAskDraft}
+              topBarSlot={askTopBarSlot}
               isDraggingFile={isDraggingImage}
               dropHandlers={{
                 onDrop: handleImageDrop,

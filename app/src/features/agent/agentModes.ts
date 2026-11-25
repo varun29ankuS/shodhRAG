@@ -15,32 +15,38 @@ export interface AgentModeInfo {
   id: AgentMode;
   /** The mode's name, as the picker shows it. */
   label: string;
-  /** What runs without asking, in one plain line. */
+  /** What runs without asking, in plain words (Settings). */
   hint: string;
+  /** The same in a few words, for the mode menu's tooltip. */
+  short: string;
 }
 
 /** Every mode, in the order the picker lists them (Shift+Tab cycles only `CYCLED_MODES`). */
 export const AGENT_MODES: readonly AgentModeInfo[] = [
-  { id: 'ask', label: 'Ask', hint: 'Reads and searches run by themselves; every change asks you first.' },
+  { id: 'ask', label: 'Ask first', hint: 'Reads and searches run by themselves; every change asks you first.', short: 'Every change asks' },
   {
     id: 'acceptEdits',
     label: 'Accept edits',
     hint: 'Edits in the project or workspace run by themselves; commands and anything that leaves this computer ask.',
+    short: 'Edits run; commands ask',
   },
   {
     id: 'plan',
     label: 'Plan',
     hint: 'Changes nothing: the assistant reads your files, searches and reads the web, and writes a plan. You approve it and pick the mode it runs in.',
+    short: 'Plans; changes nothing',
   },
   {
     id: 'auto',
     label: 'Auto',
     hint: 'Edits and commands that only read run by themselves. Builds and tests run your project\'s own code: by themselves only where commands are sandboxed or in a workspace you trust; otherwise the first one asks.',
+    short: 'Edits and safe commands run',
   },
   {
     id: 'creator',
     label: 'Creator',
     hint: 'Builds what you ask for in a new folder of its own, without questions, and tells you what it chose. Files there are made by themselves; commands too where they are sandboxed (on Windows each one asks). Installs and anything outside the folder ask.',
+    short: 'Builds in a new folder',
   },
 ];
 
@@ -56,7 +62,7 @@ export const CONFIRMED_MODES: readonly AgentMode[] = ['auto', 'creator'];
 
 /** What turning Creator on says before it does. */
 export const CREATOR_CONFIRM_TEXT =
-  'Creator builds what you ask for in a new folder in Documents/Shodh Creations, without asking you questions. Files in that folder are made without asking; commands there run by themselves only where they are sandboxed (on Windows each one asks). Package installs, GitHub and anything outside the folder still ask. It needs Code mode turned on in Settings.';
+  'Builds in a new folder without asking. Installs, GitHub and anything outside the folder still ask.';
 
 /** What always asks, whatever the mode, and what never does. */
 export const MODE_FLOOR =
@@ -132,7 +138,7 @@ export function creatorConfirmed(conversationId: string | null | undefined): boo
 
 /** What turning Auto on says before it does. */
 export const AUTO_CONFIRM_TEXT =
-  'Auto runs edits and commands that only read without asking. Builds and tests run your project\'s own code; where commands are not sandboxed they run by themselves only in a workspace you trust.';
+  'Edits and read-only commands run without asking. Builds and tests ask unless sandboxed or trusted.';
 
 /** The modes a plan can be approved to run in: every mode that can change anything. */
 export const PLAN_RUN_MODES: readonly AgentMode[] = ['acceptEdits', 'auto', 'ask'];

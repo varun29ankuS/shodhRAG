@@ -121,6 +121,11 @@ export function actionsFor(item: Pick<InboxItem, 'kind' | 'status'> & { data?: R
   if (item.kind === 'automation' && item.data?.fix === 'resume') {
     return { primary: null, secondary: null, choices: ['resume'] };
   }
+  // An automation's changes wait for the user's OK in Automations (Open): never dismissed,
+  // or the run would wait with nothing to show it.
+  if (item.kind === 'automation' && item.status === 'needs_you' && typeof item.data?.approvalId === 'string') {
+    return { primary: null, secondary: null };
+  }
   if (item.kind === 'memory') return { primary: 'accept', secondary: 'dismiss' };
   if (item.kind === 'install' && item.status === 'needs_you' && item.data?.action === INSTALL_SCAN_READER) {
     return { primary: 'install', secondary: 'dismiss' };

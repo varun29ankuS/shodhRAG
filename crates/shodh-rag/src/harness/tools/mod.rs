@@ -13,6 +13,7 @@
 //! tool does not run.
 
 pub mod creation;
+pub mod deferred;
 pub mod documents;
 pub mod mode;
 pub mod navigate;

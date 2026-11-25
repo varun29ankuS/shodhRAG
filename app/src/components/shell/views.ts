@@ -19,6 +19,7 @@ const loaders = {
   library: () => import('../../features/library/LibraryView'),
   connectors: () => import('../../features/connectors/ConnectorsView'),
   tasks: () => import('../../features/tasks/TasksView'),
+  automations: () => import('../../features/automations/AutomationsView'),
   activity: () => import('../../features/activity/ActivityView'),
   settings: () => import('./SettingsView'),
 } satisfies Record<LazyTab, () => Promise<unknown>>;
@@ -42,6 +43,7 @@ export const WorkspacesView = lazy(() => viewModule('workspaces', m => m));
 export const LibraryView = lazy(() => viewModule('library', m => ({ default: m.LibraryView })));
 export const ConnectorsView = lazy(() => viewModule('connectors', m => m));
 export const TasksView = lazy(() => viewModule('tasks', m => m));
+export const AutomationsView = lazy(() => viewModule('automations', m => ({ default: m.AutomationsView })));
 export const ActivityView = lazy(() => viewModule('activity', m => m));
 export const SettingsView = lazy(() => viewModule('settings', m => m));
 
@@ -57,7 +59,7 @@ export function isViewReady(view: ViewTab): boolean {
 /** Fetched while idle: the views opened most after Ask. The rest load on intent. */
 export const IDLE_PRELOAD_VIEWS: readonly LazyTab[] = ['library', 'workspaces'];
 
-const ALL_LAZY_VIEWS: readonly LazyTab[] = ['artifacts', 'library', 'workspaces', 'connectors', 'tasks', 'activity', 'settings'];
+const ALL_LAZY_VIEWS: readonly LazyTab[] = ['artifacts', 'library', 'workspaces', 'connectors', 'tasks', 'automations', 'activity', 'settings'];
 
 /** Pause between views where the webview has no requestIdleCallback (WKWebView). */
 const IDLE_FALLBACK_MS = 250;

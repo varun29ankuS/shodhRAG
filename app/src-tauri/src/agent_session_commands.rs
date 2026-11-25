@@ -70,6 +70,7 @@ use shodh_rag::audit::payload::is_cloud;
 use shodh_rag::audit::LOCAL_OWNER;
 use shodh_rag::engine::ledger::Spender;
 use shodh_rag::harness::grounding::{GroundingConfig, ScorerSet, SharedEntailment};
+use shodh_rag::harness::tools::deferred::{deferring_registry, DeferredCalls};
 use shodh_rag::harness::web::relevance::SharedScorer;
 use shodh_rag::harness::web::SafeClient;
 use shodh_rag::rag_engine::{chat_uploads_source, RAGEngine, SharedReranker, CHAT_UPLOADS_MAIN};
@@ -241,6 +242,9 @@ struct SessionEntry {
     /// Last command or agent event of the session (shared with its event forwarder,
     /// so a long answer keeps it in use until its last event).
     last_used_ms: Arc<AtomicU64>,
+    /// An automation's session ([`start_automation`]): nobody watches it, so its
+    /// answers never count as the user's chat and its events never reach a window.
+    automation: bool,
 }
 
 impl SessionEntry {
@@ -595,6 +599,15 @@ impl AgentSessions {
         entry.session.shutdown().await;
         tracing::info!(target: "shodh::harness", session = %session_id, "{reason}");
         true
+    }
+
+    /// Whether one of the user's own answers is running now (Ask, a side thread, the
+    /// phone): an automation's session never counts, so an automation never waits on
+    /// itself.
+    pub fn user_answer_running(&self) -> bool {
+        self.sessions
+            .iter()
+            .any(|e| !e.automation && e.session.active_run_id().is_some())
     }
 
     /// Whether an answer of `conversation_id` is running now.
@@ -1392,6 +1405,91 @@ fn session_reuse(closed: bool, running: bool, fits: bool) -> SessionReuse {
     }
 }
 
+/// An automation's session: where its events go, and the changes it saves.
+pub(crate) struct AutomationSession {
+    pub events: tokio::sync::mpsc::UnboundedSender<AgentEvent>,
+    pub saved: Arc<DeferredCalls>,
+}
+
+/// Starts an automation's agent session for `conversation_id` (one per run): the
+/// automation profile, every change saved for the user's OK, the automations model
+/// (`model_override`; `None`: the chat's), no MCP servers or skills, and no rewrite
+/// rounds. Its events go to `session.events`, never to a window. Returns its id.
+pub(crate) async fn start_automation(
+    app: &AppHandle,
+    conversation_id: &str,
+    workspace_id: Option<String>,
+    model_override: Option<ModelOverride>,
+    session: &AutomationSession,
+) -> CommandResult<String> {
+    let attempt = start_attempt(
+        app.clone(),
+        conversation_id.to_string(),
+        None,
+        None,
+        None,
+        model_override,
+        None,
+        workspace_id,
+        None,
+        app.state(),
+        app.state(),
+        app.state(),
+        app.state(),
+        app.state(),
+        app.state(),
+        app.state(),
+        Some(session),
+    )
+    .await?;
+    match attempt {
+        StartAttempt::Started(session_id) => Ok(session_id),
+        StartAttempt::KeyChanged(provider) => Err(AgentCommandError {
+            code: "model_config",
+            message: key_changed_message(Some(provider)),
+            cooling: None,
+            turn_saved: false,
+        }),
+    }
+}
+
+/// Sends an automation's instruction to its session as the question of `turn` (saved
+/// in its conversation, answer included), limited to `workspace_id`. Returns the run id.
+pub(crate) async fn send_automation(
+    app: &AppHandle,
+    session_id: &str,
+    text: &str,
+    request_id: &str,
+    workspace_id: Option<String>,
+    turn: SendTurn,
+) -> CommandResult<String> {
+    agent_send(
+        app.clone(),
+        session_id.to_string(),
+        text.to_string(),
+        request_id.to_string(),
+        None,
+        None,
+        Some(SendScope {
+            workspace_id,
+            ..SendScope::default()
+        }),
+        Some(TextOrigin::Composed),
+        None,
+        None,
+        None,
+        None,
+        Some(turn),
+        app.state(),
+        app.state(),
+        app.state(),
+        app.state(),
+        app.state(),
+        app.state(),
+    )
+    .await
+}
+
 /// Whether `event` is one model call: the runtime reports each answered message's usage
 /// (running totals) once, when the message ends. A refused call (a rate limit) reports
 /// none and is not counted.
@@ -1454,6 +1552,7 @@ pub async fn agent_start(
             audit.clone(),
             learn.clone(),
             answer_check.clone(),
+            None,
         )
         .await?;
         match attempt {
@@ -1786,6 +1885,7 @@ async fn start_attempt(
     audit: State<'_, AuditState>,
     learn: State<'_, LearnState>,
     answer_check: State<'_, AnswerCheckState>,
+    automation: Option<&AutomationSession>,
 ) -> CommandResult<StartAttempt> {
     let started = Instant::now();
     check_id("conversation id", &conversation_id)?;
@@ -1804,8 +1904,14 @@ async fn start_attempt(
     if !is_valid_slug(&profile_id) {
         return Err(HarnessError::UnknownProfile(profile_id).into());
     }
-    let mut profile = AgentProfile::builtin(&profile_id)
-        .ok_or_else(|| HarnessError::UnknownProfile(profile_id.clone()))?;
+    // An automation's session has its own profile: reads, no tool that acts outside
+    // Shodh, a small budget, and every change saved for the user's OK.
+    let mut profile = match automation {
+        Some(_) => AgentProfile::automation(),
+        None => AgentProfile::builtin(&profile_id)
+            .ok_or_else(|| HarnessError::UnknownProfile(profile_id.clone()))?,
+    };
+    let profile_id = profile.id.clone();
     // The conversation's mode, which only the user sets (absent: the default in
     // Settings). Side threads (summaries, refinements, follow-ups) always ask.
     let parent_mode = parent_conversation_id.as_deref().and_then(|parent| {
@@ -1813,7 +1919,12 @@ async fn start_attempt(
         let mode = sessions.sessions.get(&session_id)?.agent_mode;
         Some(mode)
     });
-    let agent_mode = session_mode(agent_mode, parent_mode, parent_conversation_id.is_some());
+    let agent_mode = match automation {
+        // Whatever the user's default is: the profile's own mode (Ask), and every
+        // change is saved, never run, in any mode.
+        Some(_) => profile.mode,
+        None => session_mode(agent_mode, parent_mode, parent_conversation_id.is_some()),
+    };
     profile.mode = agent_mode;
     let instructions = instructions
         .map(|i| i.trim().to_string())
@@ -1998,9 +2109,10 @@ async fn start_attempt(
     let thinking = Thinking::from_setting(settings.answers.think_before_answering);
     let app_data_dir = app_data_dir(&app)?;
     let registry = base_registry(&app).await?;
-    // Side threads (summaries, refinements) get no MCP servers or skills.
-    let extra = match &parent_conversation_id {
-        None => Some(
+    // Side threads (summaries, refinements) and automations get no MCP servers or
+    // skills.
+    let extra = match (&parent_conversation_id, automation) {
+        (None, None) => Some(
             chat_tools_with(
                 &app,
                 &registry,
@@ -2011,7 +2123,7 @@ async fn start_attempt(
             )
             .await,
         ),
-        Some(_) => None,
+        _ => None,
     };
     let tools_fingerprint = extra.as_ref().map_or(0, |e| e.fingerprint);
 
@@ -2141,6 +2253,10 @@ async fn start_attempt(
     let extra_names: Vec<String> = extra_tools.iter().map(|t| t.name().to_string()).collect();
     let (registry, profile) =
         session_registry(&registry, profile, code_folder.is_some(), extra_tools);
+    let registry = match automation {
+        Some(automation) => Arc::new(deferring_registry(&registry, &automation.saved)),
+        None => registry,
+    };
 
     let prepared_ms = started.elapsed().as_millis();
 
@@ -2273,12 +2389,17 @@ async fn start_attempt(
     // in a fixed format that a rewrite could break: checked, never rewritten.
     // Code answers are not checked against library passages.
     let grounding = code.is_none().then(|| {
-        grounding_config(
+        let mut config = grounding_config(
             app_data_dir.clone(),
             rag.rag.clone(),
             answer_check.model.clone(),
-            parent_conversation_id.is_none(),
-        )
+            parent_conversation_id.is_none() && automation.is_none(),
+        );
+        if automation.is_some() {
+            // No rewrite rounds: an automation's calls are bounded by its estimate.
+            config.auto_repair = Arc::new(|| false);
+        }
+        config
     });
     let (session, mut events) = OmpSession::start(SessionConfig {
         launch,
@@ -2309,8 +2430,11 @@ async fn start_attempt(
         .clone()
         .unwrap_or_else(|| conversation_id.clone());
     // A finished answer of the conversation itself is announced when the window is not
-    // in front; a side thread's work (summaries, follow-ups) is not.
-    let forward_announces = parent_conversation_id.is_none();
+    // in front; a side thread's work (summaries, follow-ups) and an automation's are not.
+    let forward_announces = parent_conversation_id.is_none() && automation.is_none();
+    // An automation's events go to its runner, never to a window: a background run
+    // never moves the screen.
+    let forward_automation = automation.map(|a| a.events.clone());
     // The conversation's own answers are saved by the backend as they run; a side
     // thread's live in the side thread, which the window saves.
     let forward_turns = parent_conversation_id
@@ -2342,14 +2466,23 @@ async fn start_attempt(
             forward_memory.observe(&event);
             // A finished answer shows whether its provider's key works.
             crate::connection_health::observe_answer(&forward_app, answer_provider, &event);
-            // Each answered message is one model call, counted as chat (never refused).
+            // Each answered message is one model call, counted as chat (never refused) or
+            // as automations.
             if counts_a_call(&event) {
                 let pool = forward_pool.clone();
                 let app = forward_app.clone();
+                let spender = if forward_automation.is_some() {
+                    Spender::Automations
+                } else {
+                    Spender::Chat
+                };
                 tauri::async_runtime::spawn(async move {
-                    crate::engine_commands::record_call(&app, Spender::Chat, pool).await;
+                    crate::engine_commands::record_call(&app, spender, pool).await;
                 });
             }
+            // A rate limit or a used-up quota, from any answer: automations on the same
+            // limit wait until it resets.
+            crate::automation_agent::observe_limit(&forward_app, &forward_pool, &event);
             // ... and whether its model is healthy (the fallback skips failing ones).
             crate::model_fallback::observe_agent_event(
                 &forward_app,
@@ -2363,14 +2496,16 @@ async fn start_attempt(
                     answer.payload,
                 ));
             }
-            track_inbox(
-                &forward_app,
-                &forward_id,
-                &forward_conversation,
-                &mut export_steps,
-                &event,
-            )
-            .await;
+            if forward_automation.is_none() {
+                track_inbox(
+                    &forward_app,
+                    &forward_id,
+                    &forward_conversation,
+                    &mut export_steps,
+                    &event,
+                )
+                .await;
+            }
             if forward_creates {
                 track_creation(
                     &forward_app,
@@ -2403,8 +2538,16 @@ async fn start_attempt(
                 session_id: forward_id.clone(),
                 event,
             };
-            if let Err(e) = forward_app.emit(AGENT_EVENT, &envelope) {
-                tracing::warn!(target: "shodh::harness", error = %e, "emitting agent_event failed");
+            match &forward_automation {
+                Some(runner) => {
+                    // The runner may have stopped waiting (the app is closing).
+                    let _ = runner.send(envelope.event.clone());
+                }
+                None => {
+                    if let Err(e) = forward_app.emit(AGENT_EVENT, &envelope) {
+                        tracing::warn!(target: "shodh::harness", error = %e, "emitting agent_event failed");
+                    }
+                }
             }
             // The answer is saved whether or not a window is there to see the event.
             if let Some(turns) = &forward_turns {
@@ -2439,6 +2582,7 @@ async fn start_attempt(
             session,
             primed: AtomicBool::new(false),
             last_used_ms,
+            automation: automation.is_some(),
         }),
     );
     sessions

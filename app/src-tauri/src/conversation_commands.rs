@@ -92,6 +92,20 @@ pub struct ConversationRecord {
         deserialize_with = "known_agent_mode"
     )]
     pub agent_mode: Option<AgentMode>,
+    /// Set on the conversation of an automation's run: which automation it was. Ask's
+    /// history shows it behind its Automations filter. Only the automation runner sets it
+    /// ([`ConversationStore::ensure_automation_conversation`]); a window's save never
+    /// changes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub automation: Option<ConversationAutomation>,
+}
+
+/// The automation whose run a conversation holds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationAutomation {
+    pub id: String,
+    pub name: String,
 }
 
 /// Where a connector conversation happened.
@@ -372,6 +386,7 @@ fn new_record(id: &str) -> ConversationRecord {
         seed: None,
         about_file: None,
         agent_mode: None,
+        automation: None,
     }
 }
 
@@ -433,6 +448,29 @@ impl ConversationStore {
     /// The saved conversation with `id`, if there is one.
     pub fn get(&self, id: &str) -> Result<Option<ConversationRecord>, String> {
         Ok(self.load()?.into_iter().find(|c| c.id == id))
+    }
+
+    /// Makes the conversation of an automation's run, titled `title`, in `workspace_id`,
+    /// marked with its automation, before the run's question is written into it. One that
+    /// is saved already (a run taken up again) keeps its messages.
+    pub fn ensure_automation_conversation(
+        &self,
+        conversation_id: &str,
+        title: &str,
+        workspace_id: Option<&str>,
+        automation: ConversationAutomation,
+    ) -> Result<(), String> {
+        self.update(|conversations| {
+            if conversations.iter().any(|c| c.id == conversation_id) {
+                return Ok(());
+            }
+            let mut record = new_record(conversation_id);
+            record.title = title.to_string();
+            record.workspace_id = workspace_id.map(str::to_string);
+            record.automation = Some(automation);
+            conversations.push(record);
+            Ok(())
+        })
     }
 }
 

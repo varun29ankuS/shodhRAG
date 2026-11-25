@@ -328,6 +328,13 @@ export interface StatusTarget {
   part: string;
 }
 
+/** Automations with an automation highlighted, at one of its runs when `runId` is set. */
+export interface AutomationTarget {
+  kind: "automation";
+  automationId: string;
+  runId: string | null;
+}
+
 export type NavigationTarget =
   | DocumentTarget
   | CalendarTarget
@@ -342,7 +349,8 @@ export type NavigationTarget =
   | DesignCheckTarget
   | SettingTarget
   | LibraryTarget
-  | StatusTarget;
+  | StatusTarget
+  | AutomationTarget;
 
 export interface NavigatedEvent {
   type: "navigated";

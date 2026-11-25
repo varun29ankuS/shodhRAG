@@ -5,7 +5,7 @@
  * Pure module (no runtime imports) so it is unit-tested directly with Node
  * (`app/tests/viewTabs.test.ts`).
  */
-export const VIEW_TABS = ['ask', 'artifacts', 'library', 'workspaces', 'connectors', 'tasks', 'activity', 'settings'] as const;
+export const VIEW_TABS = ['ask', 'artifacts', 'library', 'workspaces', 'connectors', 'tasks', 'automations', 'activity', 'settings'] as const;
 
 export type ViewTab = typeof VIEW_TABS[number];
 
@@ -17,6 +17,7 @@ export const VIEW_TAB_LABELS: Record<ViewTab, string> = {
   library: 'Library',
   connectors: 'Connectors',
   tasks: 'Tasks',
+  automations: 'Automations',
   activity: 'Activity',
   settings: 'Settings',
 };
@@ -29,6 +30,7 @@ export const VIEW_TAB_DESCRIPTIONS: Record<ViewTab, string> = {
   library: 'Folders and files Shodh can search',
   connectors: 'Slack and other tools Shodh answers in',
   tasks: 'Tasks and events, as a list or a calendar',
+  automations: 'Instructions Shodh runs on a schedule',
   activity: 'Usage and the tamper-evident audit log',
   settings: 'Models, search and stored data',
 };
@@ -41,6 +43,7 @@ export const VIEW_TAB_KEYWORDS: Record<ViewTab, string> = {
   library: 'library documents files sources folders index',
   connectors: 'connectors connector slack integrations apps bot connect',
   tasks: 'tasks todo calendar events schedule agenda',
+  automations: 'automations automation scheduled playbook routine recurring run',
   activity: 'activity audit usage log history tools retrieved',
   settings: 'settings preferences models llm provider search data',
 };

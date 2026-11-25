@@ -168,6 +168,10 @@ export function parseTarget(value: unknown): NavigationTarget | null {
       const part = reqString(value.part);
       return part ? { kind: 'status', part } : null;
     }
+    case 'automation': {
+      const automationId = reqString(value.automationId);
+      return automationId ? { kind: 'automation', automationId, runId: optString(value.runId) } : null;
+    }
     default:
       return null;
   }

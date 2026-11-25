@@ -450,6 +450,7 @@ mod tests {
             seed: None,
             about_file: None,
             agent_mode: None,
+            automation: None,
         }
     }
 

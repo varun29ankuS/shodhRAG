@@ -367,6 +367,7 @@ pub(crate) mod tests {
             "setting" => Some("components/shell/SettingsView.tsx"),
             "library" => Some("features/library/LibraryView.tsx"),
             "status" => Some("components/shell/SystemStatusStrip.tsx"),
+            "automation" => Some("features/automations/AutomationsView.tsx"),
             _ => Some("(no owner: add the kind to kind_owner)"),
         }
     }

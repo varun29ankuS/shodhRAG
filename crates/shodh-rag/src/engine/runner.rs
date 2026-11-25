@@ -52,6 +52,13 @@ pub enum Handled {
         code: String,
         detail: String,
     },
+    /// Not now, through no failure: wait as `reason` until `at` (while the user chats, until
+    /// a quota resets, a moment after the computer woke), then run again. It is not an
+    /// attempt, so however often it happens it never fails the run or holds the job.
+    Defer {
+        at: DateTime<Utc>,
+        reason: WaitReason,
+    },
     /// Trying again would not help.
     Permanent {
         code: String,
@@ -496,6 +503,13 @@ impl Engine {
                     self.fail(handler, job, run, code, detail).await
                 }
             }
+            Handled::Defer { at, reason } => {
+                let attempt = run.attempt;
+                blocking(&self.store, move |s| {
+                    s.wait(&id, &token, reason, Some(at), attempt, None)
+                })
+                .await
+            }
             Handled::Permanent { code, detail } => self.fail(handler, job, run, code, detail).await,
         }
     }
@@ -628,6 +642,26 @@ impl Engine {
             return Ok(None);
         };
         self.apply(handler, &job, &run, handled).await
+    }
+
+    /// Takes a run that waits for the user (an approval, a decision) up again through the
+    /// handler, which reads what the user decided. `None` when it no longer waits or another
+    /// run holds it.
+    pub async fn resume(
+        &self,
+        handler: &Arc<dyn JobHandler>,
+        job_id: &str,
+        run_id: &str,
+    ) -> EngineResult<Option<Run>> {
+        let id = run_id.to_string();
+        let current = blocking(&self.store, move |s| s.run(&id)).await?;
+        if current.is_none_or(|r| r.state != RunState::Waiting) {
+            return Ok(None);
+        }
+        locked(&self.running).insert(job_id.to_string());
+        let result = self.execute_once(handler, job_id, run_id, true).await;
+        locked(&self.running).remove(job_id);
+        result
     }
 
     /// Runs a queued run of a job now (a manual run), without waiting for a tick.
@@ -943,6 +977,117 @@ mod tests {
         let runs = e.store.runs("j", 10).unwrap();
         assert_eq!(runs[0].state, RunState::Failed);
         assert_eq!(runs[0].error_code.as_deref(), Some("api_unavailable"));
+    }
+
+    #[tokio::test]
+    async fn a_defer_never_counts_an_attempt_or_holds() {
+        let e = env(local(2026, 11, 20, 10, 0));
+        add_job(&e, "j", Some(daily_at(9)), Overlap::Skip, CatchUp::Once);
+        let start = local(2026, 11, 21, 9, 0);
+        // Five times more than the job's attempts: a busy chat day, then it runs.
+        let defers: Vec<Handled> = (1..=5)
+            .map(|n| Handled::Defer {
+                at: start + TimeDelta::seconds(30 * n),
+                reason: WaitReason::Yield,
+            })
+            .collect();
+        e.recording.script(defers);
+        e.clock.set(start);
+        for n in 0..=5 {
+            e.clock.set(start + TimeDelta::seconds(30 * n));
+            e.engine.tick(&e.handler).await.unwrap();
+            if n < 5 {
+                let run = e.store.active_run("j").unwrap().unwrap();
+                assert_eq!(run.state, RunState::Waiting);
+                assert_eq!(run.wait_reason, Some(WaitReason::Yield));
+                assert_eq!(run.attempt, 0, "a deferral is not an attempt");
+                assert_eq!(
+                    run.next_attempt_at.as_deref().and_then(parse_instant),
+                    Some(start + TimeDelta::seconds(30 * (n + 1)))
+                );
+            }
+        }
+        assert_eq!(e.recording.calls().len(), 6);
+        let runs = e.store.runs("j", 10).unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].state, RunState::Succeeded);
+        let job = e.store.job("j").unwrap().unwrap();
+        assert_eq!(job.failure_streak, 0);
+        assert_eq!(job.hold_reason, None);
+    }
+
+    #[tokio::test]
+    async fn resume_takes_up_an_approval_wait_through_the_handler() {
+        let e = env(local(2026, 11, 20, 10, 0));
+        add_job(&e, "j", None, Overlap::Skip, CatchUp::Once);
+        e.recording.script(vec![Handled::Waiting {
+            reason: WaitReason::Approval,
+        }]);
+        let run = e
+            .store
+            .insert_run(
+                &NewRun {
+                    id: "r1".into(),
+                    job_id: "j".into(),
+                    trigger: Trigger::Manual,
+                    scheduled_for: None,
+                    missed: 0,
+                    state: RunState::Queued,
+                    summary: None,
+                },
+                e.clock.now(),
+            )
+            .unwrap()
+            .unwrap();
+        e.engine.run_now(&e.handler, "j", &run.id).await.unwrap();
+        let waiting = e.store.run("r1").unwrap().unwrap();
+        assert_eq!(waiting.wait_reason, Some(WaitReason::Approval));
+        e.engine.tick(&e.handler).await.unwrap();
+        assert_eq!(
+            e.recording.calls().len(),
+            1,
+            "a tick leaves an approval waiting"
+        );
+        let done = e
+            .engine
+            .resume(&e.handler, "j", "r1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(done.state, RunState::Succeeded);
+        assert_eq!(e.recording.calls().len(), 2);
+        assert!(
+            e.engine
+                .resume(&e.handler, "j", "r1")
+                .await
+                .unwrap()
+                .is_none(),
+            "a run that no longer waits is not taken up"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_deferred_wait_folds_into_the_next_occurrence() {
+        let e = env(local(2026, 11, 20, 10, 0));
+        add_job(&e, "j", Some(daily_at(9)), Overlap::Skip, CatchUp::Once);
+        let start = local(2026, 11, 21, 9, 0);
+        e.recording.script(vec![Handled::Defer {
+            at: start + TimeDelta::days(3),
+            reason: WaitReason::Quota,
+        }]);
+        e.clock.set(start);
+        e.engine.tick(&e.handler).await.unwrap();
+        e.clock.set(local(2026, 11, 22, 9, 1));
+        let tick = e.engine.tick(&e.handler).await.unwrap();
+        assert!(
+            tick.skipped.is_empty(),
+            "no row for every occurrence it waits through"
+        );
+        let runs = e.store.runs("j", 10).unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].state, RunState::Waiting);
+        assert_eq!(runs[0].missed, 1);
+        assert_eq!(runs[0].scheduled_at(), Some(local(2026, 11, 22, 9, 0)));
     }
 
     #[tokio::test]

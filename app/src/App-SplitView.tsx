@@ -120,7 +120,7 @@ import { useCommandPalette } from './hooks/useCommandPalette';
 import CommandPalette from './components/CommandPalette';
 import type { PaletteAction } from './components/CommandPalette';
 import { ViewSkeleton } from './components/shell/ViewSkeleton';
-import { ActivityView, ArtifactsView, ConnectorsView, LibraryView, SettingsView, TasksView, WorkspacesView, createIdlePreloadGate, isViewReady, preloadAllViews, preloadView } from './components/shell/views';
+import { ActivityView, ArtifactsView, AutomationsView, ConnectorsView, LibraryView, SettingsView, TasksView, WorkspacesView, createIdlePreloadGate, isViewReady, preloadAllViews, preloadView } from './components/shell/views';
 import { CHANGE_DRAFT } from './features/artifacts/model';
 import { AssistantViewCue, useAssistantViewCue } from './components/shell/AssistantViewCue';
 import { AssistantNavigationChip } from './components/shell/AssistantNavigationChip';
@@ -1930,6 +1930,11 @@ function AppSplitView() {
 
           {/* Tasks: list first, calendar as a view */}
           {viewTab === 'tasks' && <TasksView />}
+
+          {/* Automations: instructions Shodh runs on a schedule, and their runs */}
+          {viewTab === 'automations' && (
+            <AutomationsView onOpenChat={id => { switchConversation(id); setActiveTab('ask'); }} />
+          )}
 
           {/* Activity: usage and the audit log */}
           {viewTab === 'activity' && <ActivityView />}

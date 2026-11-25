@@ -472,6 +472,15 @@ impl Default for NotificationPrefs {
     }
 }
 
+/// Automations (the Automations view). User-only: the model decides whose quota the
+/// runs spend and who receives what they read.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AutomationPrefs {
+    /// The model automations run with; `None` is the chat's model.
+    pub model: Option<shodh_rag::harness::model_catalog::ModelRef>,
+}
+
 /// Evidence tables (Settings → Tables). User-only: the cap keeps table fills from
 /// spending the quota the user's conversations need.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -574,6 +583,8 @@ pub struct AppSettings {
     /// Indexing: paused or not, and whether search may use the graphics card
     /// (see [`IndexingPrefs`]). User-only.
     pub indexing: IndexingPrefs,
+    /// Automations: the model their runs use (see [`AutomationPrefs`]). User-only.
+    pub automations: AutomationPrefs,
     /// The UI has copied its earlier local-storage preferences here.
     pub seeded: bool,
     /// Learning from conversations was moved, once, from Ask (the earlier default) to
@@ -678,7 +689,7 @@ pub const AGENT_WRITABLE: [SettingKey; 2] = [SettingKey::Theme, SettingKey::Sear
 /// these by name (in addition to its schema only listing [`AGENT_WRITABLE`]),
 /// so a prompt-injected request gets a clear refusal rather than a
 /// best-effort match.
-pub const AGENT_DENIED: [(&str, &str); 31] = [
+pub const AGENT_DENIED: [(&str, &str); 32] = [
     ("api_keys", "API keys are secrets; a manipulated agent could leak or replace them."),
     ("provider", "Switching the model provider changes who receives the user's documents."),
     ("model", "Switching the model changes who receives the user's documents and what it costs."),
@@ -710,6 +721,7 @@ pub const AGENT_DENIED: [(&str, &str); 31] = [
     ("code_mode", "Code mode lets answers change files and run commands on this computer; only the user may turn it on."),
     ("connectors", "Connectors decide which documents people outside this computer (in Slack or Telegram) can get answers from, whose Telegram account is the user's, how many model calls they may spend, and which GitHub repositories Shodh may read, push to or merge in; only the user may change that."),
     ("use_gpu", "Whether search uses the graphics card is the user's call about their computer."),
+    ("automations", "The model automations use decides whose daily quota they spend and who receives what they read; only the user chooses it."),
 ];
 
 /// Why `key` is withheld from the agent, if it is.

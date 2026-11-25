@@ -62,6 +62,8 @@ mod agent_coverage;
 mod agent_session_commands;
 mod agent_tools;
 mod agent_transcript;
+mod automation_agent;
+mod automations;
 mod calendar_commands;
 mod calendar_store;
 mod code_intel_commands;
@@ -657,6 +659,8 @@ pub fn run() {
             app.manage(engine_commands::EngineState::new(
                 &app.state::<audit_commands::AuditState>(),
             ));
+            // Automations wait after a rate limit or a used-up quota on their model's limit.
+            app.manage(automation_agent::PoolCooldowns::default());
             engine_commands::spawn(app.handle().clone());
 
             // Tray icon: the window can hide there and reminders keep ringing.
@@ -1109,6 +1113,19 @@ pub fn run() {
             paper_alerts::whats_new_add_to_library,
             // The ledger of model calls
             engine_commands::model_usage_today,
+            // Automations
+            automations::automations_list,
+            automations::automation_get,
+            automations::automation_runs,
+            automations::automation_run_get,
+            automations::automation_create,
+            automations::automation_update,
+            automations::automation_delete,
+            automations::automation_pause,
+            automations::automation_resume,
+            automations::automation_run_now,
+            automations::engine_approval_decide,
+            automations::automations_model_set,
             // Background mode (tray, start with Windows)
             background::get_background_status,
             background::set_close_to_tray,

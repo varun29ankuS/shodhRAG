@@ -54,6 +54,14 @@ The user took the recommended option of every decision Q1–Q8 (listed at the en
 - Slack and Telegram count answers, not calls, so they stay on their own Connectors pages.
 - The counter line sits under Settings → Model → Model (`CallsToday.tsx`), not in `SettingsView.tsx`, which #208 also changes.
 
+**As built in 4b** (where it differs from the text below):
+- **Navigation tools stay as they are.** An automation's session sends its events only to its runner, never to a window, so a `navigated` event cannot move the screen. The runner keeps the targets in the agent step's output, for 4c's Show me what it did; no record-only mode is needed.
+- **The deferral is a tool wrapper in the harness.** `harness::tools::deferred::DeferredTool` runs reads as they are, saves every change with its own preview, and refuses a read that would ask (one that sends private text off the computer). `ToolRegistry::run_approved` makes an approved change later. There is no gate mode.
+- **Pausing and resuming ask in every mode, like starting a run.** They are not local edits: what runs without the user, and when, is the user's to change (§12's rule). The pinned set of local edits is unchanged.
+- **The fold covers decision, yield, quota and model waits, not offline ones.** PR 3's paper alerts wait offline through `RetryAt`, and their behaviour is unchanged; so is their after-wake wait.
+- **A run for a missed time waits two minutes after its first claim** (`started_at`) before its agent step.
+- **The reserve reads the documented free limit (50 a day).** It counts the free pool's calls, plus the tables' and learning's when chat's model is on that pool.
+
 ## Proposed split (decision Q1)
 
 | PR | Scope | Ships alone because |

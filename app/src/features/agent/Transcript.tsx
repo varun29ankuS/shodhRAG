@@ -6,7 +6,8 @@ import type { SearchHit } from '../ask/types';
 import { ReasoningPanel } from './ReasoningPanel';
 import { RuntimeCard } from './RuntimeCard';
 import { Spinner, StepLine } from './StepLine';
-import { answerIncomplete, outputStarted, currentStep, interimBlocks, isLive, notAnswerBlocks, showsGroundingChip, supersededBlocks } from './reducer';
+import { ApprovalPrompt } from './ApprovalPrompt';
+import { answerIncomplete, outputStarted, currentStep, interimBlocks, isLive, notAnswerBlocks, pendingApproval, showsGroundingChip, supersededBlocks } from './reducer';
 import type { TranscriptBlock, TranscriptState } from './reducer';
 import { workFold } from './workSummary';
 import { revisionText } from './revisionText';
@@ -43,6 +44,11 @@ interface TranscriptProps {
    * supports it ("Cite N instead"); absent where the answer cannot be changed.
    */
   onCiteInstead?: CiteInstead;
+  /**
+   * The host shows the pending approval above its composer (Ask, the floating chat), so it
+   * is not repeated here. Otherwise it shows under the folded steps line.
+   */
+  approvalsDocked?: boolean;
 }
 
 /** A live "what is happening now" row with a spinner. */
@@ -92,6 +98,7 @@ export function Transcript({
   compact = false,
   providerActions = null,
   onCiteInstead,
+  approvalsDocked = false,
 }: TranscriptProps) {
   const live = isLive(transcript);
   const citeInstead = live ? undefined : onCiteInstead;
@@ -116,8 +123,21 @@ export function Transcript({
     return -1;
   }, [transcript.blocks, excluded]);
   let textSeen = 0;
-  // A finished answer folds its working into one line so the answer starts at the top.
+  // The answer's working folds into one line (what is happening now, while it runs), so
+  // the answer starts at the top.
   const fold = useMemo(() => workFold(transcript), [transcript]);
+  const waiting = live && onDecide ? pendingApproval(transcript) : null;
+  // A command running now stays in view under the line, with its output and its own Stop.
+  const runningCommand = useMemo(() => {
+    if (!live || !fold) return null;
+    for (let i = fold.answerIndex - 1; i >= 0; i--) {
+      const block = transcript.blocks[i];
+      if (block.kind !== 'step') continue;
+      const s = transcript.steps[block.stepId];
+      if (s && s.command && s.status === 'running') return s;
+    }
+    return null;
+  }, [live, fold, transcript.blocks, transcript.steps]);
 
   // While running with nothing in flight and no text streaming, the model is
   // working on its next move; say so instead of showing a frozen screen.
@@ -131,22 +151,24 @@ export function Transcript({
   return (
     <div className={cn('flex flex-col min-w-0', compact ? 'gap-2.5' : 'gap-3.5')}>
       {fold && (
-        <details className="group/work">
+        <details className="group/work" data-testid="answer-steps" data-live={fold.live || undefined}>
           <summary
             className={cn(
-              'list-none [&::-webkit-details-marker]:hidden w-fit inline-flex items-center gap-1.5 rounded-md cursor-pointer select-none text-shodh-text-muted hover:text-shodh-text transition-colors duration-micro',
+              'list-none [&::-webkit-details-marker]:hidden max-w-full w-fit inline-flex items-center gap-1.5 rounded-md cursor-pointer select-none text-shodh-text-muted hover:text-shodh-text transition-colors duration-micro',
               compact ? 'text-caption' : 'text-small',
               FOCUS_RING,
             )}
           >
-            <ChevronRight className="w-3.5 h-3.5 transition-transform duration-micro group-open/work:rotate-90 motion-reduce:transition-none" aria-hidden="true" />
-            {fold.label}
+            <ChevronRight className="w-3.5 h-3.5 shrink-0 transition-transform duration-micro group-open/work:rotate-90 motion-reduce:transition-none" aria-hidden="true" />
+            {fold.live && <Spinner />}
+            <span className={cn('min-w-0 truncate', fold.live && 'text-shodh-text-secondary')} aria-live={fold.live ? 'polite' : undefined}>{fold.label}</span>
           </summary>
           <div className={cn('mt-2 pl-3 border-l border-shodh-border-subtle flex flex-col', compact ? 'gap-2' : 'gap-3')}>
             {transcript.blocks.slice(0, fold.answerIndex).map(block => {
               if (block.kind === 'step') {
                 const s = transcript.steps[block.stepId];
-                return s ? <StepLine key={block.stepId} step={s} steps={transcript.steps} compact={compact} live={live} /> : null;
+                if (!s || s === runningCommand) return null;
+                return <StepLine key={block.stepId} step={s} steps={transcript.steps} onDecide={live ? onDecide : undefined} compact={compact} live={live} pendingApprovals={false} />;
               }
               if (block.kind === 'steer') {
                 return (
@@ -181,6 +203,16 @@ export function Transcript({
           </div>
         </details>
       )}
+      {runningCommand && (
+        <StepLine step={runningCommand} steps={transcript.steps} onDecide={onDecide} compact={compact} live pendingApprovals={false} />
+      )}
+      {!approvalsDocked && waiting?.approval && onDecide && (
+        <ApprovalPrompt
+          approval={waiting.approval}
+          onDecide={(approved, forConversation, reviewToken) => onDecide(waiting.id, approved, forConversation, reviewToken)}
+          compact={compact}
+        />
+      )}
       {transcript.blocks.map((block, index) => {
         if (fold && index < fold.answerIndex) {
           if (block.kind === 'text' && !excluded.has(block.id)) textSeen += 1;
@@ -189,7 +221,7 @@ export function Transcript({
         if (block.kind === 'step') {
           const s = transcript.steps[block.stepId];
           return s ? (
-            <StepLine key={block.stepId} step={s} steps={transcript.steps} onDecide={live ? onDecide : undefined} compact={compact} live={live} />
+            <StepLine key={block.stepId} step={s} steps={transcript.steps} onDecide={live ? onDecide : undefined} compact={compact} live={live} pendingApprovals={!approvalsDocked} />
           ) : null;
         }
         if (block.kind === 'steer') {

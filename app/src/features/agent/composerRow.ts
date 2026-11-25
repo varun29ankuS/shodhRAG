@@ -65,6 +65,9 @@ export function workInfo(kind: WorkKind): WorkInfo {
 /** The permissions the second section lists (Creator sets its own). */
 export const PERMISSION_MODES: readonly AgentMode[] = DEFAULTABLE_MODES;
 
+/** The tooltip of the mode and model controls while an answer runs (they are disabled). */
+export const RUN_LOCKED_REASON = 'Locked while answering';
+
 /** Why the permissions section is off in Creator (one short line). */
 export const CREATOR_PERMISSIONS_NOTE = 'Creator sets its own';
 

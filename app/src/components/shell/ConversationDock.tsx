@@ -21,6 +21,8 @@ import { DockPanel, blockedReasonOf } from './DockPanel';
 import { useConversationModes } from '../../features/ask/useConversationModes';
 import { ModelChip } from '../../features/modelPicker/ModelChip';
 import { useModelLabel } from '../../features/modelPicker/useModelLabel';
+import { useSendKey } from '../../hooks/useSendKey';
+import { RUN_LOCKED_REASON } from '../../features/agent/composerRow';
 import type { DockModel } from './DockPanel';
 
 /**
@@ -130,6 +132,7 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
   // The composer's mode menu and model, as Ask shows them.
   const modes = useConversationModes();
   const modelLabel = useModelLabel(visible);
+  const { sendKey } = useSendKey();
   // Each visit starts minimised; an expand or collapse made on another view
   // does not carry over.
   const open = override !== null && override.tab === activeTab && override.open;
@@ -207,7 +210,8 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
     permission: modes.permission,
     codeAvailable: modes.codeAvailable,
     model: modelLabel,
-  }, false), [session.activeConversationId, session.activeConversation?.title, messages, isStreaming, streamingConversationId, sideRun, readOnlySource?.connector, draft, open, unread, theme, runtime, modes.work, modes.permission, modes.codeAvailable, modelLabel]);
+    sendKey,
+  }, false), [session.activeConversationId, session.activeConversation?.title, messages, isStreaming, streamingConversationId, sideRun, readOnlySource?.connector, draft, open, unread, theme, runtime, modes.work, modes.permission, modes.codeAvailable, modelLabel, sendKey]);
 
   const onAction = (action: DockAction) => {
     switch (action.kind) {
@@ -250,6 +254,7 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
       <ModelChip
         answerRunning={isStreaming}
         takesPickerRequests={false}
+        lockedReason={isStreaming ? RUN_LOCKED_REASON : null}
         onOpenSettings={() => window.dispatchEvent(new CustomEvent('switchTab', { detail: 'settings' }))}
       />
     ),

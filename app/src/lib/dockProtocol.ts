@@ -12,6 +12,8 @@ import type { RuntimeSetupState } from '../features/setup/runtimeSetupHost';
 import { isPermissionMode, isWorkKind } from '../features/agent/composerRow.ts';
 import type { WorkKind } from '../features/agent/composerRow';
 import type { AgentMode } from '../features/agent/agentModes';
+import { SEND_KEYS } from './sendKey.ts';
+import type { SendKey } from './sendKey.ts';
 
 /** The largest snapshot or action relayed, in bytes of JSON (Rust's `MAX_RELAY_BYTES`). */
 export const MAX_SNAPSHOT_BYTES = 262144;
@@ -61,6 +63,8 @@ export interface DockSnapshot {
   codeAvailable: boolean | null;
   /** The model the next answer uses, as the composer's model control shows it. */
   model: DockModelLabel;
+  /** Which key sends from the composer (Settings → General). */
+  sendKey: SendKey;
 }
 
 /** The model control's text: the model's name, and whether one answers. */
@@ -252,7 +256,8 @@ export function parseDockSnapshot(value: unknown): DockSnapshot | null {
     && isWorkKind(s.work)
     && (s.permission === null || isPermissionMode(s.permission))
     && (s.codeAvailable === null || typeof s.codeAvailable === 'boolean')
-    && isRecord(s.model) && typeof s.model.label === 'string' && typeof s.model.ready === 'boolean';
+    && isRecord(s.model) && typeof s.model.label === 'string' && typeof s.model.ready === 'boolean'
+    && (SEND_KEYS as readonly unknown[]).includes(s.sendKey);
   if (!ok) return null;
   const model = s.model as { label: string; ready: boolean };
   return {
@@ -277,6 +282,7 @@ export function parseDockSnapshot(value: unknown): DockSnapshot | null {
     permission: s.permission as AgentMode | null,
     codeAvailable: s.codeAvailable as boolean | null,
     model: { label: model.label, ready: model.ready },
+    sendKey: s.sendKey as SendKey,
   };
 }
 
@@ -301,6 +307,7 @@ export interface SnapshotInput {
   permission: AgentMode | null;
   codeAvailable: boolean | null;
   model: DockModelLabel;
+  sendKey: SendKey;
 }
 
 function jsonBytes(value: unknown): number {
@@ -396,6 +403,7 @@ export function snapshotOf(input: SnapshotInput, relay = true): DockSnapshot {
     permission: input.permission,
     codeAvailable: input.codeAvailable,
     model: { label: input.model.label, ready: input.model.ready },
+    sendKey: input.sendKey,
   };
   const transcript = lastAnswer?.transcript ?? null;
   if (!transcript) return base;

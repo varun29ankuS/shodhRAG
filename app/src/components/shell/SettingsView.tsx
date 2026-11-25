@@ -14,6 +14,7 @@ import ScanReaderSettings from '../ScanReaderSettings';
 import ToolsSettings from '../ToolsSettings';
 import CodeSkillsSettings from '../../features/codeIntel/CodeSkillsSettings';
 import AppearanceSettings from '../AppearanceSettings';
+import SendKeySettings from '../SendKeySettings';
 import PhoneSettings from '../../features/phone/PhoneSettings';
 import { cn } from '../../lib/utils';
 import { useWorkspaces } from '../../features/workspaces/WorkspaceContext';
@@ -52,7 +53,7 @@ const SECTIONS: { id: SettingsSection; label: string; description: string }[] = 
   {
     id: 'general',
     label: 'General',
-    description: 'How Shodh runs when its window is closed, so task reminders keep ringing.',
+    description: 'Which key sends, and how Shodh runs when its window is closed.',
   },
   {
     id: 'appearance',
@@ -219,7 +220,10 @@ export default function SettingsView({
               ) : section === 'tables' ? (
                 <EvidenceTableSettings />
               ) : section === 'general' ? (
-                <BackgroundSettings />
+                <div className="flex flex-col gap-8">
+                  <SendKeySettings />
+                  <BackgroundSettings />
+                </div>
               ) : section === 'appearance' ? (
                 <AppearanceSettings />
               ) : section === 'notifications' ? (

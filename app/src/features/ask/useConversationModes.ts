@@ -3,7 +3,8 @@
  * what the answer works on (Research, Code, Creator) and its permission (Ask first, Accept
  * edits, Plan, Auto). Ask, the in-page chat and the floating chat all read and change it
  * here, so the three never disagree. Only the user changes it: the menu, Shift+Tab in the
- * composer, or a suggestion's button.
+ * composer, or a suggestion's button; and never while an answer runs in the conversation
+ * (the menu is locked then, and a change sent from the floating chat is refused here too).
  */
 import { useCallback, useRef, useState } from 'react';
 import { useChatSession } from './ChatSessionContext';
@@ -59,9 +60,12 @@ export function useConversationModes(): ConversationModes {
   const work = workKindOf(conversationMode, agentMode);
   const permission = agentMode === null || agentMode === 'creator' ? null : agentMode;
 
+  const streamingRef = useRef(session.isStreaming);
+  streamingRef.current = session.isStreaming;
+
   const changeAgentMode = useCallback((next: AgentMode) => {
     const id = conversationId;
-    if (!id) return;
+    if (!id || streamingRef.current) return;
     // The menu hands Creator over only after its confirming click.
     if (next === 'creator') {
       confirmCreator(id);
@@ -75,7 +79,7 @@ export function useConversationModes(): ConversationModes {
 
   const pickWork = useCallback((next: WorkKind) => {
     const id = conversationId;
-    if (!id) return;
+    if (!id || streamingRef.current) return;
     const now = state.current;
     if (next === 'creator' && isPermissionMode(now.agentMode)) permissionBeforeCreator.set(id, now.agentMode);
     const change = workChange(next, now, permissionBeforeCreator.get(id) ?? null, now.defaultAgentMode);

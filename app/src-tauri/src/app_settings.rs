@@ -82,6 +82,16 @@ pub enum TextSize {
     Larger,
 }
 
+/// Which key sends a message from the composer (Settings → General): Enter (Shift+Enter
+/// for a new line), or Ctrl+Enter (⌘ on macOS; Enter for a new line).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum SendKey {
+    #[default]
+    Enter,
+    ModEnter,
+}
+
 impl TextSize {
     /// The zoom factor of the windows (`src/lib/textSize.ts` has the same table).
     pub fn zoom(self) -> f64 {
@@ -104,11 +114,19 @@ pub struct Preferences {
     /// by a later one) reads as Default, never as a damaged settings file.
     #[serde(deserialize_with = "known_text_size")]
     pub text_size: TextSize,
+    /// Which key sends a message. A value this version does not know reads as Enter.
+    #[serde(deserialize_with = "known_send_key")]
+    pub send_key: SendKey,
 }
 
 fn known_text_size<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<TextSize, D::Error> {
+    let value = Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
+}
+
+fn known_send_key<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<SendKey, D::Error> {
     let value = Value::deserialize(deserializer)?;
     Ok(serde_json::from_value(value).unwrap_or_default())
 }
@@ -119,6 +137,7 @@ impl Default for Preferences {
             theme: Theme::default(),
             search_max_results: DEFAULT_SEARCH_RESULTS,
             text_size: TextSize::default(),
+            send_key: SendKey::default(),
         }
     }
 }
@@ -911,6 +930,7 @@ pub struct PreferencesPatch {
     pub theme: Option<Theme>,
     pub search_max_results: Option<u32>,
     pub text_size: Option<TextSize>,
+    pub send_key: Option<SendKey>,
 }
 
 impl PreferencesPatch {
@@ -923,6 +943,9 @@ impl PreferencesPatch {
         }
         if let Some(size) = self.text_size {
             prefs.text_size = size;
+        }
+        if let Some(key) = self.send_key {
+            prefs.send_key = key;
         }
     }
 }
@@ -1514,6 +1537,39 @@ mod tests {
         .collect();
         assert!(zooms.windows(2).all(|w| w[0] < w[1]), "{zooms:?}");
         assert_eq!(TextSize::Default.zoom(), 1.0);
+    }
+
+    #[test]
+    fn send_key_defaults_to_enter_and_is_kept_when_set() {
+        assert_eq!(Preferences::default().send_key, SendKey::Enter);
+        let old: AppSettings =
+            serde_json::from_str(r#"{"preferences": {"theme": "dark", "searchMaxResults": 8}}"#)
+                .unwrap();
+        assert_eq!(old.preferences.send_key, SendKey::Enter);
+        let set: AppSettings =
+            serde_json::from_str(r#"{"preferences": {"sendKey": "modEnter"}}"#).unwrap();
+        assert_eq!(set.preferences.send_key, SendKey::ModEnter);
+        assert_eq!(
+            serde_json::to_value(SendKey::ModEnter).unwrap(),
+            serde_json::json!("modEnter")
+        );
+        // A key a later version added (or any other value) is Enter, and the rest reads.
+        for unknown in [r#""altEnter""#, "1", "null"] {
+            let read: AppSettings = serde_json::from_str(&format!(
+                r#"{{"preferences": {{"sendKey": {unknown}, "theme": "light"}}}}"#
+            ))
+            .unwrap();
+            assert_eq!(read.preferences.send_key, SendKey::Enter, "{unknown}");
+            assert_eq!(read.preferences.theme, Theme::Light);
+        }
+        let mut prefs = Preferences::default();
+        PreferencesPatch {
+            send_key: Some(SendKey::ModEnter),
+            ..PreferencesPatch::default()
+        }
+        .apply(&mut prefs);
+        assert_eq!(prefs.send_key, SendKey::ModEnter);
+        assert_eq!(prefs.text_size, TextSize::Default, "the rest is kept");
     }
 
     #[test]

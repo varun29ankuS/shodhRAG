@@ -200,7 +200,8 @@ test("the in-page floating chat's model chip never takes Ask's \"Switch model\" 
   // requestModelPicker shows Ask; the floating chat's chip unmounts as it does, so only
   // Ask's chip may take the request (else Ask's menu would never open).
   const chip = withoutComments(source('features/modelPicker/ModelChip.tsx'));
-  assert.match(chip, /if \(!takesPickerRequests\) return;\s*if \(takeModelPickerRequest\(\)\) setOpen\(true\);/);
+  assert.match(chip, /if \(!takesPickerRequests\) return;\s*if \(!lockedRef\.current && takeModelPickerRequest\(\)\) setOpen\(true\);/);
+  assert.match(chip, /else if \(takesPickerRequests && takeModelPickerRequest\(\)\) setOpen\(true\);/);
   const dock = withoutComments(source('components/shell/ConversationDock.tsx'));
   assert.match(dock, /<ModelChip\s+answerRunning=\{isStreaming\}\s+takesPickerRequests=\{false\}/);
 });

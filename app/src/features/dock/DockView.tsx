@@ -15,6 +15,7 @@ import { DockPanel, PANEL_HEIGHT, PANEL_WIDTH, blockedReasonOf } from '../../com
 import type { DockModel } from '../../components/shell/DockPanel';
 import type { AgentComposerHandle } from '../agent/AgentComposer';
 import { ModelTrigger } from '../modelPicker/ModelTrigger';
+import { RUN_LOCKED_REASON } from '../agent/composerRow';
 import { TranscriptEffectsContext } from '../agent/transcriptEffects';
 import type { TranscriptEffects } from '../agent/transcriptEffects';
 import { RuntimeSetupContext } from '../setup/runtimeSetupHost';
@@ -186,6 +187,7 @@ export default function DockView() {
       <ModelTrigger
         label={snapshot.model.label}
         ready={snapshot.model.ready}
+        lockedReason={snapshot.isStreaming ? RUN_LOCKED_REASON : null}
         onClick={() => onAction({ kind: 'pickModel' })}
         aria-label={`Model: ${snapshot.model.label}. Change model in Ask`}
         title={`${snapshot.model.label} · change in Ask`}

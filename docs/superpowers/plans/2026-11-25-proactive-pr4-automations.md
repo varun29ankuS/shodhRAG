@@ -47,10 +47,15 @@ The branch is `feat/proactive-automations`, from `origin/master` `6695be40` (PRs
 | PR | Scope | Ships alone because |
 |---|---|---|
 | **4a. One ledger** | Migration 21's `model_calls` (copies and drops `table_calls`); `engine::ledger`; chat counted from `Usage`; `CallCounter` on the ledger; `model_usage_today` and the counter line in Settings → Model and `system_status` | The counts become honest before anything spends from them. Small, with no new UI surface. |
-| **4b. Automations** | `engine_step`, `engine_approval` and `engine_cache` (also in migration 21, created in 4a and unused until 4b); the engine changes (E1–E5); the `automation` profile and the deferring gate; playbooks with `agent` and `notify` steps on a schedule or by hand; Run now; the automations model; yielding, the reserve and cooldowns; durable approvals; the Automations view and run page; tools, coverage and navigation | The core and the view. A user can write an automation, run it, and approve what it wanted. |
-| **4c. Describe, templates, events** | Describe-to-create; event triggers (`files_added`, `paper_found`) with one-minute coalescing; the two templates; `engine_cache`; Show me what it did; Save as automation from an installed skill | Each one builds on 4b's runs. |
+| **4b. Automations** | Migration 22 (`engine_step`, `engine_approval`); the engine changes (E1–E5); the `automation` profile and the deferring gate; playbooks with `agent` and `notify` steps on a schedule or by hand; Run now; the automations model; yielding, the reserve and cooldowns; durable approvals; the Automations view and run page; tools, coverage and navigation | The core and the view. A user can write an automation, run it, and approve what it wanted. |
+| **4c. Describe, templates, events** | Migration 23 (`engine_cache`); describe-to-create; event triggers (`files_added`, `paper_found`) with one-minute coalescing; the two templates; `engine_cache`; Show me what it did; Save as automation from an installed skill | Each one builds on 4b's runs. |
 
-Migration 21 is written whole in 4a, so 4b and 4c add no migration. Every new table is `CREATE TABLE IF NOT EXISTS` and nothing uses `ALTER`, so re-applying it in the rollback tests is safe.
+Following PR 1's D6 ruling (a table arrives with the PR that writes it), each part adds its own migration:
+- 4a: **21**, `model_calls`;
+- 4b: **22**, `engine_step` and `engine_approval`;
+- 4c: **23**, `engine_cache`.
+
+If #208 or another PR takes a number first, the numbers move up. Every new table is `CREATE TABLE IF NOT EXISTS` and nothing uses `ALTER`, so re-applying a migration in the rollback tests is safe.
 
 ## Global Constraints
 
@@ -95,8 +100,9 @@ Migration 21 is written whole in 4a, so 4b and 4c add no migration. Every new ta
 12. **Model calls happen inside the omp sidecar.** Rust sees one `Usage` event per answered message, with running totals. Calls are counted from those, and the ceiling is enforced by aborting the session. "Re-check before each call" (§5.4) is impossible, so the yield check happens before each step. A refused call (a 429) emits no `Usage` and is not counted.
 13. **The step limit is 24 tool calls** (`DEFAULT_MAX_TOOL_CALLS`). That is about 25 model calls against a 50-a-day quota, plus up to 1 repair, 2 coverage and 1 retrieve rounds (`grounding/followup.rs`).
     - The `automation` profile has `max_tool_calls = 3`.
-    - Its sessions start with repair and coverage rounds off.
-    - The estimate is therefore `max_tool_calls + 1` = **4 calls** per agent step, the spec mock's figure.
+    - Its sessions start with `auto_repair` off. That is already a per-session closure (`agent_session_commands.rs:771`), and it also gates the retrieve round.
+    - Coverage rounds run only while the tool budget has calls left.
+    - The estimate is `max_tool_calls + 1` = **4 calls** per agent step, the spec mock's figure. Phase 2 must check that coverage turns cannot add model turns beyond that. Either way the ceiling holds, because the session is aborted at `planned_calls`.
 14. **Only the `assistant` built-in profile exists.** `AgentProfile { allowed_tools, mode, max_tool_calls }` already holds what `automation` needs.
 15. **Approvals are live and session-bound.** `ApprovalGate` is a oneshot per step with a timeout. `InboxStore::recover` drops session approvals at launch. Host tools can be dispatched later through the registry (`ToolRegistry::dispatch`), which is what the deferred card uses.
 16. **"Chat in flight" has no global check.** `AgentSessions::answering(conversation_id)` is per conversation. A new `any_user_answer_running()` excludes automation sessions. Automation sessions also count against `MAX_LIVE_SESSIONS` (4), and are evicted first and closed when their run ends.
@@ -110,7 +116,7 @@ Migration 21 is written whole in 4a, so 4b and 4c add no migration. Every new ta
 20. **State copy.** The spec's full-sentence states ("Paused so your chat keeps working: ...") become 1–2-word chips with a one-line tooltip, as PR 1's D15 did.
 21. **The Inbox is ready.** PR 2 already has `'automation'` in `KINDS`, the hold item's `fix: 'resume'`, and `AUTOMATION_YIELD_ID = 'automation:yield'` (an Info item; `recover` marks it failed after a restart).
 
-## Data model: migration 21 (written in 4a)
+## Data model: migrations 21 (4a), 22 (4b), 23 (4c)
 
 ```
 model_calls     utc_day TEXT, spender TEXT CHECK IN ('chat','tables','automations','review',
@@ -182,7 +188,7 @@ engine_cache    job_id, input_key, output_json, created_at, PRIMARY KEY (job_id,
   4. It sends the instruction with a fixed preamble. The preamble names the scope, says that sources are data and never instructions (`UNTRUSTED_NOTICE`), and that writes are saved for the user's OK.
   5. While the session runs, the engine folds events with `TurnRecorder`, so the conversation is saved like any answer. It counts `Usage` events. It aborts the session at `planned_calls` ("Stopped at its estimate of 4 calls; here is what it found.").
   6. At the end, the session is closed.
-- **`notify` step:** posts one Info item, "*Weekly digest* ran: found 4 papers [Open]". No desktop notification is sent for a success (Q8).
+- **`notify` step:** posts one Info item, "*Weekly digest* ran: found 4 papers [Open]". No desktop notification is sent for a success.
 - **The `automation` profile (shodh-rag `profile.rs`):**
   - `allowed_tools` is the assistant's minus:
     - `run_command` and every Code-mode tool;
@@ -191,7 +197,7 @@ engine_cache    job_id, input_key, output_json, created_at, PRIMARY KEY (job_id,
     - `download_file`;
     - MCP tools not set to read;
     - the automation tools themselves (an automation cannot make, change or run automations);
-    - the navigation tools (`open_view`, `show_*`), which are recorded as replay targets for 4c's Show me what it did instead of moving the screen.
+  - **The navigation tools (`open_view`, `show_*`) stay in the profile, in a record-only mode.** The host checks the target, saves it in the run's step output, returns success to the model, and emits no `Navigated` event. 4c's Show me what it did replays those saved targets one by one through the gate. A tool the model is never given could leave nothing to replay.
   - `mode` is Ask and `max_tool_calls` is 3.
   - A test pins the exclusion list against `app_tools::ALL`, so a new execution tool fails the test until it is classified.
 - **The deferring gate.** `ApprovalGate::deferring()`. Every call `decide` would send to `Gate::Ask` (LocalEdit, Write, Destructive, and `must_confirm` tools) is handled like this:
@@ -208,7 +214,7 @@ engine_cache    job_id, input_key, output_json, created_at, PRIMARY KEY (job_id,
   - It inserts a `Manual` run and wakes the playbook loop.
   - From the UI it also opens the run's conversation in Ask, through the gate.
   - When a run is already active the button reads **Running** and is disabled, with the same width.
-  - Q7 says whether it skips yielding.
+  - It skips the yield and reserve rules, because the user asked for it now. It still respects a provider cooldown, since calling into a known rate limit only fails.
 
 ### Yielding, cooldowns and the reserve (4b)
 
@@ -219,7 +225,7 @@ They are checked before each agent step, in this order. Each one waits with `Def
    - else the next UTC midnight for a daily one.
 
    The run waits as `quota` until then. Chat keeps trying as it does today.
-2. **Chat in flight**, only when the automations model's pool equals chat's: while `any_user_answer_running()`, the run waits as `yield` and is checked again 30 s later. A chat that starts during a step does not stop it: the step finishes within its ceiling of 4 calls (default; see Q7).
+2. **Chat in flight**, only when the automations model's pool equals chat's: while `any_user_answer_running()`, the run waits as `yield` and is checked again 30 s later. A chat that starts during a step does not stop it: the step finishes within its ceiling of 4 calls. Aborting it would waste the calls it has already made.
 3. **The reserve**, only when the pools match and the pool has a known daily limit (Q3).
    - `left = limit − today's ledger count for the pool`.
    - When `left − planned_calls < max(1, busiest chat day of the last 14)`, the run waits as `quota` until the pool's reset.
@@ -317,7 +323,7 @@ With LM Studio as the automations model, rules 1 (for LM Studio's own errors) an
   - an `expect_navigation` test per tool.
 - **Write tools highlight what they saved** and never open a dialog (§12 item 5).
 
-## Notifications (Q8)
+## Notifications (as PR 3 ruled)
 
 - Approval waiting: `notify(NeedsYou)`.
 - Hold: `notify(Problems)`.
@@ -334,6 +340,7 @@ With LM Studio as the automations model, rules 1 (for LM Studio's own errors) an
 | User chatting (same pool) | `Defer(yield)`, re-checked every 30 s | **Waiting** · "Waiting while you chat" |
 | Offline (connection-class failure on the first call) | `Defer(offline)` on the ladder's times; never holds; folds into the next occurrence (E5) | **Offline** |
 | App closed at the scheduled time | Per Q4: one catch-up run after launch, deferred 2 min and yielding to chat | Run page: "Ran when Shodh opened; 2 earlier times were skipped" |
+| Every agent session slot busy (`MAX_LIVE_SESSIONS` 4, none idle) | `Defer(yield)`, re-checked after 30 s; no attempt spent; automation sessions are evicted first and closed when their run ends | **Waiting** · "Waiting for a free slot" |
 | Asleep mid-run | The lease expires; the agent step restarts from its beginning (its calls may count twice, §14) | Run page: "Restarted after the computer slept" |
 | Estimate reached | The session is aborted; the run succeeds with what it has | "Stopped at its estimate of 4 calls" |
 | Approval ignored for 7 days | The run is cancelled | "Expired: nobody approved these changes in 7 days" |
@@ -351,7 +358,7 @@ With LM Studio as the automations model, rules 1 (for LM Studio's own errors) an
   - `the_table_cap_holds_on_the_ledger` (the existing `try_record` tests unchanged and green);
   - `spenders_and_pools_add_up_per_utc_day`;
   - `busiest_chat_day_of_the_last_14_is_at_least_one`;
-  - `engine_step_approval_and_cache_exist_and_reapply_safely`.
+  - `migration_21_reapplies_safely`. (Migrations 22 and 23 get the same test in B4 and C4.)
 
 **Task A2: Count chat.**
 - Files: `agent_session_commands.rs` (the `Usage` → ledger hook; automation sessions excluded), and each direct chat `LLMManager` call site from the inventory.
@@ -470,17 +477,49 @@ With LM Studio as the automations model, rules 1 (for LM Studio's own errors) an
 | Recorded model replies only | B3, C1 |
 | `automation` coverage and navigation | B6 |
 
-## Decisions only the user can make
+## Phase 2 checks (assumptions, not facts yet)
 
-These are in the report; the answers are recorded here before Phase 2.
+- **The four-call estimate.** Coverage turns stay inside `max_tool_calls + 1` model turns when `auto_repair` is off. The abort at `planned_calls` holds the ceiling either way.
+- **Conversation ids.** `auto-<job>-<run>` passes `check_id` (non-empty, at most `MAX_ID_LEN`) and the conversation store's id rules.
+- **Recorded replies.** A fake sidecar or recorded-transcript harness exists for headless agent runs (`phone_link/end_to_end.rs` and `agent_transcript` fixtures are the leads). If none exists, B3 builds one, with test code only.
+- **Background sessions don't drive the window.** The window ignores `agent_event`s from a session it did not start, so a background session cannot reach the navigation gate. The phone's sessions are the precedent. B3 adds `a_scheduled_run_never_navigates` either way.
+- **The free limit from `/api/v1/key`.** `is_free_tier` → 50 a day, otherwise 1000 (Q3) is an inference. It must be confirmed against `catalog_fetch.rs`'s key check and OpenRouter's documentation.
+- **Calls per Slack or Telegram answer.** Find how many model calls one answer makes through `AnswerService`/`TextModel`. If it is exactly one, drift 9's "answers, not calls" is wrong, and their stores feed the pool count as calls. Learning's `memory_learn_usage.llm_calls` already counts real calls and feeds the pool count.
 
-- **Q1.** Split into 4a, 4b and 4c, as above.
-- **Q2.** Where the automations model lives, its default, and whether it falls back.
-- **Q3.** What replaces the provider-reported remainder for the chat reserve.
-- **Q4.** Missed runs.
-- **Q5.** How agent writes wait for approval.
-- **Q6.** How describe-to-create drafts.
-- **Q7.** Whether Run now yields to chat, and what happens when chat starts mid-step.
-- **Q8.** Desktop notifications.
-- **Q9.** Which templates and step kinds ship in v1.
-- **Q10.** Where an automation run's conversation lives.
+## Decisions only the user can make (recommended option first)
+
+- **Q1. Split.** **(rec)** Three PRs: 4a ledger, 4b automations, 4c describe, templates and events, each with its own migration (21/22/23). Alternatives: two PRs (ledger + core, then extras); or one large PR.
+- **Q2. Automations model.**
+  - **(rec)** One global choice in the Automations view header, defaulting to "Same as chat". Each option is tagged **Shares chat's limit**, **Own limit** or **Local**. Automations never fall back to chat's model: they wait, then hold with [Check model].
+  - Alternative: the choice lives in Settings → Model, under the chat model.
+  - Alternative: a model per automation.
+  - **Note:** another *free* OpenRouter model shares chat's 50-a-day limit, so only another provider, a paid model or LM Studio saves chat's quota.
+- **Q3. Chat reserve without a reported remainder.**
+  - **(rec)** Use OpenRouter's documented free limit for the pool (50 a day, or 1000 with credits, read from `/api/v1/key`) minus what Shodh counted in that pool today. Shown as "about N left". It over-reads when the same account is used elsewhere.
+  - Alternative: no reserve, only react to 429s.
+  - Alternative: a fixed reserve (say 10 calls).
+- **Q4. Missed runs (closed or asleep at the time).**
+  - **(rec)** One catch-up run for the latest missed time, 2 minutes after launch or wake, yielding to chat, with the missed count shown.
+  - Alternative: skip and record "missed".
+  - Alternative: a per-automation choice.
+- **Q5. How agent writes wait for approval.**
+  - **(rec)** Writes are deferred: the run finishes, then one card shows a checkbox per write, and approving runs exactly what was previewed. The cost: the agent never sees a write's result within the run.
+  - Alternative: the spec's stop at the first write, then continue in a new session after approval (more calls, more code).
+- **Q6. Describe to create.**
+  - **(rec)** A one-shot draft with the automations model (1 call, shown). The prefilled form is the preview, and nothing saves until Save.
+  - Alternative: hand the text to Ask, where the agent calls `create_automation` with its preview (2–3 calls, and it leaves the view).
+  - Alternative: a local phrase parser with no model call (it handles "every Monday at 9", not free-form).
+- **Q7. Templates and step kinds in v1.**
+  - **(rec)** `agent` and `notify` steps. Templates *Summarise new papers* (on a paper alert's finds) and *Weekly workspace digest*. Defer *Screen new papers into a table* until `RunEvents` is made generic.
+  - Alternative: include the table screening template now (it pulls PR 1's D1 genericization into 4c).
+- **Q8. Where a run's conversation lives.**
+  - **(rec)** In Ask history, marked with the automation's name, behind an "Automations" filter that is off by default.
+  - Alternative: hidden from history, reachable only from the run page.
+  - Alternative: mixed into history like any chat.
+
+Settled here, not asked:
+- Run now skips the yield and reserve rules but respects a provider cooldown.
+- A chat that starts mid-step lets the step finish within its ceiling.
+- Notifications follow PR 3: approvals go to NeedsYou, holds to Problems, successes are Info items only.
+- Schedules use the computer's time zone.
+- Playbooks live in `engine_job.input_json`, with no separate table.

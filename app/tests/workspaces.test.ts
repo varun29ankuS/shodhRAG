@@ -77,7 +77,7 @@ test('the scope chip says what a question searches', () => {
   assert.match(scopeChip(thesis, false, library).title, /only the sources of “Thesis” \(1 folder · 2 files\)/);
   const all = scopeChip(thesis, true, library);
   assert.equal(all.label, 'All my library · Thesis');
-  assert.match(all.title, /instructions and memories of “Thesis” still apply/);
+  assert.match(all.title, /your whole library, with “Thesis”’s instructions and memories/);
   const empty = scopeChip(workspace('e', { name: 'Empty' }), false, library);
   assert.equal(empty.label, 'Empty · no sources');
   assert.match(empty.title, /find nothing/);

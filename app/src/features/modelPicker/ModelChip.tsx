@@ -16,6 +16,11 @@ interface ModelChipProps {
   answerRunning: boolean;
   /** Open Settings → Model. */
   onOpenSettings: () => void;
+  /**
+   * Opens for "Switch model" (`requestModelPicker`, which shows Ask). Only Ask's chip
+   * does: the floating chat's chip unmounts as Ask opens, and would take the request away.
+   */
+  takesPickerRequests?: boolean;
 }
 
 /**
@@ -25,7 +30,7 @@ interface ModelChipProps {
  * "Manage…" (Settings → Model); a choice applies from the next answer,
  * without a restart, and never interrupts the answer in progress.
  */
-export function ModelChip({ answerRunning, onOpenSettings }: ModelChipProps) {
+export function ModelChip({ answerRunning, onOpenSettings, takesPickerRequests = true }: ModelChipProps) {
   const picker = useModelPicker();
   const { view } = picker;
   const [open, setOpen] = useState(false);
@@ -74,13 +79,14 @@ export function ModelChip({ answerRunning, onOpenSettings }: ModelChipProps) {
   // "Switch model" in the top bar's connection status: asked for before or
   // after this chip mounted.
   useEffect(() => {
+    if (!takesPickerRequests) return;
     if (takeModelPickerRequest()) setOpen(true);
     const onRequest = () => {
       if (takeModelPickerRequest()) setOpen(true);
     };
     window.addEventListener(OPEN_PICKER_REQUEST_EVENT, onRequest);
     return () => window.removeEventListener(OPEN_PICKER_REQUEST_EVENT, onRequest);
-  }, []);
+  }, [takesPickerRequests]);
 
   // Reopening shows current prices and installed local models.
   useEffect(() => {

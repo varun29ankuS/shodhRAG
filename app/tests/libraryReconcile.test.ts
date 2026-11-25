@@ -178,10 +178,10 @@ test('the sources chip: one label for the top bar and the composer', () => {
   // 12 files in no folder, then the same 12 once their folder is listed: the same count.
   const unlisted = librarySourcesChip(searchedSources([], twelve));
   assert.equal(unlisted.label, 'All sources · 12 files');
-  assert.match(unlisted.title, /the 12 files you have indexed\. 12 files are in no folder listed in Library/);
+  assert.equal(unlisted.title, 'Answers search the 12 files you have indexed (12 files in no listed folder)');
   const listed = librarySourcesChip(searchedSources([{ path: 'C:\\Research\\papers', selected: true }], twelve));
   assert.equal(listed.label, 'All sources · 12 files');
-  assert.equal(listed.title, 'Answers search the 12 files you have indexed. Manage sources in Library.');
+  assert.equal(listed.title, 'Answers search the 12 files you have indexed');
   assert.equal(librarySourcesChip(searchedSources([], ['c:/a.pdf'])).label, 'All sources · 1 file');
   // A listed folder with nothing indexed yet says so; before the index is listed, no number.
   assert.equal(librarySourcesChip(searchedSources([{ path: 'C:\\Empty', selected: true }], [])).label, 'All sources · 0 files');

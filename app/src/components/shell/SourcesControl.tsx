@@ -45,7 +45,7 @@ export function SourcesControl({ label, title, onOpen, searchAll }: SourcesContr
         type="button"
         onClick={onOpen}
         title={title}
-        aria-label={`${label}. ${title}`}
+        aria-label={`Sources: ${label}`}
         data-testid="topbar-sources-open"
         className={cn(
           'h-[26px] px-2.5 min-w-0 inline-flex items-center gap-1 rounded-full border border-shodh-border text-caption text-shodh-text-muted hover:text-shodh-text hover:bg-shodh-raised transition-colors duration-micro',

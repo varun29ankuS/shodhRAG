@@ -114,15 +114,15 @@ export function scopeChip(
   if (searchAll) {
     return {
       label: `All my library · ${workspace.name}`,
-      title: `This question searches your whole library. The instructions and memories of “${workspace.name}” still apply.`,
+      title: `Next question: your whole library, with “${workspace.name}”’s instructions and memories`,
     };
   }
   const total = totalSources(workspace.sourceCounts);
   return {
     label: `${workspace.name} · ${total === 0 ? 'no sources' : plural(total, 'source', 'sources')}`,
     title: total === 0
-      ? `“${workspace.name}” has no sources yet: answers find nothing until you add some, or turn on “Search all my library”.`
-      : `Answers search only the sources of “${workspace.name}” (${sourceSummary(workspace.sourceCounts)}).`,
+      ? `“${workspace.name}” has no sources: answers find nothing (add some, or use All library)`
+      : `Answers search only the sources of “${workspace.name}” (${sourceSummary(workspace.sourceCounts)})`,
   };
 }
 

@@ -249,6 +249,7 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
     modelControl: (
       <ModelChip
         answerRunning={isStreaming}
+        takesPickerRequests={false}
         onOpenSettings={() => window.dispatchEvent(new CustomEvent('switchTab', { detail: 'settings' }))}
       />
     ),

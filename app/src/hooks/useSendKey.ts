@@ -23,10 +23,10 @@ export function useSendKey(): SendKeyHandle {
     let cancelled = false;
     getAppSettings()
       .then(settings => {
-        if (!cancelled && settings) setSaved(settings.preferences.sendKey);
+        if (!cancelled && settings) setSaved(settings.preferences.sendWith);
       })
       .catch(err => console.error('Send key setting:', err));
-    const unsubscribe = onAppSettingsChanged(settings => setSaved(settings.preferences.sendKey));
+    const unsubscribe = onAppSettingsChanged(settings => setSaved(settings.preferences.sendWith));
     return () => {
       cancelled = true;
       unsubscribe();
@@ -35,9 +35,9 @@ export function useSendKey(): SendKeyHandle {
 
   const setSendKey = useCallback((next: SendKey) => {
     setPending(next);
-    updatePreferences({ sendKey: next })
+    updatePreferences({ sendWith: next })
       .then(result => {
-        if (result) setSaved(result.preferences.sendKey);
+        if (result) setSaved(result.preferences.sendWith);
       })
       .catch(err => notify.error('The send key was not changed', { description: String(err) }))
       .finally(() => setPending(null));

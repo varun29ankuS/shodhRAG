@@ -116,9 +116,10 @@ test('the send key: Enter (Shift+Enter for a new line) or Ctrl+Enter (Enter for 
 
 test('the send key is kept by the backend settings and shown in Settings → General', () => {
   const settings = withoutComments(source('lib/appSettings.ts'));
-  assert.match(settings, /sendKey: parseSendKey\(preferences\.sendKey\),/);
+  // Stored as `sendWith`: no settings field is named "...key" (the file's no-secret guard).
+  assert.match(settings, /sendWith: parseSendKey\(preferences\.sendWith\),/);
   const hook = withoutComments(source('hooks/useSendKey.ts'));
-  assert.match(hook, /updatePreferences\(\{ sendKey: next \}\)/);
+  assert.match(hook, /updatePreferences\(\{ sendWith: next \}\)/);
   assert.doesNotMatch(hook, /localStorage/);
   const view = withoutComments(source('components/shell/SettingsView.tsx'));
   assert.match(view, /section === 'general' \? \(\s*<div className="flex flex-col gap-8">\s*<SendKeySettings \/>/);

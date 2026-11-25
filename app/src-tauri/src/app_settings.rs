@@ -114,9 +114,10 @@ pub struct Preferences {
     /// by a later one) reads as Default, never as a damaged settings file.
     #[serde(deserialize_with = "known_text_size")]
     pub text_size: TextSize,
-    /// Which key sends a message. A value this version does not know reads as Enter.
+    /// Which key sends a message (`sendWith`: no settings field is named "...key", the
+    /// file's guard against a stored secret). A value this version does not know reads as Enter.
     #[serde(deserialize_with = "known_send_key")]
-    pub send_key: SendKey,
+    pub send_with: SendKey,
 }
 
 fn known_text_size<'de, D: serde::Deserializer<'de>>(
@@ -137,7 +138,7 @@ impl Default for Preferences {
             theme: Theme::default(),
             search_max_results: DEFAULT_SEARCH_RESULTS,
             text_size: TextSize::default(),
-            send_key: SendKey::default(),
+            send_with: SendKey::default(),
         }
     }
 }
@@ -930,7 +931,7 @@ pub struct PreferencesPatch {
     pub theme: Option<Theme>,
     pub search_max_results: Option<u32>,
     pub text_size: Option<TextSize>,
-    pub send_key: Option<SendKey>,
+    pub send_with: Option<SendKey>,
 }
 
 impl PreferencesPatch {
@@ -944,8 +945,8 @@ impl PreferencesPatch {
         if let Some(size) = self.text_size {
             prefs.text_size = size;
         }
-        if let Some(key) = self.send_key {
-            prefs.send_key = key;
+        if let Some(key) = self.send_with {
+            prefs.send_with = key;
         }
     }
 }
@@ -1541,14 +1542,14 @@ mod tests {
 
     #[test]
     fn send_key_defaults_to_enter_and_is_kept_when_set() {
-        assert_eq!(Preferences::default().send_key, SendKey::Enter);
+        assert_eq!(Preferences::default().send_with, SendKey::Enter);
         let old: AppSettings =
             serde_json::from_str(r#"{"preferences": {"theme": "dark", "searchMaxResults": 8}}"#)
                 .unwrap();
-        assert_eq!(old.preferences.send_key, SendKey::Enter);
+        assert_eq!(old.preferences.send_with, SendKey::Enter);
         let set: AppSettings =
-            serde_json::from_str(r#"{"preferences": {"sendKey": "modEnter"}}"#).unwrap();
-        assert_eq!(set.preferences.send_key, SendKey::ModEnter);
+            serde_json::from_str(r#"{"preferences": {"sendWith": "modEnter"}}"#).unwrap();
+        assert_eq!(set.preferences.send_with, SendKey::ModEnter);
         assert_eq!(
             serde_json::to_value(SendKey::ModEnter).unwrap(),
             serde_json::json!("modEnter")
@@ -1556,20 +1557,26 @@ mod tests {
         // A key a later version added (or any other value) is Enter, and the rest reads.
         for unknown in [r#""altEnter""#, "1", "null"] {
             let read: AppSettings = serde_json::from_str(&format!(
-                r#"{{"preferences": {{"sendKey": {unknown}, "theme": "light"}}}}"#
+                r#"{{"preferences": {{"sendWith": {unknown}, "theme": "light"}}}}"#
             ))
             .unwrap();
-            assert_eq!(read.preferences.send_key, SendKey::Enter, "{unknown}");
+            assert_eq!(read.preferences.send_with, SendKey::Enter, "{unknown}");
             assert_eq!(read.preferences.theme, Theme::Light);
         }
         let mut prefs = Preferences::default();
         PreferencesPatch {
-            send_key: Some(SendKey::ModEnter),
+            send_with: Some(SendKey::ModEnter),
             ..PreferencesPatch::default()
         }
         .apply(&mut prefs);
-        assert_eq!(prefs.send_key, SendKey::ModEnter);
+        assert_eq!(prefs.send_with, SendKey::ModEnter);
         assert_eq!(prefs.text_size, TextSize::Default, "the rest is kept");
+        // Saved under a name the file's no-stored-key guard never mistakes for a secret.
+        let mut settings = AppSettings::default();
+        settings.preferences = prefs;
+        let text = serde_json::to_string(&settings).unwrap();
+        assert!(text.contains(r#""sendWith":"modEnter""#), "{text}");
+        assert!(!text.to_ascii_lowercase().contains("key\":"), "{text}");
     }
 
     #[test]

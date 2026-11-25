@@ -1,5 +1,5 @@
 /**
- * Which key sends a message from the composer (Settings → General, `preferences.sendKey`
+ * Which key sends a message from the composer (Settings → General, `preferences.sendWith`
  * in `app_settings.rs`): Enter, with Shift+Enter for a new line; or Ctrl+Enter (⌘ on a
  * Mac), with Enter for a new line. The same key steers a running answer and approves a
  * pending step from an empty box.

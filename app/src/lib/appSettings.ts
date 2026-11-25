@@ -27,7 +27,7 @@ export interface Preferences {
   /** How large the interface is drawn (Settings → Appearance). */
   textSize: TextSize;
   /** Which key sends from the composer (Settings → General). */
-  sendKey: SendKey;
+  sendWith: SendKey;
 }
 
 export interface Policy {
@@ -185,7 +185,7 @@ export function parseAppSettings(value: unknown): AppSettings | null {
       theme: preferences.theme,
       searchMaxResults: preferences.searchMaxResults,
       textSize: parseTextSize(preferences.textSize),
-      sendKey: parseSendKey(preferences.sendKey),
+      sendWith: parseSendKey(preferences.sendWith),
     },
     policy: { localOnly: policy.localOnly, webAccess: policy.webAccess },
     code: parseCodePrefs(value.code),

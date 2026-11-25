@@ -43,6 +43,30 @@ env:
 # so builds no longer download it from cdn.pyke.io (where it stalled for 30
 # minutes at a time).
 #
+# The Rust caches fit GitHub's 10 GB per repository. Master saved one
+# rust-cache entry per job (and release.yml one per platform): about 20 GB
+# per run (2026-11-24, run 45374529905), so every save evicted the entries
+# used least recently, and the jobs that finish first lost theirs to the
+# saves of the jobs that finish later. The macOS job's entry was saved at
+# 06:51 and gone for the pull request run at 07:08; that job then compiled
+# shodh-rag cold (33m 39s, cancelled at its limit in job 138378457000), as
+# did Tests, App tests, Check and the macOS release build (cancelled at 130
+# minutes in run 45400708198). Master now saves four Rust entries, each
+# restored by every job that builds the same thing with the same settings
+# (shared-key, the saving job's id, so its key is unchanged):
+#   macos           1.44 GB  saved by macos; restored by eval-retrieval-int8
+#   eval-retrieval  1.85 GB  saved by eval-retrieval; restored by eval-recall,
+#                            test and test-app
+#   release-x86_64-pc-windows-msvc  1.79 GB  footprint, release.yml (Windows)
+#   release-aarch64-apple-darwin    1.63 GB  release.yml (macOS)
+# With the two search-model entries (0.55 GB each), Gradle's (0.41 GB) and
+# the small npm and ONNX Runtime ones, about 8.6 GB. Check, upgrade and the
+# Android builds keep no Rust entry: their cold builds fit their limits
+# (noted per job) and their entries would push the total over 10 GB again.
+# After a Cargo.lock change the old entries stay until evicted, as the least
+# recently used, so they go first. A new rust-cache use that saves must fit
+# this budget.
+#
 # Heavy jobs run on a pull request only when it changes a file they read:
 # Library store (0.0.10 upgrade, ANN recall), Retrieval eval, Retrieval eval
 # (int8, Apple silicon), Footprint budget, the release builds (release.yml:
@@ -274,7 +298,13 @@ jobs:
   check:
     name: Check + Clippy
     runs-on: windows-latest
-    timeout-minutes: 30  # slowest 16 minutes
+    # No Rust cache (see the budget above): its entry was evicted before any
+    # pull request restored it (2026-11-22 to 24), and cold runs took 11 to
+    # 23 minutes (run 45048835528: 17).
+    timeout-minutes: 30
+    env:
+      # What rust-cache sets for the jobs that use it.
+      CARGO_INCREMENTAL: 0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -284,12 +314,6 @@ jobs:
         with:
           toolchain: 1.97.1  # keep in sync with rust-toolchain.toml
           components: clippy
-
-      - uses: ./.github/actions/only-pinned-rust
-
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       # Pinned, checksum-verified protoc from the official release (the
       # Chocolatey feed answers 503 at times while choco exits 0).
@@ -341,9 +365,13 @@ jobs:
 
       - uses: ./.github/actions/only-pinned-rust
 
+      # Restores the Retrieval eval's entry and saves none (see the cache
+      # budget above): the dependencies its builds share with this one's.
+      # With no entry of its own, run 45048835528 took 35 minutes here.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          shared-key: eval-retrieval
+          save-if: false
 
       # Pinned, checksum-verified protoc from the official release (the
       # Chocolatey feed answers 503 at times while choco exits 0).
@@ -392,7 +420,8 @@ jobs:
     name: App tests and doc tests
     runs-on: windows-latest
     # With no cache (run 43788930095), the app's tests took 38 minutes, their
-    # own build included.
+    # own build included; with no entry of its own, 36 to 51 minutes from
+    # 2026-11-22 to 24 (run 45048835528: 51).
     timeout-minutes: 60
     env:
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
@@ -407,9 +436,11 @@ jobs:
 
       - uses: ./.github/actions/only-pinned-rust
 
+      # Restores the Retrieval eval's entry and saves none, as in Tests.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          shared-key: eval-retrieval
+          save-if: false
 
       - name: Install Protobuf compiler
         shell: pwsh
@@ -431,11 +462,16 @@ jobs:
   # macOS reads scans with PP-OCRv6 only (Windows OCR is not built there), so
   # the parser and the OCR engine have macOS-only paths. This builds shodh-rag
   # on macOS and runs its OCR unit tests: one crate, debug, cached; the app and
-  # the other crates are built on Windows only.
+  # the other crates are built on Windows only. Its cache entry is the one
+  # Retrieval eval (int8, Apple silicon) restores.
   macos:
     name: macOS build + OCR tests (shodh-rag)
     runs-on: macos-latest
-    timeout-minutes: 35  # slowest 21 minutes
+    # 6 to 9 minutes with the cache restored (runs 45106652046, 45196280438,
+    # 45400708198: cargo's test build 4 to 6 minutes); 29 to 34 minutes
+    # without it (runs 45153295942, 45339944203, 45374529905: the build
+    # alone 33m 39s in job 138378457000, which this limit cancelled).
+    timeout-minutes: 35
     env:
       # The workflow's -crt-static is for the Windows MSVC builds.
       RUSTFLAGS: ""
@@ -452,6 +488,7 @@ jobs:
 
       - uses: ./.github/actions/only-pinned-rust
 
+      # Master saves this entry; Retrieval eval (int8, Apple silicon) restores it.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/master' }}
@@ -508,12 +545,15 @@ jobs:
     needs: changes
     if: needs.changes.outputs.upgrade == 'true'
     runs-on: windows-latest
-    # No run history yet: two debug builds of shodh-rag (0.0.10's example and
-    # this tree's library tests), each about as long as the Tests job's build
-    # of it on a cold cache.
+    # Two debug builds of shodh-rag (0.0.10's example and this tree's library
+    # tests). No Rust cache (see the budget above; its entry, two workspaces,
+    # was the largest at 2.6 GB): 49 and 68 minutes cold (runs 45048835528,
+    # 45374529905).
     timeout-minutes: 90
     env:
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      # What rust-cache sets for the jobs that use it.
+      CARGO_INCREMENTAL: 0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -529,15 +569,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # master, 2026-10-16
         with:
           toolchain: 1.97.1  # keep in sync with rust-toolchain.toml (0.0.10's is the same)
-
-      - uses: ./.github/actions/only-pinned-rust
-
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
-        with:
-          workspaces: |
-            . -> target
-            upgrade-from/v0.0.10 -> target
-          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Install Protobuf compiler
         shell: pwsh
@@ -619,6 +650,8 @@ jobs:
 
       - uses: ./.github/actions/only-pinned-rust
 
+      # Master saves this entry for this job, Recall scorecard, Tests and App
+      # tests (see the cache budget at the top).
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/master' }}
@@ -789,9 +822,12 @@ jobs:
 
       - uses: ./.github/actions/only-pinned-rust
 
+      # The Retrieval eval's entry: the same shodh-eval build (package, flags
+      # and debug settings). Saves none (see the cache budget at the top).
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          shared-key: eval-retrieval
+          save-if: false
 
       - name: Install Protobuf compiler
         shell: pwsh
@@ -875,9 +911,14 @@ jobs:
 
       - uses: ./.github/actions/only-pinned-rust
 
+      # The macOS job's entry: the same runner image (macos-latest is macos-26),
+      # flags and debug settings, and its build (shodh-rag's library tests) is
+      # this job's model tests'.
+      # Saves none (see the cache budget at the top).
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          shared-key: macos
+          save-if: false
 
       # LanceDB's protobuf definitions are compiled at build time.
       - name: Install Protobuf compiler
@@ -1354,14 +1395,17 @@ jobs:
     needs: changes
     if: needs.changes.outputs.android == 'true'
     runs-on: ubuntu-latest
-    # This job has no run history yet. 90 minutes bounds a cold run: no Rust
-    # or Gradle cache, two Android targets, the Gradle build and an emulator
-    # boot of up to 10 minutes.
+    # 90 minutes bounds a cold run: no Rust or Gradle cache, two Android
+    # targets, the Gradle build and an emulator boot of up to 10 minutes. No
+    # Rust cache (see the cache budget at the top): 12 minutes with neither
+    # cache restored (run 45374529905).
     timeout-minutes: 90
     env: &android_env
       # The workflow's -crt-static is for the desktop's builds; Android links
       # its C library dynamically whatever the flag says.
       RUSTFLAGS: ""
+      # What rust-cache sets for the jobs that use it.
+      CARGO_INCREMENTAL: 0
       # r27c, the NDK's long-term-support release.
       NDK_VERSION: 27.2.12479018
       # Test and dev builds are their own app (com.shodhrag.mobile.dev,
@@ -1972,13 +2016,6 @@ jobs:
           toolchain: 1.97.1  # keep in sync with rust-toolchain.toml
           targets: aarch64-linux-android,x86_64-linux-android
           components: rustfmt, clippy
-
-      - uses: ./.github/actions/only-pinned-rust
-
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
-        with:
-          workspaces: mobile/src-tauri -> target
-          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Format (phone app)
         run: cargo fmt --manifest-path mobile/src-tauri/Cargo.toml --check

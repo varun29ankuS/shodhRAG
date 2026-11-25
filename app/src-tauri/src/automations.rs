@@ -24,7 +24,7 @@
 //! - **Missed times.** A run for a time Shodh missed (closed or asleep) is one run for the
 //!   latest time, counting the others as missed, and waits [`AFTER_WAKE_MINUTES`] first.
 
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -983,7 +983,7 @@ pub struct Automations {
     env: Arc<dyn AutomationEnv>,
     handler: Arc<dyn JobHandler>,
     /// Decisions being made now, so a double click never makes a change twice.
-    deciding: Mutex<HashMap<String, ()>>,
+    deciding: Mutex<HashSet<String>>,
 }
 
 impl Automations {
@@ -996,7 +996,7 @@ impl Automations {
             engine,
             env,
             handler,
-            deciding: Mutex::new(HashMap::new()),
+            deciding: Mutex::new(HashSet::new()),
         }
     }
 
@@ -1259,10 +1259,9 @@ impl Automations {
     pub async fn decide(&self, decision: Decision) -> Result<RunView, String> {
         {
             let mut deciding = self.deciding.lock().unwrap_or_else(|e| e.into_inner());
-            if deciding.contains_key(&decision.approval_id) {
+            if !deciding.insert(decision.approval_id.clone()) {
                 return Err("That decision is being saved.".into());
             }
-            deciding.insert(decision.approval_id.clone(), ());
         }
         let result = self.decide_once(&decision).await;
         self.deciding
@@ -1570,7 +1569,7 @@ pub async fn automations_model_set(
 #[cfg(test)]
 pub(crate) mod testing {
     use super::*;
-    use std::collections::VecDeque;
+    use std::collections::{HashMap, VecDeque};
 
     /// The app's side of automations, scripted: the agent steps' outcomes in order, and
     /// everything the runner told the Inbox and the desktop.

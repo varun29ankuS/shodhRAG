@@ -286,6 +286,18 @@
     "cancel_indexing": { "tool": "cancel_indexing" },
     "system_status": { "tool": "system_status" },
     "model_usage_today": { "tool": "system_status" },
+    "automations_list": { "tool": "list_automations" },
+    "automation_get": { "tool": "show_automation" },
+    "automation_runs": { "tool": "show_automation" },
+    "automation_run_get": { "tool": "show_automation" },
+    "automation_create": { "tool": "create_automation" },
+    "automation_update": { "tool": "update_automation" },
+    "automation_delete": { "tool": "delete_automation" },
+    "automation_pause": { "tool": "pause_automation" },
+    "automation_resume": { "tool": "resume_automation" },
+    "automation_run_now": { "tool": "run_automation" },
+    "engine_approval_decide": { "excluded": "Deciding which of a run's changes are made is the user's OK; the assistant never approves its own steps." },
+    "automations_model_set": { "excluded": "The model automations use decides whose daily quota they spend and who receives what they read; only the user chooses it." },
     "set_search_gpu": { "excluded": "Deliberately user-only: whether search may use the graphics card decides what runs on the user's hardware, and on Windows whether Microsoft's DirectML (which may send diagnostic data to Microsoft) is used at all. The assistant reads the setting with system_status and can explain it; only the user changes it." },
     "start_search_model_switch": { "excluded": "Moving the library to the faster, slightly less accurate search model (or back) downloads a model and re-embeds the whole library and memory for an hour or more; that trade-off and a whole-index operation are the user's. The assistant reads the state with system_status, which opens the System status on it, so the user can click Re-index there." },
     "stop_search_model_switch": { "excluded": "Stops a re-index the user started (its work is kept); a whole-library operation is user-only." },
@@ -376,6 +388,7 @@
       "workspaces": ["open_view", "open_workspace"],
       "connectors": ["open_view", "github_status"],
       "tasks": ["open_view", "show_calendar"],
+      "automations": ["open_view", "list_automations", "delete_automation"],
       "activity": ["open_view", "show_audit"],
       "settings": ["open_view", "show_setting"]
     },
@@ -393,7 +406,8 @@
       "design_check": ["design_check"],
       "setting": ["show_setting", "update_setting"],
       "library": ["show_paper", "show_snippet", "create_snippet", "recall_open", "whats_new", "set_folder_watch", "create_paper_alert", "update_paper_alert", "delete_paper_alert"],
-      "status": ["system_status", "pause_indexing", "resume_indexing", "cancel_indexing"]
+      "status": ["system_status", "pause_indexing", "resume_indexing", "cancel_indexing"],
+      "automation": ["show_automation", "create_automation", "update_automation", "pause_automation", "resume_automation", "run_automation"]
     },
     "librarySections": {
       "snippets": ["show_snippet", "create_snippet"],

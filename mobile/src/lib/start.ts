@@ -5,7 +5,7 @@
  */
 import { initialNav, type Nav, type Section } from './nav';
 
-const SECTIONS: readonly Section[] = ['ask', 'artifacts', 'library', 'workspaces', 'connectors', 'tasks', 'approvals', 'activity', 'settings'];
+const SECTIONS: readonly Section[] = ['ask', 'artifacts', 'library', 'workspaces', 'connectors', 'tasks', 'automations', 'approvals', 'activity', 'settings'];
 
 /** Where `screen` is: a section, "home", "conversations", "menu" (the menu open) or "pair". */
 export function startNav(screen: string): Nav | null {

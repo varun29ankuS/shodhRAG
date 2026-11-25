@@ -207,6 +207,23 @@ impl Ledger {
             by_pool,
         })
     }
+
+    /// The most calls `spender` made on any one of the `days` UTC days up to and including
+    /// `day` (0 when it made none).
+    pub fn busiest(&self, spender: Spender, day: NaiveDate, days: u32) -> EngineResult<u32> {
+        let first = day - chrono::TimeDelta::days(i64::from(days.saturating_sub(1)));
+        let conn = self.conn.read()?;
+        let most: Option<i64> = conn.query_row(
+            "SELECT MAX(total) FROM (
+                 SELECT SUM(calls) AS total FROM model_calls
+                  WHERE spender = ?1 AND utc_day BETWEEN ?2 AND ?3
+                  GROUP BY utc_day
+             )",
+            params![spender.as_str(), day_key(first), day_key(day)],
+            |r| r.get(0),
+        )?;
+        Ok(most.map_or(0, as_count))
+    }
 }
 
 #[cfg(test)]
@@ -270,6 +287,27 @@ mod tests {
             ]
         );
         assert_eq!(ledger.day(date(24)).unwrap().total, 0, "an empty day");
+    }
+
+    #[test]
+    fn the_busiest_day_is_counted_over_the_window_only() {
+        let (_dir, ledger) = ledger();
+        assert_eq!(ledger.busiest(Spender::Chat, date(25), 14).unwrap(), 0);
+        ledger.record(date(10), Spender::Chat, "", 40).unwrap();
+        ledger
+            .record(date(12), Spender::Chat, "openrouter:free", 6)
+            .unwrap();
+        ledger
+            .record(date(12), Spender::Chat, "lmstudio", 3)
+            .unwrap();
+        ledger.record(date(20), Spender::Chat, "", 7).unwrap();
+        ledger.record(date(20), Spender::Tables, "", 30).unwrap();
+        assert_eq!(
+            ledger.busiest(Spender::Chat, date(25), 14).unwrap(),
+            9,
+            "a day's pools add up; the 10th is outside the 14 days; tables are not chat"
+        );
+        assert_eq!(ledger.busiest(Spender::Chat, date(25), 16).unwrap(), 40);
     }
 
     #[test]

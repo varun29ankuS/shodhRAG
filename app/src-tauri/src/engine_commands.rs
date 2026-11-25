@@ -11,6 +11,9 @@
 //!   reminders' "missed while closed" summary: one desktop notification for both. The
 //!   loop reports its part on every way out of the launch, so a failing engine never holds
 //!   the reminders' summary up.
+//! - **Automations have a loop of their own** on the same engine: one agent run takes
+//!   minutes, and a repeating task's question must not wait for it. It runs one
+//!   automation at a time, and ends runs whose approval expired.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -54,7 +57,10 @@ struct Inner {
     paper_alerts: OnceCell<Arc<PaperAlerts>>,
     /// The ledger of model calls.
     ledger: OnceCell<Arc<Ledger>>,
+    automations: OnceCell<Arc<crate::automations::Automations>>,
     wake: Notify,
+    /// Wakes the automations' loop (an automation changed, a run was started).
+    wake_automations: Notify,
 }
 
 const DATABASE_UNAVAILABLE: &str =
@@ -72,7 +78,9 @@ impl EngineState {
                 whats_new: OnceCell::new(),
                 paper_alerts: OnceCell::new(),
                 ledger: OnceCell::new(),
+                automations: OnceCell::new(),
                 wake: Notify::new(),
+                wake_automations: Notify::new(),
             }),
         }
     }
@@ -111,6 +119,21 @@ impl EngineState {
                     .map_err(|e| e.to_string())?
                     .map_err(|e| e.to_string())?;
                 Ok(Arc::new(ledger))
+            })
+            .await
+            .cloned()
+    }
+
+    async fn automations(
+        &self,
+        app: &AppHandle,
+    ) -> Result<Arc<crate::automations::Automations>, String> {
+        self.inner
+            .automations
+            .get_or_try_init(|| async {
+                let engine = self.engine().await?;
+                let env = Arc::new(crate::automation_agent::TauriEnv { app: app.clone() });
+                Ok(Arc::new(crate::automations::Automations::new(engine, env)))
             })
             .await
             .cloned()
@@ -181,6 +204,49 @@ impl EngineState {
             })
             .await
             .cloned()
+    }
+}
+
+/// The ledger of model calls, or `None` (logged) when it cannot be opened.
+pub async fn ledger(app: &AppHandle) -> Option<Arc<Ledger>> {
+    let state = app.try_state::<EngineState>()?.inner().clone();
+    match state.ledger().await {
+        Ok(ledger) => Some(ledger),
+        Err(e) => {
+            tracing::debug!(error = %e, "the ledger of model calls is unavailable");
+            None
+        }
+    }
+}
+
+/// Automations, or `None` (logged) when the engine cannot be opened.
+pub async fn automations(app: &AppHandle) -> Option<Arc<crate::automations::Automations>> {
+    let state = app.try_state::<EngineState>()?.inner().clone();
+    match state.automations(app).await {
+        Ok(automations) => Some(automations),
+        Err(e) => {
+            tracing::debug!(error = %e, "automations are unavailable");
+            None
+        }
+    }
+}
+
+/// Automations for a command: an error the UI can show when they are unavailable.
+pub async fn automations_for_command(
+    app: &AppHandle,
+) -> Result<Arc<crate::automations::Automations>, String> {
+    let state = app
+        .try_state::<EngineState>()
+        .ok_or_else(|| "Automations are not ready yet.".to_string())?
+        .inner()
+        .clone();
+    state.automations(app).await
+}
+
+/// Look at the automations again now (one changed or was started).
+pub fn wake_automations(app: &AppHandle) {
+    if let Some(state) = app.try_state::<EngineState>() {
+        state.inner.wake_automations.notify_one();
     }
 }
 
@@ -455,6 +521,10 @@ pub fn spawn(app: AppHandle) {
             Err(e) => tracing::warn!(error = %e, "paper alerts are off"),
         }
         let kinds: Vec<JobKind> = handlers.iter().map(|h| h.kind()).collect();
+        match state.automations(&app).await {
+            Ok(automations) => spawn_automations(state.clone(), engine.clone(), automations),
+            Err(e) => tracing::warn!(error = %e, "automations are off"),
+        }
         loop {
             // Registered before planning, so a change made meanwhile still wakes the sleep.
             let woken = state.inner.wake.notified();
@@ -475,6 +545,42 @@ pub fn spawn(app: AppHandle) {
             if !failed.is_empty() {
                 // A database that keeps failing is not tried again in a tight loop, however
                 // often tasks change meanwhile.
+                tokio::time::sleep(TICK_ERROR_WAIT).await;
+            }
+        }
+    });
+}
+
+/// The automations' loop: the same rules as the main loop (sleep until the earliest due
+/// time or retry, at most a minute; wake early on a change), one automation at a time.
+fn spawn_automations(
+    state: EngineState,
+    engine: Arc<Engine>,
+    automations: Arc<crate::automations::Automations>,
+) {
+    tauri::async_runtime::spawn(async move {
+        automations.launch().await;
+        let handler = automations.handler();
+        let kinds = [JobKind::Playbook];
+        loop {
+            let woken = state.inner.wake_automations.notified();
+            tokio::pin!(woken);
+            woken.as_mut().enable();
+            let next = next_wake_all(&engine, &kinds)
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "automations: the next due time could not be read");
+                    None
+                })
+                .into_iter()
+                .chain(automations.next_expiry())
+                .min();
+            tokio::select! {
+                _ = tokio::time::sleep(sleep_for(next, Utc::now())) => {}
+                _ = &mut woken => {}
+            }
+            automations.sweep().await;
+            if let Err(e) = engine.tick(&handler).await {
+                tracing::warn!(error = %e, "automations could not be planned");
                 tokio::time::sleep(TICK_ERROR_WAIT).await;
             }
         }

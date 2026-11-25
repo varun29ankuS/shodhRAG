@@ -46,7 +46,8 @@ const SQLITE_HEADER: &[u8; 16] = b"SQLite format 3\0";
 /// store's state (12), what happened to memories in each answer (13), evidence tables
 /// (14), the evidence tables' daily call counter and fill-job state (15) and the captures
 /// of their hand fills with the `model_unavailable` pause (16), and later the scheduler
-/// engine (19), What's new (20) and the ledger of model calls (21) use one version sequence,
+/// engine (19), What's new (20), the ledger of model calls (21) and the steps and
+/// approvals of automations (22) use one version sequence,
 /// so every component that opens it sees the same schema.
 const MIGRATIONS: &[(i64, &str)] = &[
     (
@@ -809,6 +810,42 @@ const MIGRATIONS: &[(i64, &str)] = &[
             ON CONFLICT(utc_day, spender, pool) DO UPDATE
                 SET calls = MAX(calls, excluded.calls);
         DROP TABLE table_calls;",
+    ),
+    (
+        22,
+        // Automations (`crate::engine`'s playbook runs): each run's steps in order, with
+        // what each was given, what it gave and the model calls it made; and the changes
+        // a run's agent asked to make, kept for the user's OK (one approval per run, one
+        // entry per change in `writes_json`). Deleting a job deletes its runs' steps and
+        // approvals in the same transaction (foreign keys are not enforced in this
+        // database). Created only if absent, so the step can be applied again safely.
+        "CREATE TABLE IF NOT EXISTS engine_step (
+            run_id TEXT NOT NULL,
+            idx INTEGER NOT NULL CHECK (idx >= 0),
+            kind TEXT NOT NULL CHECK (kind IN ('input', 'agent', 'notify')),
+            state TEXT NOT NULL CHECK (state IN ('running', 'done', 'failed', 'skipped')),
+            input_json TEXT NOT NULL DEFAULT '{}',
+            output_json TEXT NOT NULL DEFAULT '{}',
+            calls INTEGER NOT NULL DEFAULT 0 CHECK (calls >= 0),
+            started_at TEXT NULL,
+            ended_at TEXT NULL,
+            PRIMARY KEY (run_id, idx)
+        );
+        CREATE TABLE IF NOT EXISTS engine_approval (
+            id TEXT PRIMARY KEY,
+            job_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            writes_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            decision TEXT NULL CHECK (decision IN ('approved', 'denied', 'expired', 'partly')),
+            decided_at TEXT NULL,
+            result_json TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE INDEX IF NOT EXISTS engine_approval_run ON engine_approval(run_id);
+        CREATE INDEX IF NOT EXISTS engine_approval_open ON engine_approval(decision)
+            WHERE decision IS NULL;",
     ),
 ];
 
@@ -2691,6 +2728,52 @@ mod tests {
         drop(AuditLog::open(dir.path().join("shodh.db"), None).unwrap());
         let calls: Vec<i64> = ledger_rows(&dir).into_iter().map(|r| r.3).collect();
         assert_eq!(calls, vec![9, 5]);
+    }
+
+    #[test]
+    fn migration_22_adds_steps_and_approvals_and_reapplies_safely() {
+        let (dir, log) = temp_log();
+        drop(log);
+        let conn = raw(&dir);
+        conn.execute(
+            "INSERT INTO engine_step (run_id, idx, kind, state) VALUES ('r1', 0, 'agent', 'done')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO engine_approval (id, job_id, run_id, title, writes_json, created_at,
+                 expires_at)
+             VALUES ('a1', 'j1', 'r1', 'Add 3 tasks', '[]', 'c', 'e')",
+            [],
+        )
+        .unwrap();
+        assert!(
+            conn.execute(
+                "INSERT INTO engine_step (run_id, idx, kind, state) VALUES ('r1', 1, 'cron', 'done')",
+                [],
+            )
+            .is_err(),
+            "an unknown step kind is refused"
+        );
+        assert!(
+            conn.execute(
+                "UPDATE engine_approval SET decision = 'maybe' WHERE id = 'a1'",
+                [],
+            )
+            .is_err(),
+            "an unknown decision is refused"
+        );
+        conn.execute_batch("DELETE FROM schema_version WHERE version >= 22;")
+            .unwrap();
+        drop(conn);
+        drop(AuditLog::open(dir.path().join("shodh.db"), None).unwrap());
+        let conn = raw(&dir);
+        let count = |table: &str| -> i64 {
+            conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(count("engine_step"), 1, "re-applied, the rows stay");
+        assert_eq!(count("engine_approval"), 1);
     }
 
     #[test]

@@ -249,6 +249,12 @@ pub struct Run {
     #[serde(skip_serializing)]
     pub run_token: Option<String>,
     pub heartbeat_at: Option<String>,
+    /// The model calls the run planned: its estimate, which it never goes past.
+    pub planned_calls: u32,
+    /// The model calls it made.
+    pub used_calls: u32,
+    /// The conversation that holds what its agent did, when it had one.
+    pub conversation_id: Option<String>,
     /// What the run did, in words.
     pub summary: Option<String>,
     pub error_code: Option<String>,
@@ -364,7 +370,7 @@ fn job_from(r: &Row<'_>) -> rusqlite::Result<Job> {
 
 const RUN_COLS: &str = "id, job_id, trigger_kind, scheduled_for, missed, state, wait_reason, \
      attempt, next_attempt_at, run_token, heartbeat_at, summary, error_code, error_detail, \
-     started_at, ended_at, created_at";
+     started_at, ended_at, created_at, planned_calls, used_calls, conversation_id";
 
 fn run_from(r: &Row<'_>) -> rusqlite::Result<Run> {
     Ok(Run {
@@ -385,6 +391,9 @@ fn run_from(r: &Row<'_>) -> rusqlite::Result<Run> {
         started_at: r.get(14)?,
         ended_at: r.get(15)?,
         created_at: r.get(16)?,
+        planned_calls: as_count(r.get(17)?),
+        used_calls: as_count(r.get(18)?),
+        conversation_id: r.get(19)?,
     })
 }
 
@@ -424,7 +433,7 @@ fn schedule_json(schedule: &Schedule) -> EngineResult<String> {
 
 /// The engine's jobs and runs in `shodh.db`.
 pub struct EngineStore {
-    conn: SharedConnection,
+    pub(super) conn: SharedConnection,
 }
 
 impl std::fmt::Debug for EngineStore {
@@ -581,9 +590,15 @@ impl EngineStore {
         })
     }
 
-    /// Deletes a job and its runs. True when it was there.
+    /// Deletes a job and its runs, with their steps and approvals. True when it was there.
     pub fn delete_job(&self, id: &str) -> EngineResult<bool> {
         self.conn.write(|tx| -> EngineResult<bool> {
+            tx.execute(
+                "DELETE FROM engine_step
+                  WHERE run_id IN (SELECT id FROM engine_run WHERE job_id = ?1)",
+                params![id],
+            )?;
+            tx.execute("DELETE FROM engine_approval WHERE job_id = ?1", params![id])?;
             tx.execute("DELETE FROM engine_run WHERE job_id = ?1", params![id])?;
             Ok(tx.execute("DELETE FROM engine_job WHERE id = ?1", params![id])? > 0)
         })
@@ -903,11 +918,12 @@ impl EngineStore {
     }
 
     /// Deletes finished runs older than [`RETENTION_DAYS`], keeping the latest
-    /// [`KEEP_LATEST_RUNS`] of each job. Returns how many went.
+    /// [`KEEP_LATEST_RUNS`] of each job, and the steps and approvals of runs that are gone.
+    /// Returns how many runs went.
     pub fn prune(&self, now: DateTime<Utc>) -> EngineResult<usize> {
         let cutoff = timestamp(now - TimeDelta::days(RETENTION_DAYS));
-        let removed = self.conn.write(|tx| {
-            tx.execute(
+        let removed = self.conn.write(|tx| -> rusqlite::Result<usize> {
+            let removed = tx.execute(
                 "DELETE FROM engine_run
                   WHERE state NOT IN ('queued', 'running', 'waiting') AND created_at < ?1
                     AND rowid NOT IN (
@@ -918,9 +934,70 @@ impl EngineStore {
                         ) WHERE n <= ?2
                     )",
                 params![cutoff, KEEP_LATEST_RUNS],
-            )
+            )?;
+            if removed > 0 {
+                tx.execute(
+                    "DELETE FROM engine_step WHERE run_id NOT IN (SELECT id FROM engine_run)",
+                    [],
+                )?;
+                tx.execute(
+                    "DELETE FROM engine_approval WHERE run_id NOT IN (SELECT id FROM engine_run)",
+                    [],
+                )?;
+            }
+            Ok(removed)
         })?;
         Ok(removed)
+    }
+
+    /// Sets the model calls a run plans (its estimate).
+    pub fn set_planned(&self, id: &str, calls: u32) -> EngineResult<()> {
+        self.conn.write(|tx| {
+            tx.execute(
+                "UPDATE engine_run SET planned_calls = ?2 WHERE id = ?1",
+                params![id, i64::from(calls)],
+            )
+        })?;
+        Ok(())
+    }
+
+    /// Counts `calls` more model calls of a run; returns its calls so far.
+    pub fn add_used(&self, id: &str, calls: u32) -> EngineResult<u32> {
+        let used = self.conn.write(|tx| -> rusqlite::Result<Option<i64>> {
+            tx.execute(
+                "UPDATE engine_run SET used_calls = used_calls + ?2 WHERE id = ?1",
+                params![id, i64::from(calls)],
+            )?;
+            tx.query_row(
+                "SELECT used_calls FROM engine_run WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .optional()
+        })?;
+        Ok(used.map_or(0, as_count))
+    }
+
+    /// Removes a job's schedule: from now on it runs only when started or by an event.
+    pub fn clear_schedule(&self, id: &str) -> EngineResult<()> {
+        self.conn.write(|tx| {
+            tx.execute(
+                "UPDATE engine_job SET schedule_json = NULL, next_due_at = NULL WHERE id = ?1",
+                params![id],
+            )
+        })?;
+        Ok(())
+    }
+
+    /// Records the conversation that holds what a run's agent did.
+    pub fn set_conversation(&self, id: &str, conversation_id: &str) -> EngineResult<()> {
+        self.conn.write(|tx| {
+            tx.execute(
+                "UPDATE engine_run SET conversation_id = ?2 WHERE id = ?1",
+                params![id, conversation_id],
+            )
+        })?;
+        Ok(())
     }
 }
 

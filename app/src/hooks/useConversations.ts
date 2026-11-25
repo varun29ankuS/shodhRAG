@@ -70,6 +70,11 @@ export interface Conversation {
    * backend only, shown read-only (`features/connectors/conversations`).
    */
   source?: ConversationSource;
+  /**
+   * Set on the conversation of an automation's run: which automation it was. Written by
+   * the backend only; the history shows these behind its Automations group.
+   */
+  automation?: { id: string; name: string };
   /** What a chat started with "Continue in Ask" carries into its first question. */
   seed?: ConversationSeed;
   /**

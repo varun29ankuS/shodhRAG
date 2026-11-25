@@ -11,6 +11,7 @@
 
 mod artifacts;
 mod audit;
+mod automations;
 mod calendar;
 mod code_intel;
 mod code_map;
@@ -167,6 +168,12 @@ pub trait HostEffects: Send + Sync {
     async fn paper_alerts(&self) -> Option<Arc<crate::paper_alerts::PaperAlerts>> {
         None
     }
+    /// Automations, when the app database can be opened.
+    async fn automations(&self) -> Option<Arc<crate::automations::Automations>> {
+        None
+    }
+    /// An automation changed: the automations' loop looks again.
+    fn automations_changed(&self) {}
     /// The Library's folders kept in sync now, as `(source id, folder)`.
     fn watched_folders(&self) -> Vec<(String, String)> {
         Vec::new()
@@ -310,6 +317,7 @@ pub fn build_registry(host: Arc<AgentHost>) -> Result<ToolRegistry, RegistryErro
     code_intel::register(&mut registry, &host)?;
     recall::register(&mut registry, &host)?;
     whats_new::register(&mut registry, &host)?;
+    automations::register(&mut registry, &host)?;
     shodh_rag::connectors::github::tools::register(&mut registry, host.github.clone())?;
     Ok(registry)
 }
@@ -400,6 +408,8 @@ pub(crate) mod testing {
         pub whats_new: Arc<crate::whats_new::WhatsNew>,
         /// Paper alerts over this host's `shodh.db`, with no network.
         pub paper_alerts: Arc<crate::paper_alerts::PaperAlerts>,
+        /// Automations over this host's `shodh.db`, their agent steps scripted.
+        pub automations: Arc<crate::automations::Automations>,
         pub alert_env: Arc<crate::paper_alerts::testing::TestEnv>,
     }
 
@@ -457,6 +467,9 @@ pub(crate) mod testing {
         }
         async fn paper_alerts(&self) -> Option<Arc<crate::paper_alerts::PaperAlerts>> {
             Some(self.paper_alerts.clone())
+        }
+        async fn automations(&self) -> Option<Arc<crate::automations::Automations>> {
+            Some(self.automations.clone())
         }
         fn watched_folders(&self) -> Vec<(String, String)> {
             crate::whats_new::watched_folders(&self.folder_sync)
@@ -619,6 +632,20 @@ pub(crate) mod testing {
                 )),
                 alert_env.clone(),
                 Arc::new(crate::whats_new::testing::QuietSink),
+            )),
+            automations: Arc::new(crate::automations::Automations::new(
+                Arc::new(shodh_rag::engine::runner::Engine::with_clock(
+                    Arc::new(
+                        shodh_rag::engine::store::EngineStore::open(
+                            &dir.path().join("shodh.db"),
+                            None,
+                        )
+                        .unwrap(),
+                    ),
+                    repeat_clock.clone(),
+                    "agent-automations-test",
+                )),
+                Arc::new(crate::automations::testing::FakeEnv::default()),
             )),
             alert_env,
             repeats,

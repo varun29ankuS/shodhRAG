@@ -360,6 +360,12 @@ pub enum NavigationTarget {
     /// (`search`, `indexing`) highlighted. Its event's view is
     /// [`STATUS_VIEW`]: the panel is not a view of its own.
     Status { part: String },
+    /// Open Automations with an automation highlighted, at one of its runs when `run_id`
+    /// is set (the run page).
+    Automation {
+        automation_id: String,
+        run_id: Option<String>,
+    },
 }
 
 /// The `view` of a `navigated` event that opens the System status panel
@@ -373,7 +379,7 @@ impl NavigationTarget {
     /// Every target kind, as serialised in `kind`. [`Self::kind`] is an
     /// exhaustive match, so a new variant cannot compile until it has a kind,
     /// and the coverage test checks this list against the frontend.
-    pub const KINDS: [&'static str; 14] = [
+    pub const KINDS: [&'static str; 15] = [
         "document",
         "calendar",
         "conversation",
@@ -388,6 +394,7 @@ impl NavigationTarget {
         "setting",
         "library",
         "status",
+        "automation",
     ];
 
     /// This target's `kind`.
@@ -407,6 +414,7 @@ impl NavigationTarget {
             Self::Setting { .. } => "setting",
             Self::Library { .. } => "library",
             Self::Status { .. } => "status",
+            Self::Automation { .. } => "automation",
         }
     }
 }
@@ -1190,6 +1198,14 @@ mod tests {
                 },
                 "status",
                 vec!["part"],
+            ),
+            (
+                NavigationTarget::Automation {
+                    automation_id: "auto-1".into(),
+                    run_id: Some("run-1".into()),
+                },
+                "automation",
+                vec!["automationId", "runId"],
             ),
         ]
     }

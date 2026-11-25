@@ -42,6 +42,7 @@ import {
 import type { InboxChoice, InboxItem, InboxTab, PanelNav, PrimaryAction, RequestGate } from './model';
 import { repeatDecide, repeatGet, repeatSet } from '../tasks/repeatApi';
 import { whatsNewApi } from '../whatsNew/api';
+import { automationsApi } from '../automations/api';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-shodh-surface';
@@ -265,6 +266,13 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
       void run(item, async () => {
         await whatsNewApi.updateAlert(jobId, { enabled: true });
       }, 'The alert was not resumed');
+      return;
+    }
+    if (choice === 'resume' && item.data.resume === 'automation') {
+      if (!jobId) return;
+      void run(item, async () => {
+        await automationsApi.resume(jobId);
+      }, 'The automation was not resumed');
       return;
     }
     if (choice === 'resume' && item.data.resume === 'folder_watch') {

@@ -303,6 +303,14 @@ impl HostEffects for TauriEffects {
         crate::engine_commands::paper_alerts(&self.app).await
     }
 
+    async fn automations(&self) -> Option<std::sync::Arc<crate::automations::Automations>> {
+        crate::engine_commands::automations(&self.app).await
+    }
+
+    fn automations_changed(&self) {
+        crate::engine_commands::wake_automations(&self.app);
+    }
+
     fn watched_folders(&self) -> Vec<(String, String)> {
         crate::whats_new::watched_folders(&self.app.state::<FolderSyncState>())
     }

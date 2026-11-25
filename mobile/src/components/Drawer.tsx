@@ -5,7 +5,7 @@
  * left, a tap beside it, or Back.
  */
 import { motion, type PanInfo } from 'framer-motion';
-import { Activity, BookOpen, ListChecks, MessageCircle, Layers, Plug, Settings, Shapes, ShieldCheck, type LucideIcon } from 'lucide-react';
+import { Activity, BookOpen, ListChecks, MessageCircle, Layers, Plug, Settings, Shapes, ShieldCheck, Workflow, type LucideIcon } from 'lucide-react';
 import { useContext } from 'react';
 import { MenuShown, useLink, useNav, useThemeChoice } from '../lib/context';
 import { fade, glide } from '../lib/motion';
@@ -21,6 +21,7 @@ export const SECTION_ICONS: Record<Section, LucideIcon> = {
   workspaces: Layers,
   connectors: Plug,
   tasks: ListChecks,
+  automations: Workflow,
   approvals: ShieldCheck,
   activity: Activity,
   settings: Settings,

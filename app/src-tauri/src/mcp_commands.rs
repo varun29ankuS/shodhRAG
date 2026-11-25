@@ -155,6 +155,10 @@ pub fn tool_group(name: &str) -> &'static str {
         | "complete_task" | "update_event" | "delete_task" | "delete_event" | "show_calendar" => {
             "Tasks and calendar"
         }
+        "list_automations" | "show_automation" | "create_automation" | "update_automation"
+        | "delete_automation" | "pause_automation" | "resume_automation" | "run_automation" => {
+            "Automations"
+        }
         "remember" | "recall" | "update_memory" | "forget" => "Memory",
         "list_artifacts" | "open_artifact" | "finish_creation" => "Artifacts",
         "open_code" | "review_code" | "design_check" => "Code review",

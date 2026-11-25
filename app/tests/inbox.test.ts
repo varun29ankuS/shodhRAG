@@ -94,6 +94,18 @@ test('a repeating task question offers its three answers and no dismiss; a hold 
   assert.deepEqual(actionsFor(item('reminder:t1', 'reminder', 'needs_you')), { primary: null, secondary: 'dismiss' });
 });
 
+test("an automation's changes waiting for an OK are opened, never dismissed; its hold offers Resume", () => {
+  const changes = { ...item('engine:approval:a1', 'automation', 'needs_you'), data: { jobId: 'j1', runId: 'r1', approvalId: 'a1' } };
+  assert.deepEqual(actionsFor(changes), { primary: null, secondary: null });
+  assert.equal(tabOf(changes), 'attention');
+  const hold = { ...item('automation-hold:j1', 'automation', 'needs_you'), data: { jobId: 'j1', fix: 'resume', resume: 'automation' } };
+  assert.deepEqual(actionsFor(hold), { primary: null, secondary: null, choices: ['resume'] });
+  // What a run found is Info, and can be dismissed.
+  const found = { ...item('automation:run:r1', 'automation', 'done'), data: { jobId: 'j1', runId: 'r1' } };
+  assert.equal(tabOf(found), 'info');
+  assert.deepEqual(actionsFor(found), { primary: null, secondary: 'dismiss' });
+});
+
 test('each kind offers its actions; running work offers none', () => {
   assert.deepEqual(actionsFor(item('a', 'approval', 'needs_you')), { primary: 'approve', secondary: 'deny' });
   assert.deepEqual(actionsFor(item('m', 'memory', 'needs_you')), { primary: 'accept', secondary: 'dismiss' });

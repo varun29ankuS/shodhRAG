@@ -29,13 +29,14 @@ pub const SHOW_AUDIT: &str = "show_audit";
 pub const SHOW_SOURCE: &str = "show_source";
 
 /// Views the agent may open, in the navbar's order.
-pub const VIEWS: [&str; 8] = [
+pub const VIEWS: [&str; 9] = [
     "ask",
     "artifacts",
     "library",
     "workspaces",
     "connectors",
     "tasks",
+    "automations",
     "activity",
     "settings",
 ];

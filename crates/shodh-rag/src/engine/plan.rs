@@ -4,8 +4,9 @@
 //! - **Catch-up.** An occurrence more than [`LATE_AFTER_MINUTES`] late means the computer
 //!   slept or Shodh was closed. With `once`, one run for the latest missed time, counting
 //!   the earlier ones as `missed`; with `skip`, a skipped run is recorded.
-//! - **Overlap.** A job has one active run. When it waits for the user's decision, the
-//!   new occurrences fold into it (one question, never a pile). Otherwise `skip` records
+//! - **Overlap.** A job has one active run. When it waits for the user's decision, or
+//!   waits through no failure (while the user chats, until a quota resets), the new
+//!   occurrences fold into it (one run, never a pile). Otherwise `skip` records
 //!   that the previous run was still going, and `queue_one` leaves the occurrence for
 //!   when the active run ends (so at most one runs behind it).
 
@@ -52,6 +53,17 @@ pub enum Step {
     },
 }
 
+/// Whether a run waiting for `reason` takes newer occurrences in (one run, never a pile):
+/// the user's decision, and the waits that are no failure (while the user chats, until a
+/// quota resets, until the automations' model answers). A run waiting for an approval, a
+/// backoff or the network keeps its occurrence, so the overlap policy applies.
+fn folds(reason: WaitReason) -> bool {
+    matches!(
+        reason,
+        WaitReason::Decision | WaitReason::Yield | WaitReason::Quota | WaitReason::ModelUnavailable
+    )
+}
+
 /// The step for a job with `schedule`, whose active run is `active` and whose latest
 /// handled occurrence is `planned_through`, at `now`, in `tz`.
 pub fn plan<Tz>(
@@ -76,7 +88,7 @@ where
         .saturating_add(u32::from(more));
     let earlier = count.saturating_sub(1);
     if let Some(run) = active {
-        if run.state == RunState::Waiting && run.wait_reason == Some(WaitReason::Decision) {
+        if run.state == RunState::Waiting && run.wait_reason.is_some_and(folds) {
             return Step::Fold {
                 run_id: run.id.clone(),
                 to: latest,

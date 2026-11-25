@@ -20,6 +20,7 @@ import {
   Search,
   Settings,
   Sun,
+  Workflow,
 } from 'lucide-react';
 import { useSidebar } from '../../contexts/SidebarContext';
 import { preloadView } from './views';
@@ -90,6 +91,7 @@ export const NAV_ICONS: Record<ViewTab, React.ElementType> = {
   library: Folder,
   connectors: Plug,
   tasks: ListChecks,
+  automations: Workflow,
   activity: Activity,
   settings: Settings,
 };

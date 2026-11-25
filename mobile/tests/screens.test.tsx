@@ -909,7 +909,7 @@ describe('the menu', () => {
     const items = within(menu)
       .getAllByRole('button')
       .map(b => b.textContent?.replace(/\d+ ?$/, '').replace(/\d+$/, '') ?? '');
-    expect(items).toEqual(['Ask', 'Artifacts', 'Library', 'Workspaces', 'Connectors', 'Tasks', 'Approvals', 'Activity', 'Settings']);
+    expect(items).toEqual(['Ask', 'Artifacts', 'Library', 'Workspaces', 'Connectors', 'Tasks', 'Automations', 'Approvals', 'Activity', 'Settings']);
     // The approvals waiting are counted.
     expect(await within(menu).findByLabelText('2 waiting')).toBeTruthy();
     fireEvent.click(within(menu).getByRole('button', { name: /^Library/ }));

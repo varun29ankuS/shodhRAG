@@ -292,3 +292,15 @@ test('a finished answer always fits the relay, so the chat never stays on a run 
     assert.equal(fitted.status, 'running');
   }
 });
+
+test("the launch probe's snapshot is one the floating chat reads", () => {
+  // The Windows and macOS launch tests publish this snapshot (launch_probe.rs) and check the
+  // open chat's rectangle: a snapshot the dock refuses leaves it closed and fails them.
+  const probe = readFileSync(new URL('../src-tauri/src/launch_probe.rs', import.meta.url), 'utf8');
+  const body = probe.slice(probe.indexOf('fn snapshot()'));
+  const start = body.indexOf('serde_json::json!(') + 'serde_json::json!('.length;
+  const end = body.indexOf('\n    })') + '\n    }'.length;
+  const parsed = parseDockSnapshot(JSON.parse(body.slice(start, end)));
+  assert.ok(parsed, 'parseDockSnapshot refused the launch probe snapshot');
+  assert.equal(parsed.open, true);
+});

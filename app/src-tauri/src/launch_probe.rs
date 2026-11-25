@@ -128,7 +128,11 @@ fn snapshot() -> serde_json::Value {
         "voiceSupported": false,
         "open": true,
         "unread": 0,
-        "theme": "dark"
+        "theme": "dark",
+        "work": "research",
+        "permission": "ask",
+        "codeAvailable": false,
+        "model": { "label": "Launch probe", "ready": false }
     })
 }
 

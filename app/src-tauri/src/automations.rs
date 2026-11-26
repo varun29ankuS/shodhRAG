@@ -1785,11 +1785,11 @@ impl Automations {
         let inserted = blocking(move || store.insert_run(&new, now)).await?;
         let run = inserted.map_err(|_| "It is already running.".to_string())?;
         let request = AgentRequest {
+            planned: playbook.planned(),
             run_id: run.id.clone(),
             automation_id: job.id.clone(),
             name: playbook.name,
             conversation_id: conversation_of(&run.id),
-            planned: playbook.planned(),
             answer_only: playbook.answer_only,
             instruction: playbook.instruction,
             workspace_id: playbook.workspace_id,

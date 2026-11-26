@@ -75,15 +75,20 @@ const _: () = assert!(
 pub fn run() {
     log::init();
     tracing::info!("Shodh {} is starting", env!("CARGO_PKG_VERSION"));
-    let built = tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_barcode_scanner::init())
         .plugin(native::init())
         .plugin(tauri_plugin_biometric::init())
         .manage(lock::LockGate::default())
         .manage(link::Link::new(link::device_name()))
         .manage(store::Store::default())
-        .manage(queue::Queue::default())
-        .manage(update::Updates::default())
+        .manage(queue::Queue::default());
+    // The one-tap update is Android's: the release it found, kept until it is
+    // installed. An iPhone is updated by TestFlight or the App Store, so
+    // there the app keeps nothing and has no install command.
+    #[cfg(target_os = "android")]
+    let builder = builder.manage(update::Updates::default());
+    let built = builder
         .setup(|app| {
             // CI's screenshot tour (tour.rs): a debug build only.
             #[cfg(all(debug_assertions, target_os = "android"))]
@@ -109,6 +114,7 @@ pub fn run() {
             queue::outbox_mark,
             queue::outbox_remove,
             update::update_check,
+            #[cfg(target_os = "android")]
             update::update_install,
             files::files_pick,
             files::photo_take,

@@ -59,8 +59,9 @@ env:
 #                            test and test-app
 #   release-x86_64-pc-windows-msvc  1.79 GB  footprint, release.yml (Windows)
 #   release-aarch64-apple-darwin    1.63 GB  release.yml (macOS)
-# With the two search-model entries (0.55 GB each), Gradle's (0.41 GB) and
-# the small npm and ONNX Runtime ones, about 8.6 GB. Check, upgrade and the
+# With the two search-model entries (0.55 GB each), Gradle's two (0.41 GB
+# for the debug build, about as much for release.yml's release build) and
+# the small npm and ONNX Runtime ones, about 9 GB. Check, upgrade and the
 # Android builds keep no Rust entry: their cold builds fit their limits
 # (noted per job) and their entries would push the total over 10 GB again.
 # After a Cargo.lock change the old entries stay until evicted, as the least
@@ -1661,9 +1662,48 @@ jobs:
               # A minidump there names the emulator thread that died.
               echo "== emulator crash reports"; ls -laR /tmp/android-runner/emu-crash-*.db || echo "none"
             } > "$evidence/host.txt" 2>&1 || true
+            # Where the emulator died: the runner's kernel pipes a dying
+            # process's core to systemd-coredump (the kernel traces show it
+            # starting right after the RenderThread's SIGSEGV), which
+            # writes every thread's stack, by library and symbol, to the
+            # journal. The process is not gone until its core is read, so
+            # this waits for systemd-coredump to finish (3 minutes at
+            # most) before asking for the report. Evidence only.
+            {
+              echo "== core_pattern: $(cat /proc/sys/kernel/core_pattern)"
+              timeout -k 5 180 sh -c 'while pgrep -x systemd-coredum > /dev/null; do sleep 1; done' || echo "systemd-coredump was still running after 180 s"
+              echo "== coredumpctl info $qemu_pid"
+              timeout -k 5 120 sudo -n coredumpctl info --no-pager "$qemu_pid" || echo "no core dump of the emulator's process"
+              # systemd-coredump's own stack reader was killed on this
+              # runner (run 45664734252: one frame, no library), so gdb
+              # reads the core: the libraries loaded and where, every
+              # thread's stack, and the instruction that faulted. The
+              # emulator's own libraries are found beside its binary.
+              emulator_dir="$ANDROID_HOME/emulator"
+              core_file="$RUNNER_TEMP/emulator.core"
+              if timeout -k 5 240 sudo -n apt-get install -y -q gdb > /dev/null 2>&1 \
+                && timeout -k 5 240 sudo -n coredumpctl dump "$qemu_pid" -o "$core_file" > /dev/null 2>&1; then
+                echo "== gdb"
+                timeout -k 5 300 sudo -n gdb -batch -nx \
+                  -iex "set solib-search-path $emulator_dir/lib64:$emulator_dir/lib64/gles_angle:$emulator_dir/lib64/gles_swiftshader:$emulator_dir/lib64/vulkan:$emulator_dir/lib64/qt/lib" \
+                  -ex "info registers rip rsp rbp rax rcx rdi rsi" \
+                  -ex "x/6i \$pc" \
+                  -ex "info symbol \$pc" \
+                  -ex "info files" \
+                  -ex "bt 40" \
+                  -ex "info sharedlibrary" \
+                  -ex "thread apply all bt 12" \
+                  "$emulator_dir/qemu/linux-x86_64/qemu-system-x86_64-headless" "$core_file" 2>&1 | head -c 400000 \
+                  || echo "gdb could not read the core"
+                sudo -n rm -f "$core_file"
+              else
+                echo "gdb or the core file is not available on this runner"
+              fi
+            } > "$evidence/emulator-core.txt" 2>&1 || true
             cp -r /tmp/android-runner/emu-crash-*.db "$evidence/" 2>/dev/null || true
             echo "::group::Evidence (all of it is in the $evidence_artifact artifact)"
             tail -n 80 "$evidence/host.txt" || true
+            head -n 220 "$evidence/emulator-core.txt" || true
             echo "== the app's deaths in the streamed log"
             grep -E "Killing [0-9]+:$ANDROID_PACKAGE|Process $ANDROID_PACKAGE .*has died|FATAL EXCEPTION|Fatal signal" "$evidence/logcat.txt" | tail -n 20 || true
             echo "::endgroup::"
@@ -2232,11 +2272,19 @@ jobs:
           # without a snapshot takes a few minutes on these runners, and a
           # boot not done in 10 minutes is a broken image or runner.
           emulator-boot-timeout: 600
-          # The action's default options, kept explicit, with its default
-          # renderer (-gpu swiftshader_indirect). -gpu guest bought nothing:
-          # its emulator's RenderThread segfaulted mid-tour too (run
-          # 43701191529), as swiftshader_indirect's did (run 43689345770).
-          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          # The action's default options, kept explicit, but not its default
+          # renderer. With -gpu swiftshader_indirect the emulator's
+          # RenderThread segfaulted mid-tour (runs 43689345770 and
+          # 45681343876), and so it did with -gpu guest (run 43701191529).
+          # The core of run 45681343876, read by gdb, shows where: the
+          # faulting instruction (a vector load, movdqu, from an address
+          # that is not mapped) is in no library of the process, in the
+          # middle of software rasterizing (the thread's stack holds pixel
+          # coordinates and floats), with the emulator's old GLES renderer
+          # loaded (lib64/gles_swiftshader). -gpu swangle_indirect draws
+          # GLES with ANGLE over SwiftShader's Vulkan (lib64/gles_angle of
+          # the same emulator build) instead, so none of that code runs.
+          emulator-options: -no-window -gpu swangle_indirect -no-snapshot -noaudio -no-boot-anim
           script: bash -euo pipefail -c "$LAUNCH_TEST"
 
       - name: Upload the launcher shots and launch recording

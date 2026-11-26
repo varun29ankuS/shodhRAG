@@ -857,6 +857,31 @@ jobs:
           toolchain: 1.97.1  # keep in sync with rust-toolchain.toml
           targets: aarch64-linux-android
 
+      # Gradle's own download and every dependency of the Gradle build came
+      # from services.gradle.org, Maven Central, Google's Maven and the
+      # plugin portal on every run of this job, and Maven Central answered
+      # a shared runner with 429 Too Many Requests (runs 45339944203 and
+      # 45605978063: the build failed resolving buildSrc's Kotlin plugin).
+      # They are restored from the Actions cache instead, as in ci.yml's
+      # android job (same paths, same key files; see its note). A release
+      # build resolves more than a debug one (R8, lint), so this job has an
+      # entry of its own; with none yet, or after a key change, it starts
+      # from its newest entry, then from the debug build's. Only master
+      # saves.
+      - name: Restore the Gradle cache
+        id: gradle-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: |
+            ~/.gradle/wrapper/dists
+            ~/.gradle/caches/modules-2
+            !~/.gradle/caches/modules-2/modules-2.lock
+            !~/.gradle/caches/modules-2/gc.properties
+          key: v1-gradle-android-release-${{ runner.os }}-${{ hashFiles('mobile/package-lock.json', 'mobile/src-tauri/Cargo.lock', 'mobile/plugins/shodh-android/android/*.gradle*') }}
+          restore-keys: |
+            v1-gradle-android-release-${{ runner.os }}-
+            v1-gradle-android-debug-${{ runner.os }}-
+
       - name: Generate the Android project
         working-directory: mobile
         run: |
@@ -892,6 +917,25 @@ jobs:
           mkdir -p "$out"
           cp "${apks[0]}" "$out/unsigned.apk"
           echo "- release APK (unsigned) \`$(basename "${apks[0]}")\`: $(du -h "$out/unsigned.apk" | cut -f1), built in ${seconds} s" >> "$GITHUB_STEP_SUMMARY"
+
+      # Saved only after a build that passed. The Gradle daemon outlives
+      # the build with its caches open; it is stopped first, so the files
+      # saved are complete.
+      - name: Stop Gradle before its cache is saved
+        if: github.ref == 'refs/heads/master' && steps.gradle-cache.outputs.cache-hit != 'true'
+        working-directory: mobile/src-tauri/gen/android
+        run: ./gradlew --stop
+
+      - name: Save the Gradle cache
+        if: github.ref == 'refs/heads/master' && steps.gradle-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: |
+            ~/.gradle/wrapper/dists
+            ~/.gradle/caches/modules-2
+            !~/.gradle/caches/modules-2/modules-2.lock
+            !~/.gradle/caches/modules-2/gc.properties
+          key: ${{ steps.gradle-cache.outputs.cache-primary-key }}
 
       # The screenshot tour and the scripted computer of the screenshots are
       # debug builds' only. Checked on what the APK carries: the frontend

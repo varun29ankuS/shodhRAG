@@ -82,7 +82,7 @@ export function ModelPicks({ picker }: { picker: ModelPickerHandle }) {
                   {option.label}
                   {busy === option.pick && <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />}
                 </span>
-                <span className="text-caption text-shodh-text-secondary truncate">
+                <span className="text-caption text-shodh-text-secondary break-words">
                   {available && option.model
                     ? `${option.name ?? option.model.model} · ${PROVIDER_LABELS[option.model.provider]}`
                     : pickUnavailableText(option.pick, view)}

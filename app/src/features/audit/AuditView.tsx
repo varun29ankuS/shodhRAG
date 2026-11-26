@@ -435,7 +435,7 @@ export default function AuditView({ frame }: AuditViewProps) {
             Conversation
             <input
               type="text"
-              className={cn(INPUT, 'w-[180px] font-mono')}
+              className={cn(INPUT, 'w-[24ch] font-mono')}
               placeholder="Conversation id"
               value={filters.conversationId}
               onChange={e => setFilters(f => ({ ...f, conversationId: e.target.value }))}
@@ -445,8 +445,8 @@ export default function AuditView({ frame }: AuditViewProps) {
             Tool
             <input
               type="text"
-              className={cn(INPUT, 'w-[150px] font-mono')}
-              placeholder="e.g. web_search"
+              className={cn(INPUT, 'w-[18ch] font-mono')}
+              placeholder="web_search"
               value={filters.tool}
               onChange={e => setFilters(f => ({ ...f, tool: e.target.value }))}
             />

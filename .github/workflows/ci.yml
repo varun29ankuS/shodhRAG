@@ -1685,9 +1685,11 @@ jobs:
                 && timeout -k 5 240 sudo -n coredumpctl dump "$qemu_pid" -o "$core_file" > /dev/null 2>&1; then
                 echo "== gdb"
                 timeout -k 5 300 sudo -n gdb -batch -nx \
-                  -iex "set solib-search-path $emulator_dir/lib64:$emulator_dir/lib64/gles_swiftshader:$emulator_dir/lib64/vulkan:$emulator_dir/lib64/qt/lib" \
-                  -ex "info registers rip rsp rbp rax rdi rsi" \
+                  -iex "set solib-search-path $emulator_dir/lib64:$emulator_dir/lib64/gles_angle:$emulator_dir/lib64/gles_swiftshader:$emulator_dir/lib64/vulkan:$emulator_dir/lib64/qt/lib" \
+                  -ex "info registers rip rsp rbp rax rcx rdi rsi" \
                   -ex "x/6i \$pc" \
+                  -ex "info symbol \$pc" \
+                  -ex "info files" \
                   -ex "bt 40" \
                   -ex "info sharedlibrary" \
                   -ex "thread apply all bt 12" \
@@ -2270,11 +2272,19 @@ jobs:
           # without a snapshot takes a few minutes on these runners, and a
           # boot not done in 10 minutes is a broken image or runner.
           emulator-boot-timeout: 600
-          # The action's default options, kept explicit, with its default
-          # renderer (-gpu swiftshader_indirect). -gpu guest bought nothing:
-          # its emulator's RenderThread segfaulted mid-tour too (run
-          # 43701191529), as swiftshader_indirect's did (run 43689345770).
-          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          # The action's default options, kept explicit, but not its default
+          # renderer. With -gpu swiftshader_indirect the emulator's
+          # RenderThread segfaulted mid-tour (runs 43689345770 and
+          # 45681343876), and so it did with -gpu guest (run 43701191529).
+          # The core of run 45681343876, read by gdb, shows where: the
+          # faulting instruction (a vector load, movdqu, from an address
+          # that is not mapped) is in no library of the process, in the
+          # middle of software rasterizing (the thread's stack holds pixel
+          # coordinates and floats), with the emulator's old GLES renderer
+          # loaded (lib64/gles_swiftshader). -gpu swangle_indirect draws
+          # GLES with ANGLE over SwiftShader's Vulkan (lib64/gles_angle of
+          # the same emulator build) instead, so none of that code runs.
+          emulator-options: -no-window -gpu swangle_indirect -no-snapshot -noaudio -no-boot-anim
           script: bash -euo pipefail -c "$LAUNCH_TEST"
 
       - name: Upload the launcher shots and launch recording

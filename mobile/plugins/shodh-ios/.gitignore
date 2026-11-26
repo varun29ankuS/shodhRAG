@@ -1,0 +1,5 @@
+# Tauri's Swift API, copied here by the build (tauri-plugin's build script).
+/.tauri
+# Swift's build folder and its resolved packages.
+/ios/.build
+/ios/Package.resolved

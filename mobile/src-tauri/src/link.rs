@@ -8,7 +8,6 @@
 //! computer's events as [`DESKTOP_EVENT`], and the connection's state as
 //! [`STATUS_EVENT`].
 
-use std::ffi::c_char;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -23,7 +22,7 @@ use shodh_link::phone::{self, SecretVault, DESKTOP_ENTRY, NODE_KEY_ENTRY};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::OnceCell;
 
-use crate::vault::KeystoreVault;
+use crate::vault::Vault;
 
 /// The connection's state changed (payload: [`Status`]).
 pub const STATUS_EVENT: &str = "link://status";
@@ -146,7 +145,7 @@ impl Link {
     async fn identity(&self) -> Result<&Identity, String> {
         self.identity
             .get_or_try_init(|| async {
-                let opened = blocking(KeystoreVault::open).await?;
+                let opened = blocking(Vault::open).await?;
                 let vault: Arc<dyn SecretVault> = Arc::new(opened);
                 let reader = vault.clone();
                 let key = blocking(move || phone::phone_key(reader.as_ref())).await?;
@@ -328,7 +327,7 @@ impl Link {
             return Err("The phone link works: there is nothing to start over.".to_string());
         }
         blocking(|| {
-            let vault = KeystoreVault::open()?;
+            let vault = Vault::open()?;
             vault.remove(DESKTOP_ENTRY)?;
             vault.remove(NODE_KEY_ENTRY)
         })
@@ -362,7 +361,9 @@ impl Link {
 }
 
 /// An Android system property's value ("" when it is not set).
+#[cfg(target_os = "android")]
 pub(crate) fn system_property(name: &std::ffi::CStr) -> String {
+    use std::ffi::c_char;
     let mut value: [c_char; libc::PROP_VALUE_MAX as usize] = [0; libc::PROP_VALUE_MAX as usize];
     // SAFETY: the name is NUL-terminated and the buffer has the
     // PROP_VALUE_MAX bytes the call may write.
@@ -373,12 +374,40 @@ pub(crate) fn system_property(name: &std::ffi::CStr) -> String {
 }
 
 /// The phone's model ("Pixel 8"), the name the computer lists it under.
+#[cfg(target_os = "android")]
 pub fn device_name() -> String {
     let name = system_property(c"ro.product.model");
     if name.is_empty() {
         "Android phone".to_string()
     } else {
         name
+    }
+}
+
+/// "iPhone" or "iPad", the name the computer lists it under. iOS gives an
+/// app the user's own name for the device only with an entitlement Apple
+/// grants case by case, so the kind of device is what there is: the start of
+/// its hardware name ("iPhone15,2", "iPad13,1"). A simulator's hardware is
+/// the Mac's, and it says which device it stands for in its environment.
+#[cfg(target_os = "ios")]
+pub fn device_name() -> String {
+    let hardware = std::env::var("SIMULATOR_MODEL_IDENTIFIER").unwrap_or_else(|_| {
+        // SAFETY: `uname` fills the zeroed struct it is given; `machine` is a
+        // NUL-terminated string inside it.
+        unsafe {
+            let mut name: libc::utsname = std::mem::zeroed();
+            if libc::uname(&mut name) != 0 {
+                return String::new();
+            }
+            std::ffi::CStr::from_ptr(name.machine.as_ptr())
+                .to_string_lossy()
+                .into_owned()
+        }
+    });
+    if hardware.starts_with("iPad") {
+        "iPad".to_string()
+    } else {
+        "iPhone".to_string()
     }
 }
 
@@ -445,10 +474,19 @@ pub async fn app_ready(screen: String, theme: String, link: State<'_, Link>) -> 
     link.ready(&screen, &theme).await
 }
 
-/// The system property a debug build reads its first screen from (CI's
-/// screenshots: `adb shell setprop debug.shodh.screen library`).
-#[cfg(debug_assertions)]
-const START_SCREEN_PROPERTY: &std::ffi::CStr = c"debug.shodh.screen";
+/// Where a debug build reads its first screen from (CI's screenshots). On
+/// Android a system property (`adb shell setprop debug.shodh.screen
+/// library`); on iPhone the app's environment (`SIMCTL_CHILD_SHODH_SCREEN=
+/// library xcrun simctl launch ...`).
+#[cfg(all(debug_assertions, target_os = "android"))]
+fn asked_screen() -> String {
+    system_property(c"debug.shodh.screen")
+}
+
+#[cfg(all(debug_assertions, target_os = "ios"))]
+fn asked_screen() -> String {
+    std::env::var("SHODH_SCREEN").unwrap_or_default()
+}
 
 /// The screen to open at. Only a debug build reads it: in a release build
 /// this is always `None`, and the app opens as it always does.
@@ -456,7 +494,7 @@ const START_SCREEN_PROPERTY: &std::ffi::CStr = c"debug.shodh.screen";
 pub fn start_screen() -> Option<String> {
     #[cfg(debug_assertions)]
     {
-        let screen = system_property(START_SCREEN_PROPERTY);
+        let screen = asked_screen();
         if is_screen_name(&screen) {
             tracing::info!("Shodh opens at the {screen} screen (debug build)");
             return Some(screen);

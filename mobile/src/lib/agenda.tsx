@@ -33,6 +33,7 @@ import { useLink } from './context';
 import type { CalendarChoice, Device } from './device';
 import type { Shim } from './invoke';
 import { errorText } from './link';
+import { SYSTEM } from './platform';
 import { useDevice } from './queue';
 import { useRemote } from './remote';
 
@@ -254,7 +255,7 @@ export function AgendaProvider({ children }: { children: ReactNode }) {
   const setChoice = useCallback(
     async (next: CalendarChoice) => {
       if (next.enabled && !(await device.calendar.access())) {
-        throw new Error('Shodh may not use this phone’s calendar. Allow it in Android’s settings for Shodh.');
+        throw new Error(`Shodh may not use this phone’s calendar. Allow it in ${SYSTEM}’s settings for Shodh.`);
       }
       setChoiceState(await device.calendar.choose(next));
     },

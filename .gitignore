@@ -40,6 +40,7 @@ combined_extraction.txt
 # Evaluation runs (private corpora, generated questions, reports, models)
 /.eval-local/
 
-# The phone app's generated Android project and capability schemas: CI
-# generates them (tauri android init) from mobile/src-tauri.
+# The phone app's generated Android and Xcode projects and capability
+# schemas: CI generates them (tauri android init, tauri ios init) from
+# mobile/src-tauri.
 /mobile/src-tauri/gen/

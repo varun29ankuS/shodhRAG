@@ -10,6 +10,7 @@ import { listen } from '@tauri-apps/api/event';
 import { tauriOutbox, type OutboxSource, type QueuedFile } from './outbox';
 import type { PhoneEvent } from './calsync';
 import type { Insets, SystemInsets } from './insets';
+import { PLUGIN } from './platform';
 
 /** What looking for the phone's update found (`update_check`). */
 export type UpdateCheck = { state: 'ready'; version: string; size: number } | { state: 'unavailable'; message: string };
@@ -19,12 +20,14 @@ export interface Updater {
   check(): Promise<UpdateCheck>;
   /**
    * Download it, verify it and hand it to Android's installer. False when
-   * Android first needs the user to allow Shodh to install updates.
+   * Android first needs the user to allow Shodh to install updates. (An
+   * iPhone is updated by TestFlight or the App Store: its check never says
+   * `ready`, so this is never offered there.)
    */
   install(): Promise<boolean>;
 }
 
-/** A file Android copied into the app's own storage, ready to send. */
+/** A file the phone copied into the app's own storage, ready to send. */
 export interface Picked {
   path: string;
   name: string;
@@ -67,7 +70,7 @@ export interface FileProgress {
 }
 
 export interface PhoneFiles {
-  /** Add: Android's file picker (nothing when the user went back). */
+  /** Add: the phone's file picker (nothing when the user went back). */
   pick(): Promise<Picked[]>;
   /** The camera: the photo taken, or null when the user went back. */
   takePhoto(): Promise<Picked | null>;
@@ -111,7 +114,7 @@ export type CalendarWrite =
   | { kind: 'delete'; calendarId: number; eventId: number };
 
 export interface PhoneCalendar {
-  /** Ask Android for the calendar permission; whether it was given. */
+  /** Ask the phone for the calendar permission; whether it was given. */
   access(): Promise<boolean>;
   list(): Promise<PhoneCalendarInfo[]>;
   choice(): Promise<CalendarChoice>;
@@ -146,8 +149,13 @@ export interface Device {
   files: PhoneFiles;
   calendar: PhoneCalendar;
   sealed: Sealed;
-  /** Android's status and navigation bars: light icons on the dark theme, dark icons on the light. */
-  systemBars(theme: 'light' | 'dark'): Promise<void>;
+  /**
+   * The phone's status bar (and Android's navigation bar): light icons on the
+   * dark theme, dark icons on the light. `followsPhone`: the theme shown is the
+   * phone's own, not one the user pinned (iOS draws its status bar for the
+   * window's own light or dark, which is pinned only when the theme is).
+   */
+  systemBars(theme: 'light' | 'dark', followsPhone?: boolean): Promise<void>;
   /** Where the status bar and the gesture bar cover the app (lib/insets.ts). */
   insets: SystemInsets;
   notifications: PhoneNotifications;
@@ -155,7 +163,11 @@ export interface Device {
   voice: PhoneVoice;
 }
 
-/** How the phone tells the user while the app is closed: never (the default), Stay connected, or UnifiedPush. */
+/**
+ * How the phone tells the user while the app is closed: never (the default),
+ * Stay connected (on iPhone, for the half minute iOS allows), or UnifiedPush
+ * (Android only).
+ */
 export type NotifyMode = 'off' | 'stay' | 'push';
 
 export interface PhoneNotifications {
@@ -173,7 +185,10 @@ export interface PhoneNotifications {
 export interface LockStatus {
   required: boolean;
   hasPin: boolean;
+  /** The user turned on unlocking by fingerprint or face. */
   biometric: boolean;
+  /** How this phone reads its user: Android's fingerprint, Face ID or Touch ID. */
+  biometry: 'fingerprint' | 'face' | 'touch';
   locked: boolean;
 }
 
@@ -187,8 +202,6 @@ export interface PhoneLock {
   /** Back on screen: whether it is locked again. */
   shown(): Promise<boolean>;
 }
-
-const PLUGIN = 'shodh-android';
 
 export const tauriFiles: PhoneFiles = {
   pick: () => invoke<Picked[]>('files_pick'),
@@ -233,7 +246,7 @@ export const tauriDevice: Device = {
     read: <T,>(name: SealedName) => invoke<T | null>('sealed_read', { name }),
     write: (name, value) => invoke<void>('sealed_write', { name, value }),
   },
-  systemBars: theme => invoke<void>('system_bars', { theme }),
+  systemBars: (theme, followsPhone) => invoke<void>('system_bars', { theme, followsPhone: followsPhone ?? false }),
   insets: {
     current: () => invoke<Insets>('system_insets'),
     onChanged: async handler => {

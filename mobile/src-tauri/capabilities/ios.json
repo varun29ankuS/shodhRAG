@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "ios",
+  "description": "On iPhone: listening to the events of Shodh's Swift plugin (what was opened with Shodh, a calendar change, the safe area). Nothing else of the plugin is open to the window.",
+  "windows": ["main"],
+  "platforms": ["iOS"],
+  "permissions": [
+    "shodh-ios:allow-register-listener",
+    "shodh-ios:allow-remove-listener"
+  ]
+}

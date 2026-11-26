@@ -1,6 +1,6 @@
 //! The phone's lock (`shodh_link::lock`), on by default: Shodh asks for the
-//! PIN, or the phone's fingerprint, when it opens and when it comes back after
-//! a minute away. While it is locked the app's Rust side refuses to call the
+//! PIN, or the phone's fingerprint (Face ID or Touch ID on iPhone), when it
+//! opens and when it comes back after a minute away. While it is locked the app's Rust side refuses to call the
 //! computer at all ([`LockGate::check`]), whatever the window asks.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,10 +13,16 @@ use tauri::{AppHandle, State};
 use tauri_plugin_biometric::{AuthOptions, BiometricExt};
 
 use crate::link::{blocking, now_ms};
-use crate::vault::KeystoreVault;
+use crate::vault::Vault;
 
 /// Away this long, and Shodh asks again.
 const AWAY: Duration = Duration::from_secs(60);
+
+/// What the phone reads the user by, in an error's words.
+#[cfg(target_os = "android")]
+const BIOMETRIC: &str = "The fingerprint";
+#[cfg(target_os = "ios")]
+const BIOMETRIC: &str = "Face ID or Touch ID";
 
 /// Whether the app is locked now.
 pub struct LockGate {
@@ -56,6 +62,46 @@ fn words(e: LockError) -> String {
     e.to_string()
 }
 
+/// How this phone reads its user, so the lock names it as the phone does.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Biometry {
+    /// Android's fingerprint reader.
+    #[cfg(target_os = "android")]
+    Fingerprint,
+    /// Face ID.
+    #[cfg(target_os = "ios")]
+    Face,
+    /// Touch ID.
+    #[cfg(target_os = "ios")]
+    Touch,
+}
+
+#[cfg(target_os = "android")]
+async fn biometry(_app: &AppHandle) -> Biometry {
+    Biometry::Fingerprint
+}
+
+/// Face ID or Touch ID: which one this iPhone or iPad has. A device whose
+/// answer cannot be read is named as one with a home button.
+#[cfg(target_os = "ios")]
+async fn biometry(app: &AppHandle) -> Biometry {
+    use tauri_plugin_biometric::BiometryType;
+    let handle = app.clone();
+    let kind = blocking(move || {
+        handle
+            .biometric()
+            .status()
+            .map(|status| status.biometry_type)
+            .map_err(|e| e.to_string())
+    })
+    .await;
+    match kind {
+        Ok(BiometryType::FaceID) => Biometry::Face,
+        _ => Biometry::Touch,
+    }
+}
+
 /// What the lock screen and Settings show.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -63,6 +109,7 @@ pub struct LockStatus {
     pub required: bool,
     pub has_pin: bool,
     pub biometric: bool,
+    pub biometry: Biometry,
     pub locked: bool,
 }
 
@@ -70,14 +117,14 @@ async fn with_lock<T: Send + 'static>(
     work: impl FnOnce(&Lock<'_>) -> Result<T, LockError> + Send + 'static,
 ) -> Result<T, String> {
     blocking(move || {
-        let vault = KeystoreVault::open()?;
+        let vault = Vault::open()?;
         work(&Lock::new(&vault)).map_err(words)
     })
     .await
 }
 
 #[tauri::command]
-pub async fn lock_status(gate: State<'_, LockGate>) -> Result<LockStatus, String> {
+pub async fn lock_status(app: AppHandle, gate: State<'_, LockGate>) -> Result<LockStatus, String> {
     let state = with_lock(|lock| lock.state()).await?;
     // A lock turned off opens at once.
     if !state.enabled {
@@ -87,6 +134,7 @@ pub async fn lock_status(gate: State<'_, LockGate>) -> Result<LockStatus, String
         required: state.enabled,
         has_pin: state.hash.is_some(),
         biometric: state.biometric,
+        biometry: biometry(&app).await,
         locked: gate.locked(),
     })
 }
@@ -134,7 +182,7 @@ pub async fn lock_unlock_biometric(
                     ..AuthOptions::default()
                 },
             )
-            .map_err(|e| format!("The fingerprint did not unlock Shodh: {e}"))
+            .map_err(|e| format!("{BIOMETRIC} did not unlock Shodh: {e}"))
     })
     .await?;
     gate.open();

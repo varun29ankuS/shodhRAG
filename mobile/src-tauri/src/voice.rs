@@ -1,11 +1,13 @@
-//! Voice (Kotlin, `Voice.kt`): tap to talk with the phone's own speech
-//! recognition (on the device when the phone has it), and answers read aloud
-//! by its text to speech. The words read aloud are the window's
-//! (mobile/src/lib/speech.ts: spoken citations from the citation metadata).
+//! Voice (Kotlin, `Voice.kt`; Swift, `Voice.swift`): tap to talk with the
+//! phone's own speech recognition (on the device when the phone has it), and
+//! answers read aloud by its text to speech. The words read aloud are the
+//! window's (mobile/src/lib/speech.ts: spoken citations from the citation
+//! metadata).
 
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
-use tauri_plugin_shodh_android::Native;
+
+use crate::native::Native;
 
 /// The longest text read aloud at once.
 const MAX_SPOKEN: usize = 20_000;

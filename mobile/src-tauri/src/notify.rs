@@ -1,31 +1,39 @@
 //! Notifications on the phone (Settings, Notifications), off by default:
 //!
 //! - **Off:** only while the app is open.
-//! - **Stay connected:** a foreground service keeps the link open, and the
-//!   link's own events (a step waiting, an answer finished) are told with a
-//!   content-free notification (`shodh_link::notify`).
-//! - **UnifiedPush:** the user's distributor app hands Shodh an endpoint, kept
-//!   in secure storage and given to the computer over the link; the computer
-//!   posts only a content-free word to it. The endpoint is never logged.
+//! - **Stay connected:** the link stays open while the app is not on screen,
+//!   and the link's own events (a step waiting, an answer finished) are told
+//!   with a content-free notification (`shodh_link::notify`). On Android a
+//!   foreground service keeps it open for as long as the user wants. iOS
+//!   gives an app that left the screen about half a minute and then
+//!   suspends it, so on iPhone it is that long (the window says so).
+//! - **UnifiedPush** (Android only; iOS has no such protocol): the user's
+//!   distributor app hands Shodh an endpoint, kept in secure storage and given
+//!   to the computer over the link; the computer posts only a content-free
+//!   word to it. The endpoint is never logged.
 //!
 //! The mode is kept sealed on the phone. Notifications are posted by the
-//! Kotlin plugin's `Notifier`, reached through JNI from any thread, so they
-//! work while the app's window is in the background.
+//! plugin's own code (Kotlin's `Notifier`, reached through JNI from any
+//! thread; Swift's `Notifier`), so they work while the app's window is in the
+//! background.
 
 use serde_json::{json, Value};
 use shodh_link::notify::{Kind, Mode};
-use shodh_link::phone::SecretVault;
 use tauri::{AppHandle, Manager, State};
-use tauri_plugin_shodh_android::Native;
 
-use crate::link::{blocking, Link};
+use crate::link::blocking;
+use crate::native::Native;
 use crate::store::Store;
-use crate::vault::KeystoreVault;
 
 const MODE_FILE: &str = "notifications.sealed";
 
-/// The vault entry of the push endpoint (a secret).
-const ENDPOINT_ENTRY: &str = "push-endpoint";
+/// What the user reads when the phone does not let Shodh notify.
+#[cfg(target_os = "android")]
+const NOT_ALLOWED: &str =
+    "Android does not let Shodh show notifications. Allow them in Android's settings for Shodh.";
+#[cfg(target_os = "ios")]
+const NOT_ALLOWED: &str =
+    "iOS does not let Shodh show notifications. Allow them in Settings, Notifications, Shodh.";
 
 fn native(app: &AppHandle) -> State<'_, Native<tauri::Wry>> {
     app.state::<Native<tauri::Wry>>()
@@ -49,12 +57,25 @@ pub async fn mode(app: &AppHandle) -> Mode {
 }
 
 /// Post a notification of `kind` through the plugin's Notifier (JNI).
-pub fn post(kind: Kind) {
+#[cfg(target_os = "android")]
+pub async fn post(_app: &AppHandle, kind: Kind) {
     if let Err(e) = post_jni(kind.word()) {
         tracing::warn!("A notification could not be shown: {e}");
     }
 }
 
+/// Post a notification of `kind` through the plugin's Notifier (Swift).
+#[cfg(target_os = "ios")]
+pub async fn post(app: &AppHandle, kind: Kind) {
+    if let Err(e) = native(app)
+        .call::<Value>("notify", json!({ "kind": kind.word() }))
+        .await
+    {
+        tracing::warn!("A notification could not be shown: {e}");
+    }
+}
+
+#[cfg(target_os = "android")]
 fn post_jni(kind: &str) -> Result<(), String> {
     use jni::objects::{JClass, JObject, JValue};
     let context = ndk_context::android_context();
@@ -103,38 +124,127 @@ pub async fn on_event(app: &AppHandle, name: &str, payload: &Value) {
         return;
     };
     if mode(app).await.notifies_from_link() {
-        post(kind);
+        post(app, kind).await;
     }
 }
 
-/// Start or stop what the mode needs: the service, the push registration.
+/// UnifiedPush, the Android protocol: the registration with the user's
+/// distributor app, and the endpoint it hands back.
+#[cfg(target_os = "android")]
+mod push {
+    use serde_json::{json, Value};
+    use shodh_link::notify::Mode;
+    use shodh_link::phone::SecretVault;
+    use tauri::{AppHandle, Manager};
+
+    use super::native;
+    use crate::link::{blocking, Link};
+    use crate::vault::Vault;
+
+    /// The vault entry of the push endpoint (a secret).
+    const ENDPOINT_ENTRY: &str = "push-endpoint";
+
+    /// Register with the chosen distributor, or drop the registration and
+    /// the endpoint, here and on the computer.
+    pub async fn apply(
+        app: &AppHandle,
+        mode: Mode,
+        distributor: Option<String>,
+    ) -> Result<(), String> {
+        if mode.registers_push() {
+            let distributor = distributor.ok_or("Choose the push app to use.")?;
+            let _: Value = native(app)
+                .call("pushRegister", json!({ "distributor": distributor }))
+                .await?;
+        } else {
+            let _: Value = native(app).call("pushUnregister", json!({})).await?;
+            blocking(|| Vault::open()?.remove(ENDPOINT_ENTRY)).await?;
+            // The computer forgets this phone's push address (when it can be reached now).
+            let link = app.state::<Link>();
+            if let Err(e) = link
+                .invoke("phone_push_register", json!({ "endpoint": null }))
+                .await
+            {
+                tracing::info!(
+                    "The computer was not told to forget the push address now: {}",
+                    e["message"]
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// The push apps on this phone.
+    pub async fn distributors(app: &AppHandle) -> Result<Vec<String>, String> {
+        let reply: Value = native(app).call("pushDistributors", json!({})).await?;
+        serde_json::from_value(reply["distributors"].clone()).map_err(|e| e.to_string())
+    }
+
+    /// Move a new endpoint from the distributor into secure storage, and give
+    /// the kept one to the computer. Whether the computer has it now.
+    pub async fn sync(app: &AppHandle) -> Result<bool, String> {
+        if !super::mode(app).await.registers_push() {
+            return Ok(false);
+        }
+        let reply: Value = native(app).call("pushTakeEndpoint", json!({})).await?;
+        if let Some(endpoint) = reply["endpoint"].as_str() {
+            let endpoint = shodh_link::notify::Endpoint::parse(endpoint).map_err(str::to_string)?;
+            let kept = endpoint.expose().to_string();
+            blocking(move || Vault::open()?.store(ENDPOINT_ENTRY, kept.as_bytes())).await?;
+        }
+        let Some(kept) = blocking(|| Vault::open()?.load(ENDPOINT_ENTRY)).await? else {
+            return Ok(false);
+        };
+        let endpoint =
+            String::from_utf8(kept).map_err(|_| "The push address is damaged.".to_string())?;
+        app.state::<Link>()
+            .invoke("phone_push_register", json!({ "endpoint": endpoint }))
+            .await
+            .map(|_| true)
+            .map_err(|e| {
+                e["message"]
+                    .as_str()
+                    .unwrap_or("The computer did not keep it.")
+                    .to_string()
+            })
+    }
+}
+
+/// iOS has no UnifiedPush: no distributor apps, nothing to register, and the
+/// mode cannot be chosen (the window does not offer it on iPhone).
+#[cfg(target_os = "ios")]
+mod push {
+    use shodh_link::notify::Mode;
+    use tauri::AppHandle;
+
+    pub async fn apply(
+        _app: &AppHandle,
+        mode: Mode,
+        _distributor: Option<String>,
+    ) -> Result<(), String> {
+        if mode.registers_push() {
+            return Err("Push apps are an Android feature. On iPhone, choose Briefly.".to_string());
+        }
+        Ok(())
+    }
+
+    pub async fn distributors(_app: &AppHandle) -> Result<Vec<String>, String> {
+        Ok(Vec::new())
+    }
+
+    pub async fn sync(_app: &AppHandle) -> Result<bool, String> {
+        Ok(false)
+    }
+}
+
+/// Start or stop what the mode needs: staying connected, the push registration.
 async fn apply(app: &AppHandle, mode: Mode, distributor: Option<String>) -> Result<(), String> {
     if mode.runs_service() {
         let _: Value = native(app).call("startConnection", json!({})).await?;
     } else {
         let _: Value = native(app).call("stopConnection", json!({})).await?;
     }
-    if mode.registers_push() {
-        let distributor = distributor.ok_or("Choose the push app to use.")?;
-        let _: Value = native(app)
-            .call("pushRegister", json!({ "distributor": distributor }))
-            .await?;
-    } else {
-        let _: Value = native(app).call("pushUnregister", json!({})).await?;
-        blocking(|| KeystoreVault::open()?.remove(ENDPOINT_ENTRY)).await?;
-        // The computer forgets this phone's push address (when it can be reached now).
-        let link = app.state::<Link>();
-        if let Err(e) = link
-            .invoke("phone_push_register", json!({ "endpoint": null }))
-            .await
-        {
-            tracing::info!(
-                "The computer was not told to forget the push address now: {}",
-                e["message"]
-            );
-        }
-    }
-    Ok(())
+    push::apply(app, mode, distributor).await
 }
 
 #[tauri::command]
@@ -153,7 +263,7 @@ pub async fn notifications_set(
     if mode != Mode::Off {
         let reply: Value = native(&app).call("notificationsAccess", json!({})).await?;
         if reply["granted"].as_bool() != Some(true) {
-            return Err("Android does not let Shodh show notifications. Allow them in Android's settings for Shodh.".into());
+            return Err(NOT_ALLOWED.into());
         }
     }
     apply(&app, mode, distributor).await?;
@@ -163,7 +273,7 @@ pub async fn notifications_set(
     Ok(mode)
 }
 
-/// At start: the service runs again if the user chose Stay connected.
+/// At start: Shodh stays connected again if the user chose Stay connected.
 pub async fn resume(app: &AppHandle) {
     let mode = mode(app).await;
     if mode.runs_service() {
@@ -179,37 +289,13 @@ pub async fn resume(app: &AppHandle) {
 /// The push apps on this phone.
 #[tauri::command]
 pub async fn push_distributors(app: AppHandle) -> Result<Vec<String>, String> {
-    let reply: Value = native(&app).call("pushDistributors", json!({})).await?;
-    serde_json::from_value(reply["distributors"].clone()).map_err(|e| e.to_string())
+    push::distributors(&app).await
 }
 
-/// Move a new endpoint from the distributor into secure storage, and give the
-/// kept one to the computer. Whether the computer has it now.
+/// Give the computer the push address. Whether the computer has it now.
 #[tauri::command]
-pub async fn push_sync(app: AppHandle, link: State<'_, Link>) -> Result<bool, String> {
-    if !mode(&app).await.registers_push() {
-        return Ok(false);
-    }
-    let reply: Value = native(&app).call("pushTakeEndpoint", json!({})).await?;
-    if let Some(endpoint) = reply["endpoint"].as_str() {
-        let endpoint = shodh_link::notify::Endpoint::parse(endpoint).map_err(str::to_string)?;
-        let kept = endpoint.expose().to_string();
-        blocking(move || KeystoreVault::open()?.store(ENDPOINT_ENTRY, kept.as_bytes())).await?;
-    }
-    let Some(kept) = blocking(|| KeystoreVault::open()?.load(ENDPOINT_ENTRY)).await? else {
-        return Ok(false);
-    };
-    let endpoint =
-        String::from_utf8(kept).map_err(|_| "The push address is damaged.".to_string())?;
-    link.invoke("phone_push_register", json!({ "endpoint": endpoint }))
-        .await
-        .map(|_| true)
-        .map_err(|e| {
-            e["message"]
-                .as_str()
-                .unwrap_or("The computer did not keep it.")
-                .to_string()
-        })
+pub async fn push_sync(app: AppHandle) -> Result<bool, String> {
+    push::sync(&app).await
 }
 
 /// Briefs before meetings: alarms at these instants (event id, Unix ms).

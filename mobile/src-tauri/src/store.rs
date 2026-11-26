@@ -1,8 +1,10 @@
 //! The phone's own files: the offline queue, the copy of the agenda, the
 //! calendar sync's state and the phone's settings, each sealed
-//! (`shodh_link::sealed`) with a data key kept in the Android Keystore-backed
-//! storage, in the app's private folder. Android's backup is off for the app,
-//! so none of it leaves the phone.
+//! (`shodh_link::sealed`) with a data key kept in the phone's secure storage
+//! (the Android Keystore's, the iOS Keychain), in the app's private folder.
+//! None of it leaves the phone: Android's backup is off for the app; on
+//! iPhone the folder is kept out of iCloud and computer backups, and the key
+//! never leaves the device (vault_ios.rs), so a copy would open nowhere else.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -11,7 +13,7 @@ use shodh_link::sealed::{DataKey, SealedFile};
 use tauri::{AppHandle, Manager};
 use tokio::sync::OnceCell;
 
-use crate::vault::KeystoreVault;
+use crate::vault::Vault;
 
 /// The folder and the key.
 pub struct Storage {
@@ -52,15 +54,26 @@ impl Store {
                     .app_cache_dir()
                     .map_err(|e| format!("This phone's storage for Shodh is unavailable: {e}"))?;
                 let key = crate::link::blocking(|| {
-                    let vault = KeystoreVault::open()?;
+                    let vault = Vault::open()?;
                     DataKey::kept_or_new(&vault)
                 })
                 .await?;
-                Ok::<_, String>(Arc::new(Storage {
-                    dir: base.join("shodh"),
-                    cache,
-                    key,
-                }))
+                let dir = base.join("shodh");
+                // iOS backs up an app's data unless a folder says otherwise.
+                // Not kept out is not a reason to stop: the files are sealed
+                // with a key no backup holds.
+                #[cfg(target_os = "ios")]
+                if let Err(e) = app
+                    .state::<crate::native::Native<tauri::Wry>>()
+                    .call::<serde_json::Value>(
+                        "keepOnPhone",
+                        serde_json::json!({ "folder": dir.display().to_string() }),
+                    )
+                    .await
+                {
+                    tracing::warn!("Shodh's folder was not kept out of this iPhone's backups: {e}");
+                }
+                Ok::<_, String>(Arc::new(Storage { dir, cache, key }))
             })
             .await
             .cloned()

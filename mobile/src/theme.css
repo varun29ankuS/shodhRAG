@@ -19,11 +19,12 @@
 
 :root {
   --font: 'Inter Variable', system-ui, sans-serif;
-  /* Where Android's status bar, gesture bar and a camera cutout cover the app,
-     which draws edge to edge under them. The WebView reports none of them
-     (env() is 0 in it), so the phone writes its own measure to <html> as
-     --system-inset-* (lib/insets.ts); a WebView that does report them is
-     taken at its word. Every edge of the app keeps these clear. */
+  /* Where the status bar, the gesture bar or home indicator and a camera
+     cutout cover the app, which draws edge to edge under them. Android's
+     WebView reports none of them (env() is 0 in it), so the phone writes its
+     own measure to <html> as --system-inset-* (lib/insets.ts); a WebView that
+     does report them (iOS's) is taken at its word. Every edge of the app
+     keeps these clear. */
   --inset-top: max(env(safe-area-inset-top, 0px), var(--system-inset-top, 0px));
   --inset-right: max(env(safe-area-inset-right, 0px), var(--system-inset-right, 0px));
   --inset-bottom: max(env(safe-area-inset-bottom, 0px), var(--system-inset-bottom, 0px));
@@ -1774,6 +1775,60 @@ strong {
 .pair textarea::placeholder {
   color: var(--label-2);
   opacity: 1;
+}
+
+/* Scanning the pairing code on iPhone. iOS's scanner draws the camera behind
+   the web view, so while it scans the page steps aside (html.scanning, set by
+   screens/Pair.tsx) and only this shows over the camera: the frame to aim
+   with, dimmed around, and a bar with Cancel. */
+html.scanning,
+html.scanning body {
+  background: transparent;
+}
+
+html.scanning #root {
+  visibility: hidden;
+}
+
+.scan {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--inset-top) var(--inset-right) calc(20px + var(--inset-bottom)) var(--inset-left);
+  overflow: hidden;
+}
+
+.scan-frame {
+  width: min(70vw, 280px);
+  aspect-ratio: 1;
+  margin: auto;
+  border: 3px solid var(--tint);
+  border-radius: 24px;
+  box-shadow: 0 0 0 100vmax var(--scrim);
+}
+
+.scan-bar {
+  position: relative;
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0 20px;
+  padding: 16px;
+  border-radius: 16px;
+  background: var(--cell);
+  color: var(--label);
+}
+
+.scan-hint {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  text-align: center;
 }
 
 .field-label {

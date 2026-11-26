@@ -791,7 +791,7 @@ describe('Open in Shodh', () => {
 describe('the lock', () => {
   it('the_lock_is_required_on_open_by_default', async () => {
     const phone = memoryDevice();
-    phone.lock.status_ = { required: true, hasPin: true, biometric: false, locked: true };
+    phone.lock.status_ = { required: true, hasPin: true, biometric: false, biometry: 'fingerprint', locked: true };
     source = fakeSource(connectedComputer(), CONNECTED);
     const { unmount } = render(<App source={source} device={phone} />);
     expect(await screen.findByRole('dialog', { name: 'Shodh is locked' })).toBeTruthy();
@@ -808,7 +808,7 @@ describe('the lock', () => {
 
   it('the first time, the PIN is set before anything opens', async () => {
     const phone = memoryDevice();
-    phone.lock.status_ = { required: true, hasPin: false, biometric: false, locked: true };
+    phone.lock.status_ = { required: true, hasPin: false, biometric: false, biometry: 'fingerprint', locked: true };
     source = fakeSource(connectedComputer(), CONNECTED);
     const { unmount } = render(<App source={source} device={phone} />);
     expect(await screen.findByRole('dialog', { name: 'Set a PIN' })).toBeTruthy();
@@ -826,7 +826,7 @@ describe('the lock', () => {
 
   it('an unpaired phone shows pairing, not the lock', async () => {
     const phone = memoryDevice();
-    phone.lock.status_ = { required: true, hasPin: false, biometric: false, locked: true };
+    phone.lock.status_ = { required: true, hasPin: false, biometric: false, biometry: 'fingerprint', locked: true };
     source = fakeSource(silentComputer(), { state: 'unpaired' });
     const { unmount } = render(<App source={source} device={phone} />);
     expect(await screen.findByRole('heading', { name: 'Pair with your computer' })).toBeTruthy();
@@ -1014,7 +1014,7 @@ describe('every control', () => {
     // The lock, both ways it shows.
     for (const [name, hasPin] of [['lock', true], ['set a PIN', false]] as const) {
       const locked = memoryDevice();
-      locked.lock.status_ = { required: true, hasPin, biometric: true, locked: true };
+      locked.lock.status_ = { required: true, hasPin, biometric: true, biometry: 'fingerprint', locked: true };
       source = fakeSource(connectedComputer(), CONNECTED);
       const lock = render(<App source={source} device={locked} />);
       await screen.findByRole('dialog', { name: hasPin ? 'Shodh is locked' : 'Set a PIN' });

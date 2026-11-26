@@ -1,12 +1,45 @@
-/** Pair with the computer: scan its code, or paste it. */
-import { useState } from 'react';
+/**
+ * Pair with the computer: scan its code, or paste it.
+ *
+ * Android's scanner is a screen of its own, with its own way back. iOS's
+ * draws the camera behind the page, so on iPhone the page steps aside while
+ * it scans (`html.scanning`, theme.css) and shows only the frame to aim with
+ * and Cancel.
+ */
+import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { motion } from 'framer-motion';
-import { ChevronLeft, ClipboardPaste, LoaderCircle, ScanQrCode, Settings, TriangleAlert } from 'lucide-react';
-import { checkPermissions, Format, openAppSettings, requestPermissions, scan } from '@tauri-apps/plugin-barcode-scanner';
+import { ChevronLeft, ClipboardPaste, LoaderCircle, ScanQrCode, Settings, TriangleAlert, X } from 'lucide-react';
+import { cancel, checkPermissions, Format, openAppSettings, requestPermissions, scan } from '@tauri-apps/plugin-barcode-scanner';
 import { useLink } from '../lib/context';
 import { errorText } from '../lib/link';
 import { viewIn } from '../lib/motion';
+import { IOS } from '../lib/platform';
 import logo from '../../src-tauri/icons/icon.png';
+
+/** What iOS's scanner answers when the user chose Cancel ("cancelled"). */
+const CANCELLED = /cancell?ed/i;
+
+/** iPhone only: the frame to aim with and Cancel, over the camera. */
+function Scanning({ onCancel }: { onCancel: () => void }) {
+  useEffect(() => {
+    document.documentElement.classList.add('scanning');
+    return () => document.documentElement.classList.remove('scanning');
+  }, []);
+  return createPortal(
+    <div className="scan" role="dialog" aria-modal="true" aria-label="Scan the code">
+      <div className="scan-frame" aria-hidden="true" />
+      <div className="scan-bar">
+        <p className="scan-hint">Point at the code</p>
+        <button type="button" className="button button-wide" onClick={onCancel}>
+          <X aria-hidden="true" className="icon-small" />
+          Cancel
+        </button>
+      </div>
+    </div>,
+    document.body,
+  );
+}
 
 export function Pair({ refusal, onClose }: { refusal: string | null; onClose: (() => void) | null }) {
   const { source } = useLink();
@@ -14,6 +47,7 @@ export function Pair({ refusal, onClose }: { refusal: string | null; onClose: ((
   const [busy, setBusy] = useState<'scan' | 'pair' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [cameraDenied, setCameraDenied] = useState(false);
+  const [aiming, setAiming] = useState(false);
 
   const pairWith = async (text: string) => {
     setBusy('pair');
@@ -40,10 +74,12 @@ export function Pair({ refusal, onClose }: { refusal: string | null; onClose: ((
         return;
       }
       setCameraDenied(false);
-      const scanned = await scan({ formats: [Format.QRCode], windowed: false });
+      setAiming(IOS);
+      const scanned = await scan({ formats: [Format.QRCode], windowed: IOS }).finally(() => setAiming(false));
       await pairWith(scanned.content);
     } catch (e) {
-      setError(errorText(e));
+      // Cancel is the user's own choice, not a problem to report.
+      if (!CANCELLED.test(errorText(e))) setError(errorText(e));
       setBusy(null);
     }
   };
@@ -123,6 +159,7 @@ export function Pair({ refusal, onClose }: { refusal: string | null; onClose: ((
           )}
         </div>
       </div>
+      {aiming && <Scanning onCancel={() => void cancel().catch(() => undefined)} />}
     </motion.div>
   );
 }

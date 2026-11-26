@@ -74,6 +74,12 @@ name: Release
 #                   checked (smoke); if that fails, the
 #                   release is turned back into a draft and the previous latest
 #                   restored.
+#   testflight      once the release is published: Shodh for iPhone (the same
+#                   mobile/), built from the released commit, signed and
+#                   uploaded to TestFlight (testflight.yml, which says what it
+#                   needs). It is not one of the release's files and nothing
+#                   waits for it. Without the Apple signing secrets it builds
+#                   nothing and says so in a notice; it does not fail.
 #
 # Recovery: a failed publishing run leaves a draft (or nothing) and no
 # published release. Fix the cause, then either
@@ -144,6 +150,23 @@ on:
       ANDROID_KEYSTORE_PASSWORD:
         required: false
       ANDROID_KEY_ALIAS:
+        required: false
+      # The Apple signing secrets (testflight.yml lists them): secrets of the
+      # `release` environment too, which testflight.yml's jobs read from
+      # there. Declared for the same reason; no caller passes them.
+      APPLE_API_KEY_ID:
+        required: false
+      APPLE_API_ISSUER:
+        required: false
+      APPLE_API_PRIVATE_KEY:
+        required: false
+      APPLE_DEVELOPMENT_TEAM:
+        required: false
+      IOS_CERTIFICATE:
+        required: false
+      IOS_CERTIFICATE_PASSWORD:
+        required: false
+      IOS_MOBILE_PROVISION:
         required: false
   workflow_dispatch:
     inputs:
@@ -2131,3 +2154,29 @@ jobs:
           fi
           echo "::error::${TAG} was published but failed the checks of what installed apps fetch, so it was turned back into a draft${PREVIOUS:+ and ${PREVIOUS} is the latest again}. If this step itself failed, run: gh api -X PATCH repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID} -F draft=true${restore:+ && ${restore}}"
           exit 1
+
+  # Shodh for iPhone, to TestFlight, once the release it belongs to is
+  # published: the phone link refuses a phone of another Shodh version, so an
+  # iPhone app is uploaded only for a version whose desktop app is out. A
+  # failure here shows red on the run and changes nothing of the published
+  # release; Run workflow on TestFlight (from master) uploads it again.
+  # Build-only runs never reach it (publish is skipped), and so never ask for
+  # a macOS runner or a secret: ci.yml's ios job builds and launches the
+  # iPhone app on every change that can affect it.
+  testflight:
+    name: TestFlight
+    needs: [plan, publish]
+    if: ${{ !cancelled() && needs.plan.outputs.publish == 'true' && needs.publish.result == 'success' }}
+    uses: ./.github/workflows/testflight.yml
+    permissions:
+      contents: read
+    with:
+      sha: ${{ needs.plan.outputs.sha }}
+    secrets:
+      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+      APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
+      IOS_CERTIFICATE: ${{ secrets.IOS_CERTIFICATE }}
+      IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+      IOS_MOBILE_PROVISION: ${{ secrets.IOS_MOBILE_PROVISION }}

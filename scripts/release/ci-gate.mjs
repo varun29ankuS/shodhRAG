@@ -39,7 +39,6 @@ export const REQUIRED_CHECKS = [
   'Frontend Typecheck + Tests',
   'Footprint budget',
   'Android build + launch',
-  'iOS build + launch',
   'CI gate',
 ];
 
@@ -50,7 +49,11 @@ export const REQUIRED_CHECKS = [
 // (decided 2026-11-15). It still runs, and shows red when it fails; it only
 // does not block. test/ci-gate.test.mjs fails when a name here is also
 // required, is not a ci.yml job, or is waited for by CI gate.
-export const NOT_REQUIRED_CHECKS = ['Android screenshot tour (not required)'];
+//
+// The iPhone app's build and launch, for now: the job is new and runs on
+// macOS runners that are short of capacity, so it does not hold a merge or a
+// release until it has passed on master about ten times (decided 2026-11-26).
+export const NOT_REQUIRED_CHECKS = ['Android screenshot tour (not required)', 'iOS build + launch (not required)'];
 
 // nightly.yml's aggregate on the same commit (its job "CI" calls ci.yml). It
 // is not required, since most commits are never measured by a nightly run,

@@ -83,8 +83,9 @@ env:
 # footprint build that pull requests compare against, and saves the caches
 # pull requests restore. CI gate is the one check that stands for all of
 # them: it fails when any job failed, was cancelled or was skipped without
-# the Changes job saying it was not needed. One job is not required, by CI
+# the Changes job saying it was not needed. Two jobs are not required, by CI
 # gate or by a release: the Android screenshot tour (android-tour, where the
+# reason is) and, for now, the iPhone app's build and launch (ios, where the
 # reason is).
 
 jobs:
@@ -2441,8 +2442,17 @@ jobs:
   #
   # No signing: a simulator build is signed to run locally, and reads no
   # secret. The signed build for iPhones is testflight.yml's.
+  #
+  # Not required, for now: CI gate does not wait for it, nor does a release
+  # (NOT_REQUIRED_CHECKS, scripts/release/ci-gate.mjs). The job is new, with
+  # no run history, on macOS runners that are short of capacity: until it
+  # has passed on master about ten times, a failure of the job itself (or a
+  # runner that never comes) must not hold a merge or a release (decided
+  # 2026-11-26). It has no continue-on-error: when it fails it is red; it
+  # only does not block. It still runs for every change that can affect the
+  # iPhone app (the Changes output, ios).
   ios:
-    name: iOS build + launch
+    name: iOS build + launch (not required)
     needs: changes
     if: needs.changes.outputs.ios == 'true'
     # Apple silicon: the simulator build is arm64 only (aarch64-apple-ios-sim).
@@ -2848,8 +2858,9 @@ jobs:
       checks: read
 
   # The one check that stands for every job above but the Android screenshot
-  # tour (not required; it is not in needs, so the gate neither waits for it
-  # nor reads its result): branch protection requires
+  # tour and the iPhone app's build and launch (not required; they are not in
+  # needs, so the gate neither waits for them nor reads their results):
+  # branch protection requires
   # it (with the fast checks). It is named CI gate, a name no workflow here
   # has used before, so no older check run on a commit can stand in for it.
   # It always runs, so it is never skipped (a skipped required check would
@@ -2865,7 +2876,7 @@ jobs:
   ci-gate:
     name: CI gate
     if: always()
-    needs: [changes, lint, scripts, fmt, check, test, test-app, macos, upgrade, eval-retrieval, eval-retrieval-int8, eval-recall, frontend, footprint, release-builds, android, ios]
+    needs: [changes, lint, scripts, fmt, check, test, test-app, macos, upgrade, eval-retrieval, eval-retrieval-int8, eval-recall, frontend, footprint, release-builds, android]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

@@ -6,19 +6,33 @@
  * app opens. Off: only while the app is open. Stay connected: a lasting
  * notification keeps Shodh connected. Push: the user's UnifiedPush app (such
  * as ntfy) wakes Shodh; the computer sends it only that one word.
+ *
+ * iPhone has neither: iOS suspends an app about half a minute after it
+ * leaves the screen, and has no UnifiedPush. There the choice is Off or
+ * Briefly (the same `stay` mode, for the time iOS allows), and it says so.
  */
 import { useEffect, useState } from 'react';
-import { Bell, BellOff, BellRing, Fingerprint, LockKeyhole } from 'lucide-react';
+import { Bell, BellOff, BellRing, Fingerprint, LockKeyhole, ScanFace } from 'lucide-react';
 import { useNote } from '../lib/context';
 import type { LockStatus, NotifyMode } from '../lib/device';
 import { errorText } from '../lib/link';
+import { BIOMETRY, IOS } from '../lib/platform';
 import { useDevice } from '../lib/queue';
 
-const MODES: ReadonlyArray<{ value: NotifyMode; label: string; words: string }> = [
+type ModeChoice = { value: NotifyMode; label: string; words: string };
+
+const ANDROID_MODES: readonly ModeChoice[] = [
   { value: 'off', label: 'Off', words: 'Shodh tells you only while it is open.' },
   { value: 'stay', label: 'Stay connected', words: 'A lasting notification keeps Shodh connected to your computer, so it can tell you when an approval or an answer waits. It uses a little more battery.' },
   { value: 'push', label: 'Push', words: 'Your UnifiedPush app (such as ntfy) wakes Shodh. Your computer sends it one word, never what it is about.' },
 ];
+
+const IOS_MODES: readonly ModeChoice[] = [
+  { value: 'off', label: 'Off', words: 'Shodh tells you only while it is open.' },
+  { value: 'stay', label: 'Briefly', words: 'Shodh stays connected for about 30 seconds after you leave it, and tells you if an approval or an answer arrives in that time. iOS then pauses it.' },
+];
+
+const MODES = IOS ? IOS_MODES : ANDROID_MODES;
 
 const ICONS = { off: BellOff, stay: BellRing, push: Bell } as const;
 
@@ -152,8 +166,8 @@ export function LockSettings() {
             {state.required ? 'Turn off' : 'Turn on'}
           </button>
           <button type="button" className="button" disabled={pin.length < 4 || !state.required} onClick={() => void change({ biometric: !state.biometric })}>
-            <Fingerprint aria-hidden="true" className="icon-small" />
-            {state.biometric ? 'No fingerprint' : 'Use fingerprint'}
+            {state.biometry === 'face' ? <ScanFace aria-hidden="true" className="icon-small" /> : <Fingerprint aria-hidden="true" className="icon-small" />}
+            {state.biometric ? BIOMETRY[state.biometry].off : BIOMETRY[state.biometry].on}
           </button>
         </div>
         <label htmlFor="lock-new" className="visually-hidden">

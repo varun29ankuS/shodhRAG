@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "android",
+  "description": "On Android: listening to the events of Shodh's Kotlin plugin (what was shared, a calendar change, a push, the system bars). Nothing else of the plugin is open to the window.",
+  "windows": ["main"],
+  "platforms": ["android"],
+  "permissions": [
+    "shodh-android:allow-register-listener",
+    "shodh-android:allow-remove-listener"
+  ]
+}

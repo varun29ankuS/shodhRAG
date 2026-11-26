@@ -66,7 +66,7 @@ export interface ThemeState {
  * choice is "phone". `pinned` opens it at a choice without saving it (CI's
  * screenshot tour, a debug build only); the user's own choice is kept.
  */
-export function useTheme(systemBars?: (theme: Theme) => Promise<void>, pinned?: ThemeChoice): ThemeState {
+export function useTheme(systemBars?: (theme: Theme, followsPhone: boolean) => Promise<void>, pinned?: ThemeChoice): ThemeState {
   const [choice, setChoice] = useState<ThemeChoice>(() => pinned ?? savedChoice());
   const [phone, setPhone] = useState<Theme>(phoneTheme);
 
@@ -80,11 +80,12 @@ export function useTheme(systemBars?: (theme: Theme) => Promise<void>, pinned?: 
   }, []);
 
   const theme = resolveTheme(choice, phone);
+  const followsPhone = choice === 'phone';
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    // Android's status and navigation bars follow: light icons on dark, dark icons on light.
-    systemBars?.(theme).catch(() => undefined);
-  }, [theme, systemBars]);
+    // The phone's status and navigation bars follow: light icons on dark, dark icons on light.
+    systemBars?.(theme, followsPhone).catch(() => undefined);
+  }, [theme, followsPhone, systemBars]);
 
   const choose = useCallback((next: ThemeChoice) => {
     saveChoice(next);

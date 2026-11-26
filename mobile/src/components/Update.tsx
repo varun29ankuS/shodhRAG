@@ -2,12 +2,14 @@
  * "Update Shodh on your phone": the computer runs a newer Shodh, so the phone
  * looks for the matching app in Shodh's release, and one tap downloads it,
  * checks it is Shodh's own (its signature and checksum) and hands it to
- * Android, which asks the user to confirm.
+ * Android, which asks the user to confirm. An iPhone is updated by TestFlight
+ * or the App Store: there the check says where, and nothing is downloaded.
  */
 import { useEffect, useState, type ReactNode } from 'react';
 import { Download, LoaderCircle, RefreshCw, ShieldCheck, TriangleAlert } from 'lucide-react';
 import type { UpdateCheck } from '../lib/device';
 import { errorText } from '../lib/link';
+import { SYSTEM } from '../lib/platform';
 import { useDevice } from '../lib/queue';
 import { version } from '../../package.json';
 
@@ -50,7 +52,7 @@ export function UpdatePanel({ desktop }: { desktop: string }) {
     case 'checking':
       body = (
         <p className="panel-text" role="status">
-          <LoaderCircle aria-hidden="true" className="icon-small spin" /> {`Looking for Shodh ${desktop} for Android…`}
+          <LoaderCircle aria-hidden="true" className="icon-small spin" /> {`Looking for Shodh ${desktop} for ${SYSTEM}…`}
         </p>
       );
       break;

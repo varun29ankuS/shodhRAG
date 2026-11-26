@@ -1,16 +1,25 @@
-//! Android's status and navigation bars follow the app's theme: light icons
-//! on the dark theme, dark icons on the light one, changed live with it. The
-//! app draws under them, so the page is told where they are
-//! ([`system_insets`]; changes come as the plugin's `insets` event).
+//! The phone's status bar (and Android's navigation bar) follows the app's
+//! theme: light icons on the dark theme, dark icons on the light one, changed
+//! live with it. The app draws under them, so the page is told where they
+//! are ([`system_insets`]; changes come as the plugin's `insets` event): on
+//! iPhone, the status bar or Dynamic Island and the home indicator.
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tauri::{AppHandle, Manager};
-use tauri_plugin_shodh_android::Native;
 
-/// Set the system bars for `theme` (`light` or `dark`).
+use crate::native::Native;
+
+/// Set the system bars for `theme` (`light` or `dark`). `follows_phone` says
+/// the app shows the phone's own theme rather than one the user pinned:
+/// Android's bars are set the same either way; iOS draws its status bar for
+/// the window's own light or dark, which is pinned only when the theme is.
 #[tauri::command]
-pub async fn system_bars(app: AppHandle, theme: String) -> Result<(), String> {
+pub async fn system_bars(
+    app: AppHandle,
+    theme: String,
+    follows_phone: Option<bool>,
+) -> Result<(), String> {
     let dark = match theme.as_str() {
         "dark" => true,
         "light" => false,
@@ -18,7 +27,10 @@ pub async fn system_bars(app: AppHandle, theme: String) -> Result<(), String> {
     };
     let _: serde_json::Value = app
         .state::<Native<tauri::Wry>>()
-        .call("setSystemBars", json!({ "dark": dark }))
+        .call(
+            "setSystemBars",
+            json!({ "dark": dark, "followsPhone": follows_phone.unwrap_or(false) }),
+        )
         .await?;
     Ok(())
 }

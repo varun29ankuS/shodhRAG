@@ -1,12 +1,10 @@
 {
   "$schema": "../gen/schemas/mobile-schema.json",
   "identifier": "default",
-  "description": "The app's one window: Tauri's core, scanning the pairing QR code, and listening to Shodh's Android events (what was shared, a calendar change, a push). Every native call goes through the app's own commands, which check it first.",
+  "description": "The app's one window, on both phones: Tauri's core and scanning the pairing QR code. Every native call goes through the app's own commands, which check it first.",
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "barcode-scanner:default",
-    "shodh-android:allow-register-listener",
-    "shodh-android:allow-remove-listener"
+    "barcode-scanner:default"
   ]
 }

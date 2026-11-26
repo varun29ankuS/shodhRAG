@@ -4347,10 +4347,13 @@ name = "shodh-mobile"
 version = "0.0.11"
 dependencies = [
  "android-native-keyring-store",
+ "core-foundation",
  "jni 0.21.1",
  "keyring-core",
  "libc",
  "ndk-context",
+ "security-framework",
+ "security-framework-sys",
  "serde",
  "serde_json",
  "shodh-link",
@@ -4359,6 +4362,7 @@ dependencies = [
  "tauri-plugin-barcode-scanner",
  "tauri-plugin-biometric",
  "tauri-plugin-shodh-android",
+ "tauri-plugin-shodh-ios",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -4932,6 +4936,16 @@ dependencies = [
 
 [[package]]
 name = "tauri-plugin-shodh-android"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
+]
+
+[[package]]
+name = "tauri-plugin-shodh-ios"
 version = "0.1.0"
 dependencies = [
  "serde",

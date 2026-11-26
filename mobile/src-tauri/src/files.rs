@@ -1,9 +1,9 @@
 //! Files from the phone to the computer: what the user picked (Add in the
-//! Library), photographed, or shared to Shodh from another app. Android's side
-//! (the Kotlin plugin) copies each into the app's cache (`outgoing/`) at once;
-//! from there the outbox keeps it until the computer has it, and it is sent
-//! in parts that resume (`shodh_link::transfer`). The computer decides: it
-//! applies every upload rule before a byte is sent.
+//! Library), photographed, or shared to Shodh from another app. The phone's
+//! side (the Kotlin or the Swift plugin) copies each into the app's cache
+//! (`outgoing/`) at once; from there the outbox keeps it until the computer
+//! has it, and it is sent in parts that resume (`shodh_link::transfer`). The
+//! computer decides: it applies every upload rule before a byte is sent.
 
 use std::path::{Path, PathBuf};
 
@@ -12,9 +12,9 @@ use serde_json::{json, Value};
 use shodh_link::outbox::QueuedFile;
 use shodh_link::transfer::{self, Offer, Peer, Purpose};
 use tauri::{AppHandle, Emitter, Manager, State};
-use tauri_plugin_shodh_android::Native;
 
 use crate::link::{blocking, Link};
+use crate::native::Native;
 use crate::store::Store;
 
 /// A file's progress on its way (payload: [`Progress`]).
@@ -28,7 +28,7 @@ struct Progress {
     size: u64,
 }
 
-/// A file Android copied into the app's cache.
+/// A file the phone's side copied into the app's cache.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Picked {
@@ -77,17 +77,39 @@ fn native(app: &AppHandle) -> State<'_, Native<tauri::Wry>> {
     app.state::<Native<tauri::Wry>>()
 }
 
-/// Add in the Library: Android's file picker; the copies of the chosen files.
+/// What the plugin is told when it is about to copy files. Android's side
+/// finds the app's cache itself (its context's `cacheDir`, the folder
+/// [`own_copy`] checks).
+#[cfg(target_os = "android")]
+async fn copies_go(_app: &AppHandle) -> Result<Value, String> {
+    Ok(json!({}))
+}
+
+/// What the plugin is told when it is about to copy files. iOS has no one
+/// cache folder an app and Tauri agree on by themselves, so the Swift side
+/// is given the folder [`own_copy`] checks, and makes every copy there.
+#[cfg(target_os = "ios")]
+async fn copies_go(app: &AppHandle) -> Result<Value, String> {
+    let storage = app.state::<Store>().get(app).await?;
+    let folder = storage.cache().join("outgoing");
+    Ok(json!({ "folder": folder.display().to_string() }))
+}
+
+/// Add in the Library: the phone's file picker; the copies of the chosen files.
 #[tauri::command]
 pub async fn files_pick(app: AppHandle) -> Result<Vec<Picked>, String> {
-    let reply: Value = native(&app).call("pickFiles", json!({})).await?;
+    let reply: Value = native(&app)
+        .call("pickFiles", copies_go(&app).await?)
+        .await?;
     serde_json::from_value(reply["files"].clone()).map_err(|e| e.to_string())
 }
 
 /// The camera: the photo taken, or `None` when the user went back.
 #[tauri::command]
 pub async fn photo_take(app: AppHandle) -> Result<Option<Picked>, String> {
-    let reply: Value = native(&app).call("takePhoto", json!({})).await?;
+    let reply: Value = native(&app)
+        .call("takePhoto", copies_go(&app).await?)
+        .await?;
     if reply.get("path").is_none() {
         return Ok(None);
     }
@@ -100,6 +122,40 @@ pub async fn photo_take(app: AppHandle) -> Result<Option<Picked>, String> {
 #[tauri::command]
 pub async fn incoming_take(app: AppHandle) -> Result<Value, String> {
     native(&app).call("takeIncoming", json!({})).await
+}
+
+/// The most links iOS hands over at once that are looked at (a share of
+/// more files than the Send sheet takes is cut to its limit by the plugin).
+#[cfg(target_os = "ios")]
+const MAX_OPENED: usize = 64;
+
+/// iOS opened the app with something: files from the share sheet or the
+/// Files app (each a `file://` link to iOS's copy in the app's Inbox), or
+/// "Open in Shodh" on one of Shodh's events in the phone's calendar
+/// (`shodh://event/<id>`). The Swift side copies the files into `outgoing/`
+/// and keeps what arrived until the window takes it ([`incoming_take`]), as
+/// Android's share activity does.
+#[cfg(target_os = "ios")]
+pub fn opened(app: &AppHandle, urls: Vec<tauri::Url>) {
+    let urls: Vec<String> = urls
+        .into_iter()
+        .take(MAX_OPENED)
+        .map(String::from)
+        .collect();
+    if urls.is_empty() {
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let delivered = async {
+            let mut payload = copies_go(&app).await?;
+            payload["urls"] = json!(urls);
+            native(&app).call::<Value>("deliverOpened", payload).await
+        };
+        if let Err(e) = delivered.await {
+            tracing::warn!("What was opened with Shodh could not be read: {e}");
+        }
+    });
 }
 
 /// The details the outbox keeps of a copy: its size and SHA-256.

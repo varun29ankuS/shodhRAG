@@ -11,8 +11,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use shodh_link::phone_calendar::CalendarChoice;
 use tauri::{AppHandle, Manager, State};
-use tauri_plugin_shodh_android::Native;
 
+use crate::native::Native;
 use crate::store::Store;
 
 const CHOICE_FILE: &str = "calendar-choice.sealed";
@@ -36,7 +36,7 @@ async fn choice(app: &AppHandle, store: &Store) -> Result<CalendarChoice, String
     .await
 }
 
-/// Ask Android for the calendar permission (once; the user can say no).
+/// Ask the phone for the calendar permission (once; the user can say no).
 #[tauri::command]
 pub async fn calendar_access(app: AppHandle) -> Result<bool, String> {
     let reply: Value = native(&app).call("calendarAccess", json!({})).await?;

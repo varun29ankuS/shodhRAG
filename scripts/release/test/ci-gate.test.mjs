@@ -121,7 +121,7 @@ test('a job skipped by the Changes job is decided by its own output', () => {
     filtered.push(job.id);
   }
   assert.deepEqual([...outputs].sort(), [...filtered].sort());
-  assert.deepEqual([...filtered].sort(), ['android', 'eval-recall', 'eval-retrieval', 'eval-retrieval-int8', 'footprint', 'release-builds', 'upgrade']);
+  assert.deepEqual([...filtered].sort(), ['android', 'eval-recall', 'eval-retrieval', 'eval-retrieval-int8', 'footprint', 'ios', 'release-builds', 'upgrade']);
   // The script's own list of the jobs it decides is the same set.
   const heavy = changes.block.match(/^ +heavy=\((.+)\)$/m)[1].split(/\s+/);
   assert.deepEqual([...heavy].sort(), [...filtered].sort());
@@ -141,7 +141,7 @@ function skipSets() {
         return vars[v];
       });
   }
-  for (const v of ['eval_skip', 'eval_keep', 'footprint_skip', 'release_skip', 'android_skip', 'android_keep']) assert.ok(vars[v], `ci.yml sets ${v}`);
+  for (const v of ['eval_skip', 'eval_keep', 'footprint_skip', 'release_skip', 'android_skip', 'android_keep', 'ios_skip', 'ios_keep']) assert.ok(vars[v], `ci.yml sets ${v}`);
   return Object.fromEntries(Object.entries(vars).map(([k, v]) => [k, new RegExp(v)]));
 }
 
@@ -233,7 +233,7 @@ test('no file built into the app is in the footprint or release-build skip sets'
 });
 
 test('the skip sets skip documentation and keep everything a build reads', () => {
-  const { eval_skip, eval_keep, footprint_skip, release_skip, android_skip } = skipSets();
+  const { eval_skip, eval_keep, footprint_skip, release_skip, android_skip, ios_skip } = skipSets();
   const documentation = [
     'README.md',
     'docs/adr/0001-agent-harness-omp.md',
@@ -245,7 +245,7 @@ test('the skip sets skip documentation and keep everything a build reads', () =>
     '.github/workflows/pages.yml',
   ];
   for (const docs of documentation) {
-    for (const skip of [eval_skip, footprint_skip, release_skip, android_skip]) assert.ok(skip.test(docs), docs);
+    for (const skip of [eval_skip, footprint_skip, release_skip, android_skip, ios_skip]) assert.ok(skip.test(docs), docs);
   }
   // Only the top-level site/ folder is the website.
   for (const path of ['app/site/index.html', 'crates/shodh-rag/site/x.rs', '.github/workflows/pages-yml']) {
@@ -360,6 +360,78 @@ test('the android job runs for the phone app and what it reads; a phone-only cha
   // The phone link is built into the desktop app too.
   assert.ok(!skippable('crates/shodh-link/src/client.rs', footprint_skip));
   assert.ok(!skippable('crates/shodh-link/src/client.rs', release_skip));
+});
+
+test('the ios job runs for the phone app and what it reads; each phone skips only the other phone’s own files', () => {
+  const { eval_skip, eval_keep, footprint_skip, release_skip, android_skip, android_keep, ios_skip, ios_keep } = skipSets();
+  // What both phones are built from.
+  const shared = [
+    'mobile/src/App.tsx',
+    'mobile/src/lib/platform.ts',
+    'mobile/tokens.ts',
+    'mobile/package-lock.json',
+    'mobile/src-tauri/src/link.rs',
+    'mobile/src-tauri/src/vault_ios.rs',
+    'mobile/src-tauri/src/vault_android.rs',
+    'mobile/src-tauri/Cargo.toml',
+    'mobile/src-tauri/Cargo.lock',
+    'mobile/src-tauri/tauri.conf.json',
+    'mobile/src-tauri/tauri.dev.conf.json',
+    // tauri-build parses every capability file, whatever its platforms.
+    'mobile/src-tauri/capabilities/default.json',
+    'mobile/src-tauri/capabilities/android.json',
+    'mobile/src-tauri/capabilities/ios.json',
+    // Cargo resolves every path dependency, whatever the target.
+    'mobile/plugins/shodh-ios/Cargo.toml',
+    'mobile/plugins/shodh-android/Cargo.toml',
+    'crates/shodh-link/src/client.rs',
+    'app/src/index.css',
+    'app/src/lib/contrast.ts',
+    'app/src/lib/viewTabs.ts',
+    'app/src/shared/ChatMessage.tsx',
+    'rust-toolchain.toml',
+    '.github/workflows/ci.yml',
+    '.github/workflows/nightly.yml',
+  ];
+  for (const path of shared) {
+    assert.ok(!skippable(path, ios_skip, ios_keep), `the ios job skips ${path}`);
+    assert.ok(!skippable(path, android_skip, android_keep), `the android job skips ${path}`);
+  }
+  const iosOnly = [
+    'mobile/plugins/shodh-ios/ios/Sources/ShodhPlugin.swift',
+    'mobile/plugins/shodh-ios/ios/Package.swift',
+    'mobile/plugins/shodh-ios/src/lib.rs',
+    'mobile/src-tauri/icons/ios/AppIcon-512@2x.png',
+    'mobile/src-tauri/Info.ios.plist',
+  ];
+  for (const path of iosOnly) {
+    assert.ok(!skippable(path, ios_skip, ios_keep), `the ios job skips ${path}`);
+    assert.ok(skippable(path, android_skip, android_keep), `the android job runs for ${path}`);
+  }
+  const androidOnly = [
+    'mobile/plugins/shodh-android/android/src/main/java/ShodhPlugin.kt',
+    'mobile/plugins/shodh-android/android/build.gradle.kts',
+    'mobile/plugins/shodh-android/src/lib.rs',
+    'mobile/src-tauri/icons/android/mipmap-hdpi/ic_launcher.png',
+    '.github/actions/android-apk-manifest/action.yml',
+    'scripts/release/android.mjs',
+  ];
+  for (const path of androidOnly) {
+    assert.ok(!skippable(path, android_skip, android_keep), `the android job skips ${path}`);
+    assert.ok(skippable(path, ios_skip, ios_keep), `the ios job runs for ${path}`);
+  }
+  // The desktop alone, and the TestFlight workflow (the signed build, not this job's).
+  for (const path of ['README.md', 'app/src/App-SplitView.tsx', 'crates/shodh-rag/src/search/hybrid.rs', 'Cargo.lock', 'scripts/release/verify.mjs', '.github/workflows/release.yml', '.github/workflows/testflight.yml']) {
+    assert.ok(skippable(path, ios_skip, ios_keep), `the ios job runs for ${path}`);
+    assert.ok(skippable(path, android_skip, android_keep), `the android job runs for ${path}`);
+  }
+  // The desktop's jobs never build the iPhone app's own files; the release
+  // builds read the TestFlight workflow release.yml calls.
+  for (const path of iosOnly) {
+    assert.ok(skippable(path, eval_skip, eval_keep), `the evals run for ${path}`);
+    assert.ok(skippable(path, footprint_skip), `Footprint budget runs for ${path}`);
+  }
+  assert.ok(!skippable('.github/workflows/testflight.yml', release_skip));
 });
 
 

@@ -263,7 +263,7 @@ export class MemoryCalendar implements PhoneCalendar {
 
 /** The lock in tests: the PIN is 482913; `status` says what it is now. */
 export class MemoryLock implements PhoneLock {
-  status_: LockStatus = { required: true, hasPin: true, biometric: false, locked: false };
+  status_: LockStatus = { required: true, hasPin: true, biometric: false, biometry: 'fingerprint', locked: false };
   pin = '482913';
   async status() {
     return { ...this.status_ };

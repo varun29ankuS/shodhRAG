@@ -2,11 +2,17 @@
 //! computer does all the work (search, models, the agent); the phone pairs
 //! with it once by QR code and then reaches it over the phone link
 //! (`shodh-link`: iroh, end-to-end encrypted, no Shodh server).
+//!
+//! One app for Android and iPhone. What each phone does its own way is behind
+//! one name here: its secure storage ([`vault`]: the Android Keystore, the iOS
+//! Keychain), its log ([`log`]), and its native glue ([`native`]: Kotlin in
+//! `plugins/shodh-android`, Swift in `plugins/shodh-ios`, the same commands).
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 compile_error!(
-    "Shodh's phone app is built for Android: its link key is kept with the Android Keystore \
-     (vault.rs). Build it with `npm run tauri android build`."
+    "Shodh's phone app is built for Android and iPhone: its link key is kept with the Android \
+     Keystore or the iOS Keychain (vault_android.rs, vault_ios.rs). Build it with \
+     `npm run tauri android build` or `npm run tauri ios build`."
 );
 
 mod bars;
@@ -14,15 +20,31 @@ mod calendar;
 mod files;
 mod link;
 mod lock;
-mod logcat;
+mod log;
 mod notify;
 mod queue;
 mod store;
-#[cfg(debug_assertions)]
+// CI's screenshot tour is driven through Android's system properties.
+#[cfg(all(debug_assertions, target_os = "android"))]
 mod tour;
+#[cfg(target_os = "android")]
 mod update;
+#[cfg(target_os = "ios")]
+#[path = "update_ios.rs"]
+mod update;
+#[cfg(target_os = "android")]
+#[path = "vault_android.rs"]
+mod vault;
+#[cfg(target_os = "ios")]
+#[path = "vault_ios.rs"]
 mod vault;
 mod voice;
+
+/// The phone's native glue: the same commands, in Kotlin or in Swift.
+#[cfg(target_os = "android")]
+pub(crate) use tauri_plugin_shodh_android as native;
+#[cfg(target_os = "ios")]
+pub(crate) use tauri_plugin_shodh_ios as native;
 
 use tauri::Manager;
 
@@ -51,11 +73,11 @@ const _: () = assert!(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    logcat::init();
+    log::init();
     tracing::info!("Shodh {} is starting", env!("CARGO_PKG_VERSION"));
-    let result = tauri::Builder::default()
+    let built = tauri::Builder::default()
         .plugin(tauri_plugin_barcode_scanner::init())
-        .plugin(tauri_plugin_shodh_android::init())
+        .plugin(native::init())
         .plugin(tauri_plugin_biometric::init())
         .manage(lock::LockGate::default())
         .manage(link::Link::new(link::device_name()))
@@ -64,7 +86,7 @@ pub fn run() {
         .manage(update::Updates::default())
         .setup(|app| {
             // CI's screenshot tour (tour.rs): a debug build only.
-            #[cfg(debug_assertions)]
+            #[cfg(all(debug_assertions, target_os = "android"))]
             tour::follow(app.handle().clone());
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -122,8 +144,17 @@ pub fn run() {
             voice::voice_speak,
             voice::voice_stop,
         ])
-        .run(tauri::generate_context!());
-    if let Err(e) = result {
-        tracing::error!("Shodh could not start: {e}");
+        .build(tauri::generate_context!());
+    match built {
+        // iOS hands the app what was opened with it (a file from the share
+        // sheet or Files, one of Shodh's calendar links) as an event of the
+        // run loop; Android's share sheet reaches the Kotlin plugin instead.
+        Ok(app) => app.run(|_handle, _event| {
+            #[cfg(target_os = "ios")]
+            if let tauri::RunEvent::Opened { urls } = _event {
+                files::opened(_handle, urls);
+            }
+        }),
+        Err(e) => tracing::error!("Shodh could not start: {e}"),
     }
 }

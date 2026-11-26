@@ -1,14 +1,15 @@
 /**
  * The lock, on by default: Shodh opens with the PIN (or the phone's
- * fingerprint, when the user turned it on), so a lost or borrowed phone
+ * fingerprint, Face ID or Touch ID, when the user turned it on), so a lost or borrowed phone
  * cannot ask the user's computer anything. The first time, the user sets the
  * PIN. Five wrong PINs and it waits 30 seconds (the app's Rust side counts,
  * and refuses every call to the computer while it is locked).
  */
 import { useState, type FormEvent } from 'react';
-import { Fingerprint, LockKeyhole } from 'lucide-react';
+import { Fingerprint, LockKeyhole, ScanFace } from 'lucide-react';
 import type { LockStatus } from '../lib/device';
 import { errorText } from '../lib/link';
+import { BIOMETRY } from '../lib/platform';
 import { useDevice } from '../lib/queue';
 
 export function LockScreen({ status, onOpen }: { status: LockStatus; onOpen: () => void }) {
@@ -76,8 +77,8 @@ export function LockScreen({ status, onOpen }: { status: LockStatus; onOpen: () 
       </form>
       {!setting && status.biometric && (
         <button type="button" className="button button-wide" onClick={fingerprint}>
-          <Fingerprint aria-hidden="true" className="icon-small" />
-          Use your fingerprint
+          {status.biometry === 'face' ? <ScanFace aria-hidden="true" className="icon-small" /> : <Fingerprint aria-hidden="true" className="icon-small" />}
+          {BIOMETRY[status.biometry].unlock}
         </button>
       )}
       {error && (

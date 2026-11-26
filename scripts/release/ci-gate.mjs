@@ -39,6 +39,7 @@ export const REQUIRED_CHECKS = [
   'Frontend Typecheck + Tests',
   'Footprint budget',
   'Android build + launch',
+  'iOS build + launch',
   'CI gate',
 ];
 

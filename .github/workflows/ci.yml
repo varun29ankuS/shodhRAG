@@ -62,7 +62,7 @@ env:
 # With the two search-model entries (0.55 GB each), Gradle's two (0.41 GB
 # for the debug build, about as much for release.yml's release build) and
 # the small npm and ONNX Runtime ones, about 9 GB. Check, upgrade and the
-# Android builds keep no Rust entry: their cold builds fit their limits
+# phone app's builds (Android and iOS) keep no Rust entry: their cold builds fit their limits
 # (noted per job) and their entries would push the total over 10 GB again.
 # After a Cargo.lock change the old entries stay until evicted, as the least
 # recently used, so they go first. A new rust-cache use that saves must fit
@@ -72,8 +72,9 @@ env:
 # Library store (0.0.10 upgrade, ANN recall), Retrieval eval, Retrieval eval
 # (int8, Apple silicon), Footprint budget, the release builds (release.yml:
 # the Windows and macOS installers, built and verified as a release would
-# be, without publishing) and the Android phone
-# app (its debug APK, launched on an emulator) are skipped when every
+# be, without publishing), the Android phone
+# app (its debug APK, launched on an emulator) and the iPhone app (its debug
+# build, launched on a simulator) are skipped when every
 # changed file is in their known-irrelevant set (the Changes job; an unknown
 # or new path always runs them). Every other job runs on every pull request.
 # Pushes to master, release pull requests (release/*) and the nightly run
@@ -107,6 +108,7 @@ jobs:
       footprint: ${{ steps.filter.outputs.footprint }}
       release-builds: ${{ steps.filter.outputs.release-builds }}
       android: ${{ steps.filter.outputs.android }}
+      ios: ${{ steps.filter.outputs.ios }}
       upgrade: ${{ steps.filter.outputs.upgrade }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -121,7 +123,7 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          heavy=(eval-retrieval eval-retrieval-int8 eval-recall footprint release-builds android upgrade)
+          heavy=(eval-retrieval eval-retrieval-int8 eval-recall footprint release-builds android ios upgrade)
           run_all() {
             for job in "${heavy[@]}"; do echo "$job=true" >> "$GITHUB_OUTPUT"; done
             echo "$1" | tee -a "$GITHUB_STEP_SUMMARY"
@@ -193,8 +195,21 @@ jobs:
           # the desktop, its crates, its Cargo workspace files and its CI
           # helpers are skippable. Of the release scripts it runs one, the
           # debug-only code check (scripts/release/android.mjs).
-          android_skip="$docs|$release_files|^(app/|crates/shodh-rag/|crates/shodh-eval/|crates/shodh-ontology/|crates/sandbox-probe/|Cargo\.toml$|Cargo\.lock$|scripts/ci/|scripts/measure-footprint\.ps1$|\.github/actions/onnxruntime/)"
+          # Nor does it read the iPhone app's own files: the Swift plugin's
+          # sources (its Cargo.toml is read: Cargo resolves every path
+          # dependency, whatever the target), its icons, its Info.plist and
+          # its TestFlight workflow. Both phones' capability files are read
+          # by every build of the app (tauri-build parses them all).
+          phone_skip="$docs|$release_files|^(app/|crates/shodh-rag/|crates/shodh-eval/|crates/shodh-ontology/|crates/sandbox-probe/|Cargo\.toml$|Cargo\.lock$|scripts/ci/|scripts/measure-footprint\.ps1$|\.github/actions/onnxruntime/)"
+          android_skip="$phone_skip|^(mobile/plugins/shodh-ios/ios/|mobile/plugins/shodh-ios/src/|mobile/src-tauri/icons/ios/|mobile/src-tauri/Info\.ios\.plist$|\.github/workflows/testflight\.yml$)"
           android_keep='^(app/src/shared/|app/src/index\.css$|app/src/lib/contrast\.ts$|app/src/lib/viewTabs\.ts$|scripts/release/android\.mjs$)'
+          # The iPhone app (ios job) is the same mobile/ with the same crates
+          # and the same desktop files, built for the simulator. It reads
+          # none of Android's own files (the Kotlin plugin's sources, the
+          # launcher icons, the manifest checks, the debug-only code check),
+          # and no release script.
+          ios_skip="$phone_skip|^(mobile/plugins/shodh-android/android/|mobile/plugins/shodh-android/src/|mobile/src-tauri/icons/android/|\.github/actions/android-apk-manifest/|\.github/workflows/testflight\.yml$)"
+          ios_keep='^(app/src/shared/|app/src/index\.css$|app/src/lib/contrast\.ts$|app/src/lib/viewTabs\.ts$)'
 
           decide() {
             local job=$1 skip=$2 keep=$3 f
@@ -217,6 +232,7 @@ jobs:
           decide footprint "$footprint_skip" ''
           decide release-builds "$release_skip" ''
           decide android "$android_skip" "$android_keep"
+          decide ios "$ios_skip" "$ios_keep"
           # The upgrade test builds shodh-rag only (0.0.10's from its tag, which
           # no change here alters, and this tree's library tests), like the evals.
           decide upgrade "$eval_skip" "$eval_keep"
@@ -2405,6 +2421,415 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
+  # Shodh for iPhone (mobile/, the same app as Android's): a debug build for
+  # the iOS Simulator, then that app launched on a simulator as a tester opens
+  # it (the_app_reaches_its_pair_screen): installed, started, its pair screen
+  # reached, the page told where the status bar and the home indicator are,
+  # and still running 15 s later with no panic. Ready is the app's own log
+  # line (link.rs), written once the window has shown its first screen, the
+  # link's key was read from the iOS Keychain (made on this first start) and
+  # the link's iroh endpoint is bound. Then its main screens, each in light
+  # and dark, as pictures for review (ios-screens); each must report ready for
+  # the screen asked for, in the phone's theme. The Xcode project (gen/apple)
+  # is generated here by the pinned Tauri CLI from mobile/src-tauri; it is not
+  # committed. The phone app's own tests, type check and formatting run in
+  # the Android job, on the same sources.
+  #
+  # Unlike Android's emulator, relaunching the app for each picture is safe
+  # on the simulator, so the pictures need no tour inside the app: a debug
+  # build opens at the screen its environment names (SHODH_SCREEN, link.rs).
+  #
+  # No signing: a simulator build is signed to run locally, and reads no
+  # secret. The signed build for iPhones is testflight.yml's.
+  ios:
+    name: iOS build + launch
+    needs: changes
+    if: needs.changes.outputs.ios == 'true'
+    # Apple silicon: the simulator build is arm64 only (aarch64-apple-ios-sim).
+    runs-on: macos-latest
+    # This job has no run history yet. 90 minutes bounds a cold run, as the
+    # Android job's does: no Rust cache (see the cache budget at the top),
+    # one iOS target, the Swift plugin, Xcode's build and archive, a
+    # simulator boot and 18 launches.
+    timeout-minutes: 90
+    env:
+      # The workflow's -crt-static is for the desktop's builds.
+      RUSTFLAGS: ""
+      # What rust-cache sets for the jobs that use it.
+      CARGO_INCREMENTAL: 0
+      # Test and dev builds are their own app (com.shodhrag.mobile.dev,
+      # mobile/src-tauri/tauri.dev.conf.json), as on Android.
+      IOS_BUNDLE: com.shodhrag.mobile.dev
+      # The oldest iOS the app runs on (bundle > iOS > minimumSystemVersion
+      # in mobile/src-tauri/tauri.conf.json): what the Swift plugin is built
+      # for when Clippy builds it outside Xcode, which sets it for the app.
+      IPHONEOS_DEPLOYMENT_TARGET: '14.0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: 22
+          package-manager-cache: false
+
+      - name: Install the phone app's dependencies
+        working-directory: mobile
+        run: npm ci
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # master, 2026-10-16
+        with:
+          toolchain: 1.97.1  # keep in sync with rust-toolchain.toml
+          targets: aarch64-apple-ios-sim
+          components: clippy
+
+      - name: Xcode and the simulators on this runner
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcrun simctl list runtimes
+          {
+            echo '### iOS'
+            echo
+            echo "- $(xcodebuild -version | tr '\n' ' ')on $(sw_vers -productName) $(sw_vers -productVersion) ($(uname -m))"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The Tauri CLI writes the Xcode project with XcodeGen.
+      - name: Install XcodeGen
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: 1
+          HOMEBREW_NO_INSTALL_CLEANUP: 1
+          HOMEBREW_NO_ENV_HINTS: 1
+        run: |
+          set -euo pipefail
+          command -v xcodegen >/dev/null || brew install xcodegen
+          xcodegen --version
+
+      - name: Generate the Xcode project
+        working-directory: mobile
+        run: |
+          set -euo pipefail
+          # Test builds are com.shodhrag.mobile.dev (tauri.dev.conf.json),
+          # never the real app's identifier. The one Rust target this job
+          # builds is installed above.
+          npx tauri ios init --ci --skip-targets-install --config src-tauri/tauri.dev.conf.json
+          # The elephant app icons (tauri icon, from the desktop's logo, on
+          # white) replace the template's, under the names its asset
+          # catalog lists.
+          icons=src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset
+          test -f "$icons/Contents.json" || { echo "::error::The generated project has no app icon set at $icons"; exit 1; }
+          for icon in src-tauri/icons/ios/*.png; do
+            name=$(basename "$icon")
+            grep -qF "\"$name\"" "$icons/Contents.json" || { echo "::error::The asset catalog does not list $name"; exit 1; }
+            cp "$icon" "$icons/$name"
+          done
+
+      # Every warning fails, Clippy's included, as for Android. --locked: a
+      # Cargo.lock that does not match the manifests fails. This also builds
+      # the Swift plugin (its build script), so a Swift error shows here.
+      - name: Clippy (phone app, iOS)
+        run: cargo clippy --manifest-path mobile/src-tauri/Cargo.toml --target aarch64-apple-ios-sim --locked -- -D warnings
+
+      - name: Build the debug app for the simulator
+        working-directory: mobile
+        run: |
+          set -euo pipefail
+          start=$(date +%s)
+          npx tauri ios build --debug --target aarch64-sim --config src-tauri/tauri.dev.conf.json
+          seconds=$(( $(date +%s) - start ))
+          found=$(find src-tauri/gen/apple/build -maxdepth 2 -name '*.app' -type d)
+          count=$(printf '%s\n' "$found" | grep -c . || true)
+          if [ "$count" -ne 1 ]; then
+            echo "::error::Expected one app, found $count: $found"
+            exit 1
+          fi
+          app="$PWD/$found"
+          plist="$app/Info.plist"
+          bundle=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist")
+          if [ "$bundle" != "$IOS_BUNDLE" ]; then
+            echo "::error::The app is $bundle, not the test build's $IOS_BUNDLE"
+            exit 1
+          fi
+          executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$plist")
+          archs=$(lipo -archs "$app/$executable")
+          if [ "$archs" != arm64 ]; then
+            echo "::error::The app's binary is for $archs, not arm64"
+            exit 1
+          fi
+          # What iOS shows when it first asks for each permission, and what
+          # the app is opened with (mobile/src-tauri/Info.ios.plist): iOS
+          # ends an app that asks without a usage text.
+          for key in NSCameraUsageDescription NSFaceIDUsageDescription NSMicrophoneUsageDescription NSSpeechRecognitionUsageDescription NSCalendarsUsageDescription NSCalendarsFullAccessUsageDescription NSLocalNetworkUsageDescription; do
+            text=$(/usr/libexec/PlistBuddy -c "Print :$key" "$plist" 2>/dev/null || true)
+            if [ -z "$text" ]; then
+              echo "::error::The app's Info.plist has no $key"
+              exit 1
+            fi
+          done
+          scheme=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleURLTypes:0:CFBundleURLSchemes:0' "$plist" 2>/dev/null || true)
+          if [ "$scheme" != shodh ]; then
+            echo "::error::The app does not open shodh:// links (its scheme: ${scheme:-none})"
+            exit 1
+          fi
+          in_place=$(/usr/libexec/PlistBuddy -c 'Print :LSSupportsOpeningDocumentsInPlace' "$plist" 2>/dev/null || true)
+          types=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDocumentTypes:0:LSItemContentTypes' "$plist" 2>/dev/null || true)
+          if [ "$in_place" != false ] || ! grep -q 'public.data' <<< "$types"; then
+            echo "::error::The share sheet does not offer the app files as copies (in place: ${in_place:-unset}; types: ${types:-none})"
+            exit 1
+          fi
+          minimum=$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$plist")
+          {
+            echo "APP=$app"
+            echo "APP_EXECUTABLE=$executable"
+          } >> "$GITHUB_ENV"
+          echo "- debug app \`$(basename "$app")\` ($bundle, $archs, iOS $minimum or later): $(du -sh "$app" | cut -f1), built in ${seconds} s" >> "$GITHUB_STEP_SUMMARY"
+
+      # A simulator build runs on any Apple silicon Mac with Xcode: drag it
+      # onto a booted simulator, or `xcrun simctl install booted Shodh.app`.
+      - name: Pack the app
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/ios-app"
+          ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/ios-app/Shodh-simulator.zip"
+
+      - name: Upload the simulator app
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: shodh-ios-simulator-app
+          path: ${{ runner.temp }}/ios-app/Shodh-simulator.zip
+          retention-days: 14
+          if-no-files-found: error
+
+      # macOS has no `timeout`: every wait in the script is a bounded loop,
+      # and the step's limit is the backstop for the simulator's own boot.
+      - name: Launch it on a simulator (the_app_reaches_its_pair_screen) and take its screens
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/ios-launch"
+          screens="$RUNNER_TEMP/ios-screens"
+          mkdir -p "$evidence" "$screens"
+
+          # An iPhone with a home indicator (not an SE) on the newest iOS
+          # this runner's Xcode has: the newest runtime's first Pro, else its
+          # first iPhone that is not an SE.
+          xcrun simctl list devices available --json > "$evidence/devices.json"
+          device=$(jq -r '
+            [.devices | to_entries[]
+              | select(.key | test("SimRuntime\\.iOS-[0-9]+-[0-9]+$"))
+              | {version: (.key | capture("iOS-(?<major>[0-9]+)-(?<minor>[0-9]+)$") | [(.major | tonumber), (.minor | tonumber)]),
+                 phones: [.value[] | select(.isAvailable and (.name | test("^iPhone")) and (.name | test("SE") | not))]}
+              | select(.phones | length > 0)]
+            | sort_by(.version) | last
+            | if . == null then empty else
+                (([.phones[] | select(.name | test("Pro$"))] + .phones)[0]) as $phone
+                | [$phone.udid, $phone.name, (.version | map(tostring) | join("."))] | @tsv
+              end' "$evidence/devices.json")
+          if [ -z "$device" ]; then
+            echo "::error::This runner has no iPhone simulator with a home indicator"
+            xcrun simctl list devices available
+            exit 1
+          fi
+          IFS=$'\t' read -r udid phone ios <<< "$device"
+          echo "The simulator: $phone, iOS $ios ($udid)"
+
+          start=$(date +%s)
+          xcrun simctl boot "$udid"
+          xcrun simctl bootstatus "$udid" -b
+          booted=$(( $(date +%s) - start ))
+          # The phone starts in light mode, set here so the first start's
+          # theme is known.
+          xcrun simctl ui "$udid" appearance light
+
+          # The app's log, streamed to the runner from before its first
+          # start: every line of the app's process (its NSLog lines are the
+          # app's own log, log.rs).
+          xcrun simctl spawn "$udid" log stream --level info --style compact \
+            --predicate "process == \"$APP_EXECUTABLE\"" > "$evidence/log.txt" 2>&1 &
+          log_stream=$!
+          on_exit() {
+            local status=$?
+            kill "$log_stream" 2>/dev/null || true
+            if [ "$status" -ne 0 ]; then
+              echo "::group::The app's log (all of it is in the ios-launch-evidence artifact)"
+              grep -E 'Shodh|panicked|error' "$evidence/log.txt" | tail -n 80 || true
+              echo "::endgroup::"
+              xcrun simctl io "$udid" screenshot "$screens/at-failure.png" > /dev/null 2>&1 || true
+              # A crash of the app leaves a report here.
+              find "$HOME/Library/Logs/DiagnosticReports" -name "${APP_EXECUTABLE}*" -newer "$evidence/devices.json" -exec cp {} "$evidence/" \; 2>/dev/null || true
+            fi
+            xcrun simctl shutdown "$udid" > /dev/null 2>&1 || true
+          }
+          trap on_exit EXIT
+          # The stream is listening before the app starts: its header line.
+          waited=0
+          until [ -s "$evidence/log.txt" ]; do
+            if [ "$waited" -ge 30 ]; then
+              echo "::error::The simulator's log stream wrote nothing within 30 s"
+              exit 1
+            fi
+            sleep 1
+            waited=$(( waited + 1 ))
+          done
+
+          xcrun simctl install "$udid" "$APP"
+
+          ready_lines() { grep -cE 'Shodh (not )?ready' "$evidence/log.txt" || true; }
+          pid=""
+          ready_line=""
+          # Start the app (ended first, if it runs) at `screen` ("start": its
+          # own start, as a tester first sees it) and wait for its ready
+          # line: `pid` and `ready_line` are the new process's.
+          launch() {
+            local screen=$1 limit=$2 before out waited=0
+            xcrun simctl terminate "$udid" "$IOS_BUNDLE" > /dev/null 2>&1 || true
+            before=$(ready_lines)
+            if [ "$screen" = start ]; then
+              out=$(xcrun simctl launch "$udid" "$IOS_BUNDLE")
+            else
+              out=$(SIMCTL_CHILD_SHODH_SCREEN="$screen" xcrun simctl launch "$udid" "$IOS_BUNDLE")
+            fi
+            pid=${out##*: }
+            case "$pid" in
+              ''|*[!0-9]*) echo "::error::simctl did not say which process it started: $out"; return 1 ;;
+            esac
+            until [ "$(ready_lines)" -gt "$before" ]; do
+              if ! kill -0 "$pid" 2>/dev/null; then
+                echo "::error::Shodh (pid $pid) ended before it was ready, opening at $screen"
+                return 1
+              fi
+              if [ "$waited" -ge "$limit" ]; then
+                echo "::error::Shodh did not report ready within $limit s of its launch at $screen"
+                return 1
+              fi
+              sleep 1
+              waited=$(( waited + 1 ))
+            done
+            ready_line=$(grep -E 'Shodh (not )?ready' "$evidence/log.txt" | tail -n 1)
+          }
+
+          # the_app_reaches_its_pair_screen. 120 s: the slowest first start
+          # a tester would wait through without calling the app hung (the
+          # Android launch's limit). The first start includes the web
+          # view's first start, the Keychain keeping the link's new key and
+          # the app's first run.
+          start=$(date +%s)
+          launch start 120
+          ready_s=$(( $(date +%s) - start ))
+          first_line=$ready_line
+          first_pid=$pid
+          echo "$first_line"
+          if ! grep -q 'Shodh ready: the pair screen is shown in the light theme' <<< "$first_line"; then
+            echo "::error::Shodh did not reach its pair screen in the phone's light theme: $first_line"
+            exit 1
+          fi
+
+          # system_bars_reach_the_page: the app draws edge to edge, and the
+          # plugin tells the page where the status bar (or the Dynamic
+          # Island) and the home indicator are (ShodhPlugin.tellInsets).
+          bars_line=$(grep -F 'Shodh system bars:' "$evidence/log.txt" | tail -n 1 || true)
+          echo "${bars_line:-no system bars line}"
+          bars_top=$(sed -nE 's/.*Shodh system bars: top ([0-9.]+) pt.*/\1/p' <<< "$bars_line")
+          bars_bottom=$(sed -nE 's/.*Shodh system bars: .* bottom ([0-9.]+) pt.*/\1/p' <<< "$bars_line")
+          if [ -z "$bars_top" ] || ! awk -v t="$bars_top" 'BEGIN { exit !(t > 0) }'; then
+            echo "::error::The page was not told where the status bar is: ${bars_line:-no 'Shodh system bars' line in the log}"
+            exit 1
+          fi
+          if [ -z "$bars_bottom" ] || ! awk -v b="$bars_bottom" 'BEGIN { exit !(b > 0) }'; then
+            echo "::error::The page was not told where the home indicator is: ${bars_line:-no 'Shodh system bars' line in the log}"
+            exit 1
+          fi
+
+          # 15 s after ready covers the start's background work: the link's
+          # first relay connection and address lookup, which run after the
+          # endpoint is bound.
+          waited=0
+          while [ "$waited" -lt 15 ]; do
+            if ! kill -0 "$first_pid" 2>/dev/null; then
+              echo "::error::Shodh (pid $first_pid) ended within 15 s of being ready"
+              exit 1
+            fi
+            sleep 1
+            waited=$(( waited + 1 ))
+          done
+          if grep -q 'Shodh panicked' "$evidence/log.txt"; then
+            echo "::error::Shodh panicked"
+            grep 'Shodh panicked' "$evidence/log.txt"
+            exit 1
+          fi
+          echo "Still running 15 s after ready, no panic"
+          xcrun simctl io "$udid" screenshot "$screens/pair-light.png" > /dev/null
+
+          # The main screens, each in the phone's light and dark, for
+          # review. With no computer paired, the plain names show a screen
+          # as it is while not connected; demo-* screens show a scripted
+          # computer (src/lib/demo.ts, debug builds only). Each launch waits
+          # for the app's own ready line, which names the screen and the
+          # theme shown. A wrong theme fails the job after every picture is
+          # taken. The 3 s pause only lets the data and the springs settle
+          # for the picture, and decides no result.
+          themes_wrong=""
+          taken=1
+          for theme in light dark; do
+            xcrun simctl ui "$udid" appearance "$theme"
+            for shot in pair:pair home:home settings:settings connected-home:demo-home connected-answer:demo-answer connected-library:demo-library connected-approvals:demo-approvals connected-code:demo-code connected-menu:demo-menu; do
+              name=${shot%%:*}
+              screen=${shot#*:}
+              # The pair screen in light is the first start's, taken above.
+              if [ "$name" = pair ] && [ "$theme" = light ]; then continue; fi
+              launch "$screen" 60
+              if ! grep -q "Shodh ready: the $screen screen is shown" <<< "$ready_line"; then
+                echo "::error::$name ($theme) did not reach its screen: $ready_line"
+                exit 1
+              fi
+              if ! grep -q "in the $theme theme" <<< "$ready_line"; then
+                themes_wrong="$themes_wrong$name, should be $theme: $ready_line"$'\n'
+              fi
+              sleep 3
+              xcrun simctl io "$udid" screenshot "$screens/$name-$theme.png" > /dev/null
+              taken=$(( taken + 1 ))
+            done
+          done
+          if grep -q 'Shodh panicked' "$evidence/log.txt"; then
+            echo "::error::Shodh panicked"
+            grep 'Shodh panicked' "$evidence/log.txt"
+            exit 1
+          fi
+          {
+            echo
+            echo "Launch on the simulator ($phone, iOS $ios, first run):"
+            echo
+            echo "- the simulator booted in ${booted} s"
+            echo "- pair screen ready ${ready_s} s after launch: \`${first_line}\`"
+            echo "- system bars: top ${bars_top} pt, bottom ${bars_bottom} pt"
+            echo "- still running 15 s after ready (pid ${first_pid}), no panic in the log"
+            echo "- ${taken} pictures, the main screens in light and dark, are in the \`ios-screens\` artifact"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$themes_wrong" ]; then
+            printf '::error::A screen was not in the theme it should be: %s' "$themes_wrong"
+            exit 1
+          fi
+
+      - name: Upload the screens
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: ios-screens
+          path: ${{ runner.temp }}/ios-screens
+          retention-days: 14
+          if-no-files-found: warn
+
+      # The evidence, passed or not: the app's log and the simulators listed.
+      - name: Upload the app's log
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: ios-launch-evidence
+          path: ${{ runner.temp }}/ios-launch
+          retention-days: 14
+          if-no-files-found: warn
+
   # The installers (release.yml, build-only: no tag, so nothing is published
   # and the update bundles are signed with a throwaway key): the Windows NSIS
   # installer and the Apple Silicon dmg are built and checked as a release
@@ -2440,7 +2865,7 @@ jobs:
   ci-gate:
     name: CI gate
     if: always()
-    needs: [changes, lint, scripts, fmt, check, test, test-app, macos, upgrade, eval-retrieval, eval-retrieval-int8, eval-recall, frontend, footprint, release-builds, android]
+    needs: [changes, lint, scripts, fmt, check, test, test-app, macos, upgrade, eval-retrieval, eval-retrieval-int8, eval-recall, frontend, footprint, release-builds, android, ios]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

@@ -161,7 +161,7 @@ export function ThemeProvider({
   pinned,
 }: {
   children: ReactNode;
-  systemBars?: (theme: Theme) => Promise<void>;
+  systemBars?: (theme: Theme, followsPhone: boolean) => Promise<void>;
   pinned?: ThemeChoice;
 }) {
   const theme = useTheme(systemBars, pinned);

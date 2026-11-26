@@ -13,6 +13,7 @@ import type { LockStatus } from '../lib/device';
 import type { LinkSource } from '../lib/link';
 import { useDevice } from '../lib/queue';
 import { LockScreen } from './LockScreen';
+import { IOS } from '../lib/platform';
 
 export function LockGate({ source, skip, children }: { source: LinkSource; skip: boolean; children: ReactNode }) {
   const { lock } = useDevice();
@@ -28,7 +29,7 @@ export function LockGate({ source, skip, children }: { source: LinkSource; skip:
       })
       .catch(() => {
         // The lock could not be read: it stays shut.
-        if (alive) setState({ required: true, hasPin: true, biometric: false, locked: true });
+        if (alive) setState({ required: true, hasPin: true, biometric: false, biometry: IOS ? 'touch' : 'fingerprint', locked: true });
       });
     return () => {
       alive = false;

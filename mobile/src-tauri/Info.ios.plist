@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  What Shodh's iPhone app declares beyond Tauri's own Info.plist: the Tauri
+  CLI merges this file into the generated project's (tauri ios build).
+
+  Each usage text is what iOS shows when it first asks the user; iOS asks
+  only when the feature is first used, and the app works without any of them.
+-->
+<plist version="1.0">
+<dict>
+    <!-- Scanning the computer's pairing code, and a photo to send or ask about. -->
+    <key>NSCameraUsageDescription</key>
+    <string>Shodh uses the camera to scan your computer's pairing code and to take photos you send to it.</string>
+    <!-- The lock: Face ID instead of the PIN, when the user turns it on. -->
+    <key>NSFaceIDUsageDescription</key>
+    <string>Shodh uses Face ID to unlock, so only you can ask your computer from this iPhone.</string>
+    <!-- Voice: asking by speaking, only while Shodh listens. -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Shodh listens only while you ask by speaking. Nothing is recorded or kept.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Shodh turns what you say into your question, on this iPhone when it can.</string>
+    <!-- The phone's own calendar, only when the user turns on calendar sync. -->
+    <key>NSCalendarsUsageDescription</key>
+    <string>Shodh syncs the calendars you choose with your own computer. Nothing goes anywhere else.</string>
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>Shodh syncs the calendars you choose with your own computer. Nothing goes anywhere else.</string>
+    <!-- The phone link reaches the computer directly when both are on one network. -->
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Shodh connects straight to your computer when both are on the same network.</string>
+
+    <!-- "Open in Shodh" on an event Shodh put in the phone's calendar (shodh://event/<id>). -->
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>com.shodhrag.mobile</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>shodh</string>
+            </array>
+        </dict>
+    </array>
+
+    <!--
+      Shodh in the share sheet and the Files app, for any file: iOS hands the app
+      its own copy (in Documents/Inbox), which Shodh copies into its cache and
+      offers to send to the computer; nothing is sent until the user chooses.
+    -->
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>File</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.data</string>
+                <string>public.content</string>
+            </array>
+        </dict>
+    </array>
+    <key>LSSupportsOpeningDocumentsInPlace</key>
+    <false/>
+</dict>
+</plist>

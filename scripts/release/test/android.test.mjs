@@ -262,6 +262,13 @@ test("the markers are the ones in the phone app's debug-only code", () => {
   const link = read('mobile/src-tauri/src/link.rs');
   for (const m of ['debug.shodh.tour', 'debug.shodh.noblur', 'shodh://tour']) assert.ok(tour.includes(`"${m}"`), `tour.rs has ${m}`);
   assert.ok(link.includes('c"debug.shodh.screen"'), 'link.rs has debug.shodh.screen');
-  assert.match(read('mobile/src-tauri/src/lib.rs'), /#\[cfg\(debug_assertions\)\]\s*tour::follow/);
+  // The tour is a debug build's, and Android's (iOS's pictures relaunch the app instead).
+  const lib = read('mobile/src-tauri/src/lib.rs');
+  assert.match(lib, /#\[cfg\(all\(debug_assertions, target_os = "android"\)\)\]\s*mod tour;/);
+  assert.match(lib, /#\[cfg\(all\(debug_assertions, target_os = "android"\)\)\]\s*tour::follow/);
+  // The screen a build opens at is read by a debug build only, on either phone.
+  assert.match(link, /#\[cfg\(all\(debug_assertions, target_os = "android"\)\)\]\s*fn asked_screen/);
+  assert.match(link, /#\[cfg\(all\(debug_assertions, target_os = "ios"\)\)\]\s*fn asked_screen/);
+  assert.match(link, /#\[cfg\(debug_assertions\)\]\s*\{\s*let screen = asked_screen\(\);/);
   assert.ok(read('crates/shodh-link/src/update.rs').includes(`"${NATIVE_CONTROL}"`), 'the control string is shodh-link\'s');
 });

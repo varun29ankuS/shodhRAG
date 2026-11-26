@@ -1,0 +1,316 @@
+name: TestFlight
+
+# Shodh for iPhone (mobile/), signed and uploaded to TestFlight, where the
+# owner's own iPhone (and any tester they invite) installs it.
+#
+# It runs two ways:
+#   - Run workflow (workflow_dispatch), from master: the iPhone app of
+#     master's commit, whenever the owner wants one on their phone.
+#   - called by release.yml once a release is published: the iPhone app of
+#     the released commit, so the phone and the computer are the same Shodh
+#     version (the phone link refuses another).
+#
+# Apple's signing needs an Apple Developer Program membership and its
+# secrets. Without them nothing is built and nothing fails: the signing job
+# says which secrets are missing (a notice on the run, and its summary), and
+# the build job is skipped.
+#
+# The secrets, in the `release` environment (deployment policy: master and
+# v* tags), the same place as the other release keys:
+#   APPLE_API_KEY_ID         an App Store Connect API key's Key ID
+#   APPLE_API_ISSUER         that key's Issuer ID
+#   APPLE_API_PRIVATE_KEY    the key itself: the text of its AuthKey_<id>.p8
+#   APPLE_DEVELOPMENT_TEAM   the Apple Developer team's ID
+# With those four, Xcode signs with certificates and profiles it manages
+# itself in the team's account (automatic signing), and the same key uploads
+# the build. A team that signs by hand adds all three of:
+#   IOS_CERTIFICATE            an Apple Distribution certificate, a .p12 in base64
+#   IOS_CERTIFICATE_PASSWORD   that .p12's password
+#   IOS_MOBILE_PROVISION       an App Store provisioning profile for
+#                              com.shodhrag.mobile, in base64
+#
+# Unlike the Android key (release.yml's android-sign, a job that runs no
+# build code), the Apple key is in the environment of the step that builds:
+# Xcode signs as it exports the archive it built, in one `tauri ios build`.
+# So that step is the only one with the key, it runs after every dependency
+# is installed, and the key file is in a private folder removed when the
+# step ends, whatever its outcome.
+#
+# Every upload of one version needs a higher build number: it is the minute
+# of the build (Unix time in minutes), which only grows.
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      sha:
+        description: The commit to build (a release's).
+        required: true
+        type: string
+    secrets:
+      # Optional: as secrets of the `release` environment, the jobs read them
+      # from there and these stay empty.
+      APPLE_API_KEY_ID:
+        required: false
+      APPLE_API_ISSUER:
+        required: false
+      APPLE_API_PRIVATE_KEY:
+        required: false
+      APPLE_DEVELOPMENT_TEAM:
+        required: false
+      IOS_CERTIFICATE:
+        required: false
+      IOS_CERTIFICATE_PASSWORD:
+        required: false
+      IOS_MOBILE_PROVISION:
+        required: false
+
+permissions:
+  contents: read
+
+# One upload at a time: two builds of one minute would have one build number.
+concurrency:
+  group: testflight
+  cancel-in-progress: false
+
+jobs:
+  # Whether the Apple secrets are here, on a small runner: the macOS runner is
+  # asked for only when there is something to build.
+  signing:
+    name: Apple signing secrets
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: release
+    outputs:
+      ready: ${{ steps.secrets.outputs.ready }}
+      sha: ${{ steps.secrets.outputs.sha }}
+    steps:
+      - name: Which secrets are set
+        id: secrets
+        env:
+          INPUT_SHA: ${{ inputs.sha }}
+          # Only whether each is set reaches the step, never its value.
+          HAS_KEY_ID: ${{ secrets.APPLE_API_KEY_ID != '' }}
+          HAS_ISSUER: ${{ secrets.APPLE_API_ISSUER != '' }}
+          HAS_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY != '' }}
+          HAS_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM != '' }}
+          HAS_CERTIFICATE: ${{ secrets.IOS_CERTIFICATE != '' }}
+          HAS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD != '' }}
+          HAS_PROFILE: ${{ secrets.IOS_MOBILE_PROVISION != '' }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$GITHUB_REF" != refs/heads/master ]; then
+            echo "::error::Run this workflow from master (it was started from ${GITHUB_REF})"
+            exit 1
+          fi
+          sha=${INPUT_SHA:-$GITHUB_SHA}
+          if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::${sha} is not a commit SHA"
+            exit 1
+          fi
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          missing=()
+          [ "$HAS_KEY_ID" = true ] || missing+=(APPLE_API_KEY_ID)
+          [ "$HAS_ISSUER" = true ] || missing+=(APPLE_API_ISSUER)
+          [ "$HAS_PRIVATE_KEY" = true ] || missing+=(APPLE_API_PRIVATE_KEY)
+          [ "$HAS_TEAM" = true ] || missing+=(APPLE_DEVELOPMENT_TEAM)
+          if [ "${#missing[@]}" -gt 0 ]; then
+            words="No iPhone app was built: the Apple signing secrets are not set in the release environment (missing: ${missing[*]}). The comment at the top of .github/workflows/testflight.yml lists them."
+            echo "::notice title=TestFlight skipped::${words}"
+            {
+              echo '### TestFlight: skipped'
+              echo
+              echo "$words"
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Signing by hand is all three of its secrets, or none.
+          by_hand="$HAS_CERTIFICATE$HAS_CERTIFICATE_PASSWORD$HAS_PROFILE"
+          if [ "$by_hand" != truetruetrue ] && [ "$by_hand" != falsefalsefalse ]; then
+            echo "::error::Set all of IOS_CERTIFICATE, IOS_CERTIFICATE_PASSWORD and IOS_MOBILE_PROVISION to sign by hand, or none of them to let Xcode manage signing"
+            exit 1
+          fi
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+          echo "The Apple signing secrets are set: building ${sha} for TestFlight"
+
+  build:
+    name: Build and upload (iOS)
+    needs: signing
+    if: needs.signing.outputs.ready == 'true'
+    # Apple silicon, with Xcode.
+    runs-on: macos-latest
+    # This job has no run history yet: a cold release build of the phone
+    # app's Rust library for one target, the Swift plugin, Xcode's archive
+    # and export, and Apple's upload, with room.
+    timeout-minutes: 90
+    environment: release
+    permissions:
+      contents: read
+    env:
+      # The real app's identifier (no tauri.dev.conf.json, which only test
+      # builds use): the App Store Connect app record's bundle ID.
+      IOS_BUNDLE: com.shodhrag.mobile
+      CARGO_TERM_COLOR: always
+      SHA: ${{ needs.signing.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ needs.signing.outputs.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: 22
+          package-manager-cache: false
+
+      - name: Install the phone app's dependencies
+        working-directory: mobile
+        run: npm ci
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # master, 2026-10-16
+        with:
+          toolchain: 1.97.1  # keep in sync with rust-toolchain.toml
+          targets: aarch64-apple-ios
+
+      # The Tauri CLI writes the Xcode project with XcodeGen.
+      - name: Install XcodeGen
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: 1
+          HOMEBREW_NO_INSTALL_CLEANUP: 1
+          HOMEBREW_NO_ENV_HINTS: 1
+        run: |
+          set -euo pipefail
+          command -v xcodegen >/dev/null || brew install xcodegen
+          xcodegen --version
+          xcodebuild -version
+
+      # The build number: the minute of this build. One value for the
+      # project and for the build, so the app says what was uploaded.
+      - name: Generate the Xcode project
+        working-directory: mobile
+        run: |
+          set -euo pipefail
+          build_number=$(( $(date -u +%s) / 60 ))
+          version=$(node -p "require('./package.json').version")
+          {
+            echo "BUILD_NUMBER=$build_number"
+            echo "APP_VERSION=$version"
+            echo "BUILD_CONFIG={\"bundle\":{\"iOS\":{\"bundleVersion\":\"$build_number\"}}}"
+          } >> "$GITHUB_ENV"
+          npx tauri ios init --ci --skip-targets-install --config "{\"bundle\":{\"iOS\":{\"bundleVersion\":\"$build_number\"}}}"
+          # The elephant app icons replace the template's, as in ci.yml.
+          icons=src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset
+          test -f "$icons/Contents.json" || { echo "::error::The generated project has no app icon set at $icons"; exit 1; }
+          for icon in src-tauri/icons/ios/*.png; do
+            name=$(basename "$icon")
+            grep -qF "\"$name\"" "$icons/Contents.json" || { echo "::error::The asset catalog does not list $name"; exit 1; }
+            cp "$icon" "$icons/$name"
+          done
+
+      # The one step with the Apple key. The Tauri CLI reads it from the
+      # environment (APPLE_API_KEY, APPLE_API_ISSUER, APPLE_API_KEY_PATH,
+      # APPLE_DEVELOPMENT_TEAM, and IOS_CERTIFICATE, IOS_CERTIFICATE_PASSWORD
+      # and IOS_MOBILE_PROVISION when signing by hand), builds and archives
+      # unsigned, and Xcode signs as it exports the App Store package.
+      - name: Build and sign the app for the App Store
+        working-directory: mobile
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+          APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
+          CERTIFICATE: ${{ secrets.IOS_CERTIFICATE }}
+          CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          PROFILE: ${{ secrets.IOS_MOBILE_PROVISION }}
+        run: |
+          set -euo pipefail
+          umask 077
+          keys=$(mktemp -d "$RUNNER_TEMP/apple-key.XXXXXXXX")
+          trap 'rm -rf "$keys"' EXIT
+          printf '%s\n' "$API_PRIVATE_KEY" > "$keys/AuthKey_${APPLE_API_KEY}.p8"
+          if ! grep -q 'BEGIN PRIVATE KEY' "$keys/AuthKey_${APPLE_API_KEY}.p8"; then
+            echo "::error::APPLE_API_PRIVATE_KEY is not the text of an App Store Connect API key (.p8)"
+            exit 1
+          fi
+          export APPLE_API_KEY_PATH="$keys/AuthKey_${APPLE_API_KEY}.p8"
+          # Set only when signing by hand: an empty one is not "unset" to the CLI.
+          if [ -n "$CERTIFICATE" ]; then
+            export IOS_CERTIFICATE="$CERTIFICATE" IOS_CERTIFICATE_PASSWORD="$CERTIFICATE_PASSWORD" IOS_MOBILE_PROVISION="$PROFILE"
+          fi
+          start=$(date +%s)
+          npx tauri ios build --export-method app-store-connect --config "$BUILD_CONFIG"
+          seconds=$(( $(date +%s) - start ))
+          found=$(find src-tauri/gen/apple/build -name '*.ipa' -type f)
+          count=$(printf '%s\n' "$found" | grep -c . || true)
+          if [ "$count" -ne 1 ]; then
+            echo "::error::Expected one IPA, found $count: $found"
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/ios"
+          cp "$found" "$RUNNER_TEMP/ios/Shodh.ipa"
+          echo "- signed IPA: $(du -h "$RUNNER_TEMP/ios/Shodh.ipa" | cut -f1), built in ${seconds} s" >> "$GITHUB_STEP_SUMMARY"
+
+      # What is about to be uploaded is the real app, this version and this
+      # build, a release build (no debug-only screens), for iPhones.
+      - name: Check the signed app
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/ios/unpacked"
+          mkdir -p "$work"
+          unzip -q "$RUNNER_TEMP/ios/Shodh.ipa" -d "$work"
+          found=$(find "$work/Payload" -maxdepth 1 -name '*.app' -type d)
+          count=$(printf '%s\n' "$found" | grep -c . || true)
+          if [ "$count" -ne 1 ]; then
+            echo "::error::Expected one app in the IPA, found $count: $found"
+            exit 1
+          fi
+          plist="$found/Info.plist"
+          bundle=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist")
+          short=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")
+          build=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist")
+          executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$plist")
+          if [ "$bundle" != "$IOS_BUNDLE" ] || [ "$short" != "$APP_VERSION" ] || [ "$build" != "$BUILD_NUMBER" ]; then
+            echo "::error::The IPA is $bundle $short ($build), not $IOS_BUNDLE $APP_VERSION ($BUILD_NUMBER)"
+            exit 1
+          fi
+          archs=$(lipo -archs "$found/$executable")
+          if [ "$archs" != arm64 ]; then
+            echo "::error::The app's binary is for $archs, not arm64"
+            exit 1
+          fi
+          codesign --verify --strict "$found"
+          codesign -dvv "$found" 2>&1 | grep -E '^(Authority|TeamIdentifier)=' | tee "$RUNNER_TEMP/ios/signature.txt"
+          if ! grep -q '^Authority=Apple Distribution' "$RUNNER_TEMP/ios/signature.txt" && ! grep -q '^Authority=iPhone Distribution' "$RUNNER_TEMP/ios/signature.txt"; then
+            echo "::error::The app is not signed with a distribution certificate"
+            exit 1
+          fi
+          # The screenshots' scripted computer is a debug build's only.
+          if grep -rqF 'The sample computer has no' "$found"; then
+            echo "::error::The app carries debug-only code (the screenshots' scripted computer)"
+            exit 1
+          fi
+          echo "- \`$bundle\` $short ($build), $archs, $(grep -m 1 '^Authority=' "$RUNNER_TEMP/ios/signature.txt")" >> "$GITHUB_STEP_SUMMARY"
+
+      # The second and last step with the key: Apple's own uploader, with the
+      # key file in a private folder of this step's.
+      - name: Upload to TestFlight
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          keys=$(mktemp -d "$RUNNER_TEMP/apple-key.XXXXXXXX")
+          trap 'rm -rf "$keys"' EXIT
+          printf '%s\n' "$API_PRIVATE_KEY" > "$keys/AuthKey_${APPLE_API_KEY}.p8"
+          # Where altool looks for AuthKey_<id>.p8.
+          export API_PRIVATE_KEYS_DIR="$keys"
+          xcrun altool --upload-app --type ios --file "$RUNNER_TEMP/ios/Shodh.ipa" --apiKey "$APPLE_API_KEY" --apiIssuer "$APPLE_API_ISSUER"
+          {
+            echo
+            echo "### TestFlight"
+            echo
+            echo "Shodh $APP_VERSION ($BUILD_NUMBER), built from \`$SHA\`, was uploaded. Apple processes a build for a few minutes before it shows in TestFlight."
+          } >> "$GITHUB_STEP_SUMMARY"

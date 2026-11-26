@@ -24,11 +24,11 @@ const STORE_NAME: &str = "shodh-link";
 /// The service every entry is filed under.
 const SERVICE: &str = "shodh";
 
-pub struct KeystoreVault {
+pub struct Vault {
     store: Arc<Store>,
 }
 
-impl KeystoreVault {
+impl Vault {
     pub fn open() -> Result<Self, String> {
         let configuration = HashMap::from([("name", STORE_NAME)]);
         let store = Store::new_with_configuration(&configuration)
@@ -43,7 +43,7 @@ impl KeystoreVault {
     }
 }
 
-impl SecretVault for KeystoreVault {
+impl SecretVault for Vault {
     fn load(&self, name: &str) -> Result<Option<Vec<u8>>, String> {
         match self.entry(name)?.get_secret() {
             Ok(secret) => Ok(Some(secret)),

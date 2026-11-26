@@ -1,0 +1,17 @@
+[package]
+name = "tauri-plugin-shodh-ios"
+# Released with the app (scripts/release/versions.mjs does not track it: it is
+# never published, only built into the phone app).
+version = "0.1.0"
+edition = "2021"
+description = "Shodh's own iOS glue: files and the camera, what is opened with Shodh, the phone's calendar, notifications and voice"
+publish = false
+links = "tauri-plugin-shodh-ios"
+
+[dependencies]
+tauri = { version = "2.12", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[build-dependencies]
+tauri-plugin = { version = "2.7", features = ["build"] }

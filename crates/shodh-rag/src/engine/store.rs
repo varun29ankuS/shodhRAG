@@ -336,11 +336,12 @@ fn json_col(index: usize, text: String) -> rusqlite::Result<Value> {
     serde_json::from_str(&text).map_err(|e| bad_column(index, e.to_string()))
 }
 
-const JOB_COLS: &str = "id, kind, subject, title, schedule_json, input_json, enabled, overlap, \
+pub(super) const JOB_COLS: &str =
+    "id, kind, subject, title, schedule_json, input_json, enabled, overlap, \
      catch_up, max_attempts, next_due_at, hold_reason, failure_streak, created_by, \
      provenance_json, created_at, updated_at";
 
-fn job_from(r: &Row<'_>) -> rusqlite::Result<Job> {
+pub(super) fn job_from(r: &Row<'_>) -> rusqlite::Result<Job> {
     let schedule: Option<String> = r.get(4)?;
     let schedule = schedule
         .map(|text| {
@@ -397,7 +398,7 @@ fn run_from(r: &Row<'_>) -> rusqlite::Result<Run> {
     })
 }
 
-fn job_in(conn: &Connection, id: &str) -> rusqlite::Result<Option<Job>> {
+pub(super) fn job_in(conn: &Connection, id: &str) -> rusqlite::Result<Option<Job>> {
     conn.query_row(
         &format!("SELECT {JOB_COLS} FROM engine_job WHERE id = ?1"),
         params![id],
@@ -406,7 +407,7 @@ fn job_in(conn: &Connection, id: &str) -> rusqlite::Result<Option<Job>> {
     .optional()
 }
 
-fn run_in(conn: &Connection, id: &str) -> rusqlite::Result<Option<Run>> {
+pub(super) fn run_in(conn: &Connection, id: &str) -> rusqlite::Result<Option<Run>> {
     conn.query_row(
         &format!("SELECT {RUN_COLS} FROM engine_run WHERE id = ?1"),
         params![id],
@@ -415,7 +416,7 @@ fn run_in(conn: &Connection, id: &str) -> rusqlite::Result<Option<Run>> {
     .optional()
 }
 
-fn active_in(conn: &Connection, job_id: &str) -> rusqlite::Result<Option<Run>> {
+pub(super) fn active_in(conn: &Connection, job_id: &str) -> rusqlite::Result<Option<Run>> {
     conn.query_row(
         &format!(
             "SELECT {RUN_COLS} FROM engine_run
@@ -590,7 +591,8 @@ impl EngineStore {
         })
     }
 
-    /// Deletes a job and its runs, with their steps and approvals. True when it was there.
+    /// Deletes a job and its runs, with their steps and approvals, and its cached step
+    /// results. True when it was there.
     pub fn delete_job(&self, id: &str) -> EngineResult<bool> {
         self.conn.write(|tx| -> EngineResult<bool> {
             tx.execute(
@@ -599,6 +601,7 @@ impl EngineStore {
                 params![id],
             )?;
             tx.execute("DELETE FROM engine_approval WHERE job_id = ?1", params![id])?;
+            tx.execute("DELETE FROM engine_cache WHERE job_id = ?1", params![id])?;
             tx.execute("DELETE FROM engine_run WHERE job_id = ?1", params![id])?;
             Ok(tx.execute("DELETE FROM engine_job WHERE id = ?1", params![id])? > 0)
         })
@@ -918,11 +921,18 @@ impl EngineStore {
     }
 
     /// Deletes finished runs older than [`RETENTION_DAYS`], keeping the latest
-    /// [`KEEP_LATEST_RUNS`] of each job, and the steps and approvals of runs that are gone.
-    /// Returns how many runs went.
+    /// [`KEEP_LATEST_RUNS`] of each job, and the steps and approvals of runs that are gone;
+    /// and the cached step results older than
+    /// [`CACHE_RETENTION_DAYS`](super::cache::CACHE_RETENTION_DAYS). Returns how many runs
+    /// went.
     pub fn prune(&self, now: DateTime<Utc>) -> EngineResult<usize> {
         let cutoff = timestamp(now - TimeDelta::days(RETENTION_DAYS));
+        let cache_cutoff = timestamp(now - TimeDelta::days(super::cache::CACHE_RETENTION_DAYS));
         let removed = self.conn.write(|tx| -> rusqlite::Result<usize> {
+            tx.execute(
+                "DELETE FROM engine_cache WHERE created_at < ?1",
+                params![cache_cutoff],
+            )?;
             let removed = tx.execute(
                 "DELETE FROM engine_run
                   WHERE state NOT IN ('queued', 'running', 'waiting') AND created_at < ?1

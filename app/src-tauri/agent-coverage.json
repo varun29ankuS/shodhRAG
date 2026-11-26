@@ -296,6 +296,8 @@
     "automation_pause": { "tool": "pause_automation" },
     "automation_resume": { "tool": "resume_automation" },
     "automation_run_now": { "tool": "run_automation" },
+    "automation_draft": { "tool": "create_automation" },
+    "automation_templates": { "tool": "create_automation" },
     "engine_approval_decide": { "excluded": "Deciding which of a run's changes are made is the user's OK; the assistant never approves its own steps." },
     "automations_model_set": { "excluded": "The model automations use decides whose daily quota they spend and who receives what they read; only the user chooses it." },
     "set_search_gpu": { "excluded": "Deliberately user-only: whether search may use the graphics card decides what runs on the user's hardware, and on Windows whether Microsoft's DirectML (which may send diagnostic data to Microsoft) is used at all. The assistant reads the setting with system_status and can explain it; only the user changes it." },

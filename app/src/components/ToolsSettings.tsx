@@ -7,6 +7,8 @@ import { notify } from '../lib/notify';
 import { InfoPopover } from './ui/InfoPopover';
 import { removeWithUndo } from '../lib/undoToast';
 import { useWorkspaces } from '../features/workspaces/WorkspaceContext';
+import { openNewAutomation } from '../features/automations/api';
+import { prefillFromSkill } from '../features/automations/model';
 import { errorText, toolsApi } from '../features/tools/api';
 import type { Approval, ServerView, StagedInstall, ToolMode, ToolsOverview } from '../features/tools/api';
 import { formToConfig } from '../features/tools/format';
@@ -502,6 +504,15 @@ function SkillsSection({ overview, workspaceId, onChanged }: { overview: ToolsOv
                     .catch(e => notify.error('The skill was not changed', { description: errorText(e) }))
                 }
               />
+              <button
+                type="button"
+                aria-label={`Save ${skill.name} as an automation`}
+                title="Opens a new automation filled with this skill"
+                onClick={() => openNewAutomation(prefillFromSkill(skill))}
+                className={cn('h-8 px-2.5 inline-flex items-center justify-center rounded-lg border border-shodh-border text-small text-shodh-text-secondary whitespace-nowrap hover:bg-shodh-raised', FOCUS_RING)}
+              >
+                Automate
+              </button>
               <button
                 type="button"
                 aria-label={`Remove ${skill.name}`}

@@ -26,6 +26,7 @@ use chrono::{DateTime, Local, NaiveTime, Utc};
 use serde::Serialize;
 use serde_json::{json, Value};
 use shodh_rag::engine::clock::resolve_local;
+use shodh_rag::engine::events::EventTrigger;
 use shodh_rag::engine::runner::{Engine, Handled, JobHandler};
 use shodh_rag::engine::store::{
     CatchUp, CreatedBy, EngineStore, HoldReason, Job, JobKind, JobPatch, NewJob, Overlap, Run,
@@ -61,6 +62,11 @@ pub trait WhatsNewSink: Send + Sync {
     async fn resolve_prefixed(&self, kind: InboxKind, prefix: &str);
     /// The feed or a folder's watch changed: the section reads it again.
     fn changed(&self);
+    /// Something new was found (files in a folder, an alert's papers): the automations
+    /// that `trigger` starts get `subjects`. Each is told of once, when it is first found.
+    async fn found(&self, _trigger: EventTrigger, _subjects: Vec<Value>) {}
+    /// What `trigger` names is gone (the folder left the Library, the alert was deleted).
+    async fn gone(&self, _trigger: EventTrigger) {}
 }
 
 /// The title of a folder's item: "1 new file in Papers", "3 new files in Papers".
@@ -455,6 +461,29 @@ impl WhatsNew {
             more.by_day.retain(|day, _| *day >= oldest);
             self.folders.save_more(&job, &more)?;
         }
+        if !inserted.is_empty() {
+            // The automations started by new files in this folder get them, once: only
+            // the files What's new had not seen.
+            let files: Vec<Value> = inserted
+                .iter()
+                .map(|row| {
+                    json!({
+                        "kind": "file",
+                        "name": row.title,
+                        "path": row.data.get("path").and_then(Value::as_str),
+                    })
+                })
+                .collect();
+            self.folders
+                .sink
+                .found(
+                    EventTrigger::FilesAdded {
+                        source_id: source_id.to_string(),
+                    },
+                    files,
+                )
+                .await;
+        }
         let shown = !inserted.is_empty() || added_more > 0;
         if shown {
             self.folders.sink.changed();
@@ -487,6 +516,12 @@ impl WhatsNew {
         self.folders
             .sink
             .resolve(&format!("{FOLDER_HOLD_PREFIX}{source_id}"))
+            .await;
+        self.folders
+            .sink
+            .gone(EventTrigger::FilesAdded {
+                source_id: source_id.to_string(),
+            })
             .await;
         self.folders.sink.changed();
         Ok(())
@@ -663,6 +698,14 @@ impl WhatsNewSink for TauriSink {
         crate::inbox_commands::resolve_prefixed(&self.app, kind, prefix.to_string()).await;
     }
 
+    async fn found(&self, trigger: EventTrigger, subjects: Vec<Value>) {
+        crate::automations::dispatch_event(&self.app, trigger, subjects).await;
+    }
+
+    async fn gone(&self, trigger: EventTrigger) {
+        crate::automations::dispatch_gone(&self.app, trigger).await;
+    }
+
     fn changed(&self) {
         if let Err(e) = self.app.emit(WHATS_NEW_CHANGED_EVENT, ()) {
             tracing::warn!(error = %e, "could not emit {}", WHATS_NEW_CHANGED_EVENT);
@@ -818,6 +861,9 @@ mod tests {
         resolved: Mutex<Vec<String>>,
         /// The next post is the last thing the run does (it panics after it).
         crash_after_post: std::sync::atomic::AtomicBool,
+        /// What the automations were told was found, and what was gone.
+        found: Mutex<Vec<(EventTrigger, Vec<Value>)>>,
+        gone: Mutex<Vec<EventTrigger>>,
     }
 
     #[async_trait]
@@ -847,6 +893,18 @@ mod tests {
                 .push(format!("{prefix}*"));
         }
         fn changed(&self) {}
+        async fn found(&self, trigger: EventTrigger, subjects: Vec<Value>) {
+            self.found
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push((trigger, subjects));
+        }
+        async fn gone(&self, trigger: EventTrigger) {
+            self.gone
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(trigger);
+        }
     }
 
     struct Env {
@@ -929,6 +987,102 @@ mod tests {
         fn runs(&self) -> Vec<Run> {
             self.store.runs(&self.job().id, 50).unwrap()
         }
+    }
+
+    #[tokio::test]
+    async fn a_folder_watch_post_reaches_its_automations() {
+        use crate::automations::testing::FakeEnv;
+        use crate::automations::{AgentOutcome, AutomationState, Automations, Draft};
+        use shodh_rag::engine::store::Trigger;
+
+        let e = env(local(2026, 11, 23, 10, 41));
+        let engine = Arc::new(Engine::with_clock(
+            e.store.clone(),
+            e.clock.clone(),
+            "whats-new-test-automations",
+        ));
+        let fake = Arc::new(FakeEnv::default());
+        let automations = Automations::new(engine.clone(), fake.clone());
+        let trigger = EventTrigger::FilesAdded {
+            source_id: "s1".into(),
+        };
+        let auto = automations
+            .create(
+                Draft {
+                    name: "File notes".into(),
+                    instruction: "Note each new file.".into(),
+                    schedule: None,
+                    trigger: Some(trigger.clone()),
+                    workspace_id: None,
+                    answer_only: false,
+                },
+                CreatedBy::User,
+                json!({}),
+            )
+            .unwrap();
+        let files = [e.file("a.pdf"), e.file("b.pdf")];
+        e.whats_new
+            .files_added("s1", &e.folder(), &files, 0)
+            .await
+            .unwrap();
+        let found = || {
+            e.sink
+                .found
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+        };
+        assert_eq!(found().len(), 1, "one event for the sync");
+        let (told, subjects) = found().remove(0);
+        assert_eq!(told, trigger);
+        let names: Vec<&str> = subjects.iter().filter_map(|s| s["name"].as_str()).collect();
+        assert_eq!(names, vec!["a.pdf", "b.pdf"]);
+        // The same files again are not new: nothing is told twice.
+        e.whats_new
+            .files_added("s1", &e.folder(), &files, 0)
+            .await
+            .unwrap();
+        assert_eq!(found().len(), 1);
+        // As the app's sink hands it on: the automation gets one run for the burst.
+        assert_eq!(automations.event(&told, subjects).await.unwrap(), 1);
+        let queued = engine.store().active_run(&auto.id).unwrap().unwrap();
+        assert_eq!(queued.trigger, Trigger::Event);
+        fake.script(AgentOutcome {
+            calls: 2,
+            answer: "Two files noted.".into(),
+            ..AgentOutcome::default()
+        });
+        e.at(local(2026, 11, 23, 10, 43));
+        engine.tick(&automations.handler()).await.unwrap();
+        let request = fake.requests.lock().unwrap()[0].clone();
+        assert!(request.instruction.starts_with("Note each new file."));
+        assert!(
+            request.instruction.contains("\n- a.pdf"),
+            "{}",
+            request.instruction
+        );
+        assert!(
+            request.instruction.contains("\n- b.pdf"),
+            "{}",
+            request.instruction
+        );
+        // The folder leaves the Library: nothing would start the automation again, so it
+        // is put on hold, saying why.
+        e.whats_new.source_removed("s1").await.unwrap();
+        let gone = e
+            .sink
+            .gone
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        assert_eq!(gone, vec![trigger]);
+        assert_eq!(automations.trigger_gone(&gone[0]).await.unwrap(), 1);
+        let view = automations.get(&auto.id).unwrap();
+        assert_eq!(view.state, AutomationState::OnHold);
+        assert_eq!(
+            view.last.and_then(|run| run.summary).as_deref(),
+            Some("On hold: its folder left the Library.")
+        );
     }
 
     #[tokio::test]

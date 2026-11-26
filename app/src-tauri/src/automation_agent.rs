@@ -36,8 +36,9 @@ use crate::agent_session_commands::{
 };
 use crate::app_settings::SettingsStore;
 use crate::automations::{
-    AgentFailure, AgentOutcome, AgentRequest, AutomationEnv, CallMeter, FailureKind, ModelBlock,
-    PoolToday, RunModel, AUTOMATIONS_CHANGED_EVENT, RESERVE_DAYS, SHORT_LIMIT_SECS,
+    AgentFailure, AgentOutcome, AgentRequest, AutomationEnv, CallMeter, DraftScope, FailureKind,
+    ModelBlock, Named, PoolToday, RunModel, SourceStamp, AUTOMATIONS_CHANGED_EVENT,
+    DRAFT_MAX_TOKENS, RESERVE_DAYS, SHORT_LIMIT_SECS,
 };
 use crate::conversation_commands::{ConversationAutomation, ConversationMessage};
 use crate::conversation_turns::SendTurn;
@@ -206,13 +207,48 @@ pub fn run_model_for(
 }
 
 /// The question an automation's run sends: the instruction, with the rules of a run
-/// nobody watches.
-fn question_text(name: &str, instruction: &str) -> String {
+/// nobody watches. A run that only answers is told so instead of being told to read.
+fn question_text(name: &str, instruction: &str, answer_only: bool) -> String {
+    if answer_only {
+        return format!(
+            "Automation \"{name}\":\n\n{instruction}\n\n(Nobody is watching this run. Answer \
+             briefly, from what is given above only.)"
+        );
+    }
     format!(
         "Automation \"{name}\":\n\n{instruction}\n\n(Nobody is watching this run. Read what you \
          need, then answer briefly with what you found and its sources. Any change you would \
          make is saved for the user's OK, not made.)"
     )
+}
+
+/// Most entries of a folder looked at for its latest change.
+const FOLDER_ENTRIES_READ: usize = 2_000;
+
+/// When the file or folder at `path` last changed: its own time, and for a folder the
+/// newest of the entries directly in it (a file edited in place does not touch its
+/// folder). `None` when it cannot be read.
+fn path_modified(path: &std::path::Path) -> Option<DateTime<Utc>> {
+    let meta = std::fs::metadata(path).ok()?;
+    let mut latest = meta.modified().ok()?;
+    if meta.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for entry in entries.flatten().take(FOLDER_ENTRIES_READ) {
+                if let Ok(modified) = entry.metadata().and_then(|m| m.modified()) {
+                    latest = latest.max(modified);
+                }
+            }
+        }
+    }
+    Some(DateTime::<Utc>::from(latest))
+}
+
+/// When a workspace's source last changed: its file's or folder's time on disk, else
+/// when it was added to the workspace.
+fn source_modified(path: Option<&str>, added_at: &str) -> String {
+    path.and_then(|p| path_modified(std::path::Path::new(p)))
+        .map(|at| at.to_rfc3339())
+        .unwrap_or_else(|| added_at.to_string())
 }
 
 fn now_ms() -> i64 {
@@ -322,6 +358,107 @@ impl AutomationEnv for TauriEnv {
         .flatten()
     }
 
+    async fn scope_sources(&self, workspace_id: &str) -> Option<Vec<SourceStamp>> {
+        let store = self
+            .app
+            .state::<crate::workspace_commands::WorkspaceState>()
+            .store()
+            .await
+            .ok()?;
+        let id = workspace_id.to_string();
+        tokio::task::spawn_blocking(move || {
+            let detail = store.detail(&id).ok()?;
+            Some(
+                detail
+                    .sources
+                    .iter()
+                    .map(|source| SourceStamp {
+                        id: source.reference.clone(),
+                        label: source.label.clone(),
+                        modified: source_modified(source.path.as_deref(), &source.added_at),
+                    })
+                    .collect(),
+            )
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+
+    async fn draft_scope(&self) -> DraftScope {
+        let mut scope = DraftScope::default();
+        if let Ok(store) = self
+            .app
+            .state::<crate::workspace_commands::WorkspaceState>()
+            .store()
+            .await
+        {
+            let listed = tokio::task::spawn_blocking(move || store.list(false)).await;
+            if let Ok(Ok(workspaces)) = listed {
+                scope.workspaces = workspaces
+                    .into_iter()
+                    .map(|w| Named {
+                        id: w.id,
+                        name: w.name,
+                    })
+                    .collect();
+            }
+        }
+        scope.folders = crate::whats_new::watched_folders(
+            &self.app.state::<crate::file_watcher::FolderSyncState>(),
+        )
+        .into_iter()
+        .map(|(id, path)| Named {
+            id,
+            name: crate::whats_new::folder_name(&path),
+        })
+        .collect();
+        if let Some(alerts) = crate::engine_commands::paper_alerts(&self.app).await {
+            let listed = tokio::task::spawn_blocking(move || alerts.list()).await;
+            if let Ok(Ok(alerts)) = listed {
+                scope.alerts = alerts
+                    .into_iter()
+                    .map(|a| Named {
+                        id: a.id,
+                        name: a.words,
+                    })
+                    .collect();
+            }
+        }
+        scope
+    }
+
+    async fn draft_reply(&self, model: &RunModel, prompt: &str) -> Result<String, String> {
+        let llm = self.app.state::<LLMState>();
+        let target = match &model.model {
+            Some(chosen) => chosen.clone(),
+            None => configured_model(&llm).ok_or_else(|| {
+                "Drafting needs a model reached over an API or LM Studio.".to_string()
+            })?,
+        };
+        match crate::model_fallback::complete_once(&self.app, &target, prompt, DRAFT_MAX_TOKENS)
+            .await
+        {
+            Ok(reply) => {
+                // Answered: one automations call on the model's limit.
+                crate::engine_commands::record_call(
+                    &self.app,
+                    Spender::Automations,
+                    model.pool.clone(),
+                )
+                .await;
+                Ok(reply.text)
+            }
+            Err(failure) => {
+                // A limit the draft ran into holds the automations on it back too.
+                if let Some(until) = limit_until(failure.kind, None, None, Utc::now()) {
+                    self.hold_pool(&model.pool, until);
+                }
+                Err(format!("{}: {}", failure.summary(), failure.detail))
+            }
+        }
+    }
+
     async fn prepare_conversation(&self, request: &AgentRequest) -> Result<(), String> {
         let store = crate::conversation_commands::store(&self.app)?;
         // Named after its automation and the day it ran, so runs tell apart in Ask.
@@ -354,6 +491,7 @@ impl AutomationEnv for TauriEnv {
         let session = AutomationSession {
             events,
             saved: saved.clone(),
+            answer_only: request.answer_only,
         };
         let model_override = request.model.clone().map(|model| ModelOverride {
             model,
@@ -382,7 +520,7 @@ impl AutomationEnv for TauriEnv {
             .to_rfc3339();
         let answer_id = format!("{}-answer", request.run_id);
         let request_id = format!("{}-agent", request.run_id);
-        let text = question_text(&request.name, &request.instruction);
+        let text = question_text(&request.name, &request.instruction, request.answer_only);
         let turn = SendTurn {
             conversation_id: request.conversation_id.clone(),
             question: Some(ConversationMessage {
@@ -676,8 +814,40 @@ mod tests {
 
     #[test]
     fn the_question_names_the_automation_and_its_rules() {
-        let text = question_text("Weekly digest", "Summarise the week.");
+        let text = question_text("Weekly digest", "Summarise the week.", false);
         assert!(text.starts_with("Automation \"Weekly digest\":\n\nSummarise the week."));
         assert!(text.contains("saved for the user's OK"));
+        let answering = question_text("Summarise new papers", "Summarise each paper.", true);
+        assert!(answering.starts_with("Automation \"Summarise new papers\":\n\nSummarise each"));
+        assert!(answering.contains("from what is given above only"));
+        assert!(!answering.contains("Read what you need"));
+    }
+
+    #[test]
+    fn a_source_changed_when_its_file_or_a_file_in_its_folder_did() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.txt");
+        std::fs::write(&file, "one").unwrap();
+        let of_file = path_modified(&file).unwrap();
+        let of_folder = path_modified(dir.path()).unwrap();
+        assert!(
+            of_folder >= of_file,
+            "a folder is as new as its newest file"
+        );
+        assert_eq!(
+            source_modified(file.to_str(), "2026-11-01T00:00:00Z"),
+            of_file.to_rfc3339()
+        );
+        let gone = dir.path().join("gone.txt");
+        assert_eq!(path_modified(&gone), None);
+        assert_eq!(
+            source_modified(gone.to_str(), "2026-11-01T00:00:00Z"),
+            "2026-11-01T00:00:00Z",
+            "a source with no file to read keeps when it was added"
+        );
+        assert_eq!(
+            source_modified(None, "2026-11-01T00:00:00Z"),
+            "2026-11-01T00:00:00Z"
+        );
     }
 }

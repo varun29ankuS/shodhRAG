@@ -62,6 +62,16 @@ The user took the recommended option of every decision Q1–Q8 (listed at the en
 - **A run for a missed time waits two minutes after its first claim** (`started_at`) before its agent step.
 - **The reserve reads the documented free limit (50 a day).** It counts the free pool's calls, plus the tables' and learning's when chat's model is on that pool.
 
+**As built in 4c** (where it differs from the text below):
+- **An event's run waits its minute as `backoff` with no attempt counted**, and its agent is step 1: step 0 is what arrived. An event that comes after the agent has begun is recorded as a skipped run, as a schedule's overlap is.
+- **Events come from What's new.** A folder's event carries only the files What's new had not seen, so the folder's watch must be on; an alert's event carries only the papers it listed for the first time.
+- **A folder or an alert that goes puts its automations on hold as `failing`**, with a skipped run and an Inbox item that say why (`hold_reason` has no value of its own for it, and nothing uses `ALTER`).
+- **The cache is not read for a run the user starts** (Run now always runs); its result is still kept. A step is cached only when it has something to compare: what an event brought, or the sources of its workspace.
+- **Summarise new papers has no tools.** Its agent answers from the papers the alert already found (one call), so the run sends nothing but that call off the computer.
+- **Templates come from the backend** (`automation_templates`); the form builds the automation from them.
+- **Save as automation fills the form with the skill's name and description.** An automation's session has no skills, so the user completes the instruction.
+- **The assistant's tools keep an automation's event** when they change it without a schedule; setting one up for an event is done in the view.
+
 ## Proposed split (decision Q1)
 
 | PR | Scope | Ships alone because |

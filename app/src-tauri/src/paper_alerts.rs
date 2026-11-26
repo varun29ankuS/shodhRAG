@@ -25,6 +25,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Local, NaiveDate, NaiveTime, TimeDelta, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use shodh_rag::engine::events::EventTrigger;
 use shodh_rag::engine::runner::{Engine, Handled, JobHandler};
 use shodh_rag::engine::schedule::{Schedule, WeekDay};
 use shodh_rag::engine::store::{
@@ -161,6 +162,21 @@ fn paper_ref(job_id: &str, p: &Paper) -> String {
         format!("title:{}", title_key(&p.title))
     };
     format!("{job_id}|{id}")
+}
+
+/// A paper an alert found, as an automation's agent is given it: what the APIs said of
+/// it (title, authors, year, venue, link, the start of its abstract), nothing else.
+fn paper_subject(row: &FeedItem) -> Value {
+    json!({
+        "kind": "paper",
+        "title": row.title,
+        "authors": row.data["authors"],
+        "year": row.data["year"],
+        "venue": row.data["venue"],
+        "doi": row.data["doi"],
+        "url": row.data["landingUrl"],
+        "abstract": row.data["abstract"],
+    })
 }
 
 /// A paper found before, as the comparison reads it.
@@ -425,7 +441,21 @@ impl Core {
         };
         let rows = self.rows_of(job, &input.words, &found.new);
         match self.feed.insert_if_absent(&rows, now) {
-            Ok(inserted) => progress.found += inserted.len(),
+            Ok(inserted) => {
+                progress.found += inserted.len();
+                if !inserted.is_empty() {
+                    // The automations this alert starts get the papers, once: only the
+                    // ones it had not found before.
+                    self.sink
+                        .found(
+                            EventTrigger::PaperFound {
+                                alert_id: job.id.clone(),
+                            },
+                            inserted.iter().map(paper_subject).collect(),
+                        )
+                        .await;
+                }
+            }
             Err(e) => return unstored(e.to_string(), &mut progress),
         }
         // Weak matches and those past the best few are kept as seen (dismissed, never
@@ -798,6 +828,12 @@ impl PaperAlerts {
         self.core
             .sink
             .resolve(&format!("{ALERT_HOLD_PREFIX}{}", job.id))
+            .await;
+        self.core
+            .sink
+            .gone(EventTrigger::PaperFound {
+                alert_id: job.id.clone(),
+            })
             .await;
         self.core.sink.changed();
         Ok(deleted)
@@ -1405,6 +1441,9 @@ mod tests {
     struct Sink {
         posted: Mutex<Vec<NewInboxItem>>,
         resolved: Mutex<Vec<String>>,
+        /// What the automations were told was found, and what was gone.
+        found: Mutex<Vec<(EventTrigger, Vec<Value>)>>,
+        gone: Mutex<Vec<EventTrigger>>,
     }
 
     #[async_trait]
@@ -1428,6 +1467,18 @@ mod tests {
                 .push(format!("{prefix}*"));
         }
         fn changed(&self) {}
+        async fn found(&self, trigger: EventTrigger, subjects: Vec<Value>) {
+            self.found
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push((trigger, subjects));
+        }
+        async fn gone(&self, trigger: EventTrigger) {
+            self.gone
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(trigger);
+        }
     }
 
     struct Env {
@@ -1500,6 +1551,109 @@ mod tests {
     /// Monday 23 Nov 2026, 10:00 local time.
     fn monday() -> DateTime<Utc> {
         local(2026, 11, 23, 10, 0)
+    }
+
+    #[tokio::test]
+    async fn an_alert_find_reaches_its_automations() {
+        use crate::automations::testing::FakeEnv;
+        use crate::automations::{
+            templates, AgentOutcome, AutomationState, Automations, ANSWER_ONLY_CALLS,
+        };
+
+        let e = setup(monday());
+        let alert = e.alerts.create(WORDS, CreatedBy::User).unwrap();
+        // The template "Summarise new papers", set up for this alert.
+        let engine = Arc::new(Engine::with_clock(
+            e.store.clone(),
+            e.clock.clone(),
+            "alerts-test-automations",
+        ));
+        let fake = Arc::new(FakeEnv::default());
+        let automations = Automations::new(engine.clone(), fake.clone());
+        let template = templates()
+            .into_iter()
+            .find(|t| t.id == "summarise_papers")
+            .unwrap();
+        let auto = automations
+            .create(
+                template.draft(Some(&alert.id), None),
+                CreatedBy::User,
+                json!({}),
+            )
+            .unwrap();
+        assert_eq!(auto.state, AutomationState::Watching);
+        assert_eq!(auto.planned_calls, ANSWER_ONLY_CALLS);
+        e.alerts.check_now(&alert.id).await.unwrap();
+        let listed = e.papers();
+        assert!(listed > 0);
+        let found = e
+            .sink
+            .found
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        assert_eq!(found.len(), 1, "one event for the check");
+        let (told, papers) = found[0].clone();
+        assert_eq!(
+            told,
+            EventTrigger::PaperFound {
+                alert_id: alert.id.clone()
+            }
+        );
+        assert_eq!(
+            papers.len(),
+            listed,
+            "the papers listed, not the ones set aside"
+        );
+        assert!(papers
+            .iter()
+            .all(|p| p["kind"] == "paper" && p["title"].as_str().is_some_and(|t| !t.is_empty())));
+        // A second check finds nothing new: nothing is told twice.
+        e.alerts.check_now(&alert.id).await.unwrap();
+        assert_eq!(
+            e.sink.found.lock().unwrap_or_else(|e| e.into_inner()).len(),
+            1
+        );
+        let asked = e.net.hosts_asked().len();
+        // As the app's sink hands it on: one run, a minute later, which answers from the
+        // papers alone. Nothing more is asked of any API, and the agent has no tools.
+        assert_eq!(automations.event(&told, papers.clone()).await.unwrap(), 1);
+        fake.script(AgentOutcome {
+            calls: 1,
+            answer: "Each paper in two sentences.".into(),
+            ..AgentOutcome::default()
+        });
+        e.clock.set(monday() + TimeDelta::minutes(2));
+        engine.tick(&automations.handler()).await.unwrap();
+        let request = fake.requests.lock().unwrap()[0].clone();
+        assert!(request.answer_only, "no tools");
+        assert_eq!(request.planned, ANSWER_ONLY_CALLS);
+        let first_title = papers[0]["title"].as_str().unwrap();
+        assert!(request.instruction.contains(first_title));
+        assert_eq!(
+            e.net.hosts_asked().len(),
+            asked,
+            "the automation asked no API: it sent nothing new off the computer"
+        );
+        let run = engine.store().runs(&auto.id, 5).unwrap().remove(0);
+        assert_eq!(run.state, RunState::Succeeded);
+        assert_eq!((run.planned_calls, run.used_calls), (1, 1));
+        // The alert is deleted: the automation is put on hold, saying why.
+        e.alerts.delete(&alert.id).await.unwrap();
+        let gone = e
+            .sink
+            .gone
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        assert_eq!(gone, vec![told]);
+        assert_eq!(automations.trigger_gone(&gone[0]).await.unwrap(), 1);
+        let view = automations.get(&auto.id).unwrap();
+        assert_eq!(view.state, AutomationState::OnHold);
+        assert_eq!(
+            view.last.and_then(|run| run.summary).as_deref(),
+            Some("On hold: its paper alert was deleted.")
+        );
     }
 
     #[tokio::test]

@@ -473,6 +473,17 @@ impl AgentProfile {
         }
     }
 
+    /// The automation profile of a run that only answers from what it is given (the
+    /// papers an alert found): no tool at all, so the run is one model call, and what it
+    /// was given goes nowhere but to that model.
+    pub fn automation_answer_only() -> Self {
+        Self {
+            allowed_tools: Vec::new(),
+            max_tool_calls: 0,
+            ..Self::automation()
+        }
+    }
+
     /// The default profile: every v1 tool, approval for every write.
     pub fn assistant() -> Self {
         let allowed_tools = CORE_TOOLS
@@ -582,6 +593,34 @@ mod tests {
         }
         // The rule it replaced is gone, so the two never disagree.
         assert!(!rules.contains("keep a short plan with update_plan"));
+    }
+
+    #[test]
+    fn an_answer_only_automation_has_no_tool_at_all() {
+        let p = AgentProfile::automation_answer_only();
+        assert!(p.allowed_tools.is_empty());
+        assert_eq!(p.max_tool_calls, 0);
+        assert_eq!(p.mode, AgentMode::Ask);
+        assert_eq!(p.id, "automation");
+        for tool in ["web_search", "search_documents", "download_file"] {
+            assert!(!p.allows(tool), "{tool}");
+        }
+    }
+
+    #[test]
+    fn installing_a_skill_stays_user_only_in_an_automation() {
+        // An automation made from a skill carries the skill's words as its instruction;
+        // no tool of its agent installs, removes or switches a skill.
+        for profile in [
+            AgentProfile::automation(),
+            AgentProfile::automation_answer_only(),
+        ] {
+            assert!(
+                profile.allowed_tools.iter().all(|t| !t.contains("skill")),
+                "{:?}",
+                profile.allowed_tools
+            );
+        }
     }
 
     #[test]

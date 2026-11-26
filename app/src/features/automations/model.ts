@@ -1,7 +1,9 @@
 /**
  * Automations, in the words and shapes the view shows (`automations.rs` on the wire):
  * each automation's state chip and tooltip, why a run ran, its calls, the form's
- * schedule, the estimate, and which limit the automations' model counts against.
+ * schedule or event, the estimate, which limit the automations' model counts against,
+ * a draft and the templates as the form takes them, and the replay of where a run's
+ * agent would have taken the user.
  *
  * Pure (type-only imports), so `node --test` loads it directly
  * (`app/tests/automations.test.ts`).
@@ -30,12 +32,16 @@ export type Schedule =
   | { kind: 'monthly'; day: number | 'last'; at: string }
   | { kind: 'every_hours'; hours: number; from: string };
 
+/** What starts an automation instead of a schedule (`EventTrigger` in Rust). */
+export type EventTrigger = { kind: 'files_added'; sourceId: string } | { kind: 'paper_found'; alertId: string };
+
 export type RunState = 'queued' | 'running' | 'waiting' | 'succeeded' | 'failed' | 'skipped' | 'cancelled';
 export type WaitReason = 'approval' | 'decision' | 'yield' | 'quota' | 'table_job' | 'model_unavailable' | 'offline' | 'backoff';
 export type Trigger = 'schedule' | 'catch_up' | 'manual' | 'event' | 'retry';
 export type AutomationState =
   | 'scheduled'
   | 'manual'
+  | 'watching'
   | 'running'
   | 'waiting'
   | 'paused'
@@ -71,6 +77,8 @@ export interface Step {
   idx: number;
   kind: 'input' | 'agent' | 'notify';
   state: 'running' | 'done' | 'failed' | 'skipped';
+  /** What the step was given (an event's run: `subjects` and `more` at step 0). */
+  input: Record<string, unknown>;
   output: Record<string, unknown>;
   calls: number;
 }
@@ -108,6 +116,9 @@ export interface Automation {
   instruction: string;
   workspaceId: string | null;
   schedule: Schedule | null;
+  trigger: EventTrigger | null;
+  /** Its agent answers from what the run gives it, with no tools (one call a run). */
+  answerOnly: boolean;
   when: string;
   nextDueAt: string | null;
   enabled: boolean;
@@ -124,7 +135,9 @@ export interface Draft {
   name: string;
   instruction: string;
   schedule: Schedule | null;
+  trigger: EventTrigger | null;
   workspaceId: string | null;
+  answerOnly: boolean;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -133,6 +146,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 const str = (value: unknown): string | null => (typeof value === 'string' ? value : null);
 const num = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) ? value : 0);
+
+export function readTrigger(value: unknown): EventTrigger | null {
+  if (!isRecord(value)) return null;
+  if (value.kind === 'files_added' && typeof value.sourceId === 'string') return { kind: 'files_added', sourceId: value.sourceId };
+  if (value.kind === 'paper_found' && typeof value.alertId === 'string') return { kind: 'paper_found', alertId: value.alertId };
+  return null;
+}
 
 export function readRun(value: unknown): Run | null {
   if (!isRecord(value) || typeof value.id !== 'string' || typeof value.state !== 'string') return null;
@@ -167,6 +187,7 @@ export function readRunDetail(value: unknown): RunDetail | null {
         idx: num(s.idx),
         kind: (str(s.kind) ?? 'agent') as Step['kind'],
         state: (str(s.state) ?? 'done') as Step['state'],
+        input: isRecord(s.input) ? s.input : {},
         output: isRecord(s.output) ? s.output : {},
         calls: num(s.calls),
       }))
@@ -205,6 +226,8 @@ export function readAutomation(value: unknown): Automation | null {
     instruction: str(value.instruction) ?? '',
     workspaceId: str(value.workspaceId),
     schedule: isRecord(value.schedule) ? (value.schedule as unknown as Schedule) : null,
+    trigger: readTrigger(value.trigger),
+    answerOnly: value.answerOnly === true,
     when: str(value.when) ?? '',
     nextDueAt: str(value.nextDueAt),
     enabled: value.enabled !== false,
@@ -243,6 +266,8 @@ export function stateChip(a: Automation, now: number, options: { locale?: string
       return { label: 'Scheduled', tooltip: a.nextDueAt ? `Runs ${shortTime(a.nextDueAt, now, options)}` : a.when, tone: 'neutral' };
     case 'manual':
       return { label: 'Manual', tooltip: 'Runs when you start it', tone: 'neutral' };
+    case 'watching':
+      return { label: 'Watching', tooltip: a.when || 'Runs when something arrives', tone: 'neutral' };
     case 'running':
       return {
         label: 'Running',
@@ -266,7 +291,12 @@ export function stateChip(a: Automation, now: number, options: { locale?: string
     case 'on_hold':
       return {
         label: 'On hold',
-        tooltip: a.holdReason === 'model_unavailable' ? 'Model not answering; check the model' : 'Failed 3 times in a row',
+        tooltip:
+          a.holdReason === 'model_unavailable'
+            ? 'Model not answering; check the model'
+            : a.last?.state === 'skipped' && a.last.summary?.startsWith('On hold:')
+              ? a.last.summary
+              : 'Failed 3 times in a row',
         tone: 'warning',
       };
     case 'off':
@@ -340,12 +370,17 @@ export function runsAMonth(schedule: Schedule | null): number | null {
 /** The form's estimate (`estimate_line` in Rust). */
 export function estimateText(schedule: Schedule | null, perRun: number): string {
   const runs = runsAMonth(schedule);
-  const line = `Each run: up to ${perRun} model calls`;
+  const line = perRun === 1 ? 'Each run: 1 model call' : `Each run: up to ${perRun} model calls`;
   return runs === null ? line : `${line} (about ${runs * perRun} a month)`;
 }
 
 /** What the form's "When" offers. */
-export type WhenKind = 'manual' | 'daily' | 'weekdays' | 'weekly' | 'monthly' | 'every_hours';
+export type WhenKind = 'manual' | 'daily' | 'weekdays' | 'weekly' | 'monthly' | 'every_hours' | 'files_added' | 'paper_found';
+
+/** The kinds of When that are an event, not a time. */
+export function isEventKind(kind: WhenKind): kind is 'files_added' | 'paper_found' {
+  return kind === 'files_added' || kind === 'paper_found';
+}
 
 export interface WhenForm {
   kind: WhenKind;
@@ -353,12 +388,17 @@ export interface WhenForm {
   days: WeekDay[];
   day: number | 'last';
   hours: number;
+  /** The watched folder of "When files arrive". */
+  sourceId: string;
+  /** The paper alert of "When an alert finds papers". */
+  alertId: string;
 }
 
-export const DEFAULT_WHEN: WhenForm = { kind: 'weekly', at: '09:00', days: ['mon'], day: 1, hours: 6 };
+export const DEFAULT_WHEN: WhenForm = { kind: 'weekly', at: '09:00', days: ['mon'], day: 1, hours: 6, sourceId: '', alertId: '' };
 
 /** The schedule a form says, or why it cannot be saved. */
 export function scheduleOf(form: WhenForm, nowIso: string): { schedule: Schedule | null } | { error: string } {
+  if (isEventKind(form.kind)) return { schedule: null };
   if (form.kind !== 'manual' && form.kind !== 'every_hours' && !/^([01]\d|2[0-3]):[0-5]\d$/.test(form.at)) {
     return { error: 'Pick a time.' };
   }
@@ -384,8 +424,22 @@ export function scheduleOf(form: WhenForm, nowIso: string): { schedule: Schedule
   }
 }
 
-/** The form for an automation's schedule (the default for a new one). */
-export function formOf(schedule: Schedule | null): WhenForm {
+/** What a form says starts the automation: a schedule, an event or neither, or why it cannot be saved. */
+export function whenOf(form: WhenForm, nowIso: string): { schedule: Schedule | null; trigger: EventTrigger | null } | { error: string } {
+  if (form.kind === 'files_added') {
+    return form.sourceId ? { schedule: null, trigger: { kind: 'files_added', sourceId: form.sourceId } } : { error: 'Pick a folder.' };
+  }
+  if (form.kind === 'paper_found') {
+    return form.alertId ? { schedule: null, trigger: { kind: 'paper_found', alertId: form.alertId } } : { error: 'Pick a paper alert.' };
+  }
+  const planned = scheduleOf(form, nowIso);
+  return 'error' in planned ? planned : { schedule: planned.schedule, trigger: null };
+}
+
+/** The form for an automation's schedule or event (the default for a new one). */
+export function formOf(schedule: Schedule | null, trigger: EventTrigger | null = null): WhenForm {
+  if (!schedule && trigger?.kind === 'files_added') return { ...DEFAULT_WHEN, kind: 'files_added', sourceId: trigger.sourceId };
+  if (!schedule && trigger?.kind === 'paper_found') return { ...DEFAULT_WHEN, kind: 'paper_found', alertId: trigger.alertId };
   if (!schedule) return { ...DEFAULT_WHEN, kind: 'manual' };
   switch (schedule.kind) {
     case 'daily':
@@ -430,4 +484,180 @@ export function limitTag(model: ModelRef | null, chat: ModelRef | null): { label
 /** A model as the menu names it. */
 export function modelKey(model: ModelRef | null): string {
   return model ? `${model.provider}/${model.model}` : '';
+}
+
+/** The model calls one run plans (`planned_calls` in Rust). */
+export function plannedCalls(answerOnly: boolean): number {
+  return answerOnly ? 1 : 4;
+}
+
+/** What the form opens with: a draft, a template or a skill. */
+export interface FormPrefill {
+  name: string;
+  instruction: string;
+  when: WhenForm;
+  workspaceId: string | null;
+  answerOnly: boolean;
+  /** One line under the form's buttons (why a draft was not used). */
+  note: string | null;
+}
+
+/** An automation the model drafted (`Drafted`). */
+export interface Drafted {
+  name: string;
+  instruction: string;
+  schedule: Schedule | null;
+  trigger: EventTrigger | null;
+  workspaceId: string | null;
+  note: string | null;
+}
+
+export function readDrafted(value: unknown): Drafted | null {
+  if (!isRecord(value) || typeof value.instruction !== 'string') return null;
+  return {
+    name: str(value.name) ?? '',
+    instruction: value.instruction,
+    schedule: isRecord(value.schedule) ? (value.schedule as unknown as Schedule) : null,
+    trigger: readTrigger(value.trigger),
+    workspaceId: str(value.workspaceId),
+    note: str(value.note),
+  };
+}
+
+/** The form a draft fills. A draft that was not used leaves When as the user had it. */
+export function prefillFromDraft(drafted: Drafted, current: WhenForm): FormPrefill {
+  return {
+    name: drafted.name,
+    instruction: drafted.instruction,
+    when: drafted.note ? current : formOf(drafted.schedule, drafted.trigger),
+    workspaceId: drafted.workspaceId,
+    answerOnly: false,
+    note: drafted.note,
+  };
+}
+
+/** An automation ready to set up (`Template`). */
+export interface Template {
+  id: string;
+  name: string;
+  when: string;
+  instruction: string;
+  schedule: Schedule | null;
+  triggerKind: 'files_added' | 'paper_found' | null;
+  needsWorkspace: boolean;
+  answerOnly: boolean;
+  plannedCalls: number;
+  estimate: string;
+}
+
+export function readTemplates(value: unknown): Template[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(isRecord).flatMap(t => {
+    if (typeof t.id !== 'string' || typeof t.name !== 'string' || typeof t.instruction !== 'string') return [];
+    const kind = t.triggerKind === 'files_added' || t.triggerKind === 'paper_found' ? t.triggerKind : null;
+    return [{
+      id: t.id,
+      name: t.name,
+      when: str(t.when) ?? '',
+      instruction: t.instruction,
+      schedule: isRecord(t.schedule) ? (t.schedule as unknown as Schedule) : null,
+      triggerKind: kind,
+      needsWorkspace: t.needsWorkspace === true,
+      answerOnly: t.answerOnly === true,
+      plannedCalls: num(t.plannedCalls),
+      estimate: str(t.estimate) ?? '',
+    }];
+  });
+}
+
+/**
+ * The form a template opens: its name, instruction and time; the first alert, folder
+ * or workspace there is, for the user to change (none: the form says to pick one).
+ */
+export function prefillFromTemplate(
+  template: Template,
+  have: { folderIds: string[]; alertIds: string[]; workspaceIds: string[] },
+): FormPrefill {
+  const when: WhenForm =
+    template.triggerKind === 'paper_found'
+      ? { ...DEFAULT_WHEN, kind: 'paper_found', alertId: have.alertIds[0] ?? '' }
+      : template.triggerKind === 'files_added'
+        ? { ...DEFAULT_WHEN, kind: 'files_added', sourceId: have.folderIds[0] ?? '' }
+        : formOf(template.schedule);
+  return {
+    name: template.name,
+    instruction: template.instruction,
+    when,
+    workspaceId: template.needsWorkspace ? (have.workspaceIds[0] ?? null) : null,
+    answerOnly: template.answerOnly,
+    note: null,
+  };
+}
+
+/**
+ * The form "Automate" opens from an installed skill: the skill's name, and an
+ * instruction that says what the skill is for, which the user completes. Only when the
+ * user starts it, until they pick a time. Installing or changing skills stays in
+ * Settings: an automation's agent has no tool for it.
+ */
+export function prefillFromSkill(skill: { name: string; description: string }): FormPrefill {
+  const name = skill.name.trim().slice(0, 80);
+  const what = skill.description.trim();
+  return {
+    name,
+    instruction: (what ? `Do what the skill "${name}" is for: ${what}` : `Do what the skill "${name}" is for.`).slice(0, 4000),
+    when: { ...DEFAULT_WHEN, kind: 'manual' },
+    workspaceId: null,
+    answerOnly: false,
+    note: null,
+  };
+}
+
+/** A step's row on the run page: what it was, and what it came to. */
+export function stepLine(step: Step): { label: string; text: string } {
+  if (step.kind === 'input') {
+    const subjects = Array.isArray(step.input.subjects) ? step.input.subjects.length : 0;
+    const count = subjects + num(step.input.more);
+    return { label: 'Arrived', text: count === 1 ? '1 item' : `${count} items` };
+  }
+  const text = str(step.output.summary) ?? step.state;
+  return { label: step.kind === 'notify' ? 'Told you' : 'Agent', text };
+}
+
+/** Somewhere a run's agent would have taken the user (kept in its step's output). */
+export interface SavedMove {
+  view: unknown;
+  target: unknown;
+  label: string | null;
+}
+
+/** Where a run's agent would have taken the user, in order. */
+export function savedMoves(steps: Step[]): SavedMove[] {
+  return steps.flatMap(step => {
+    const list = step.kind === 'agent' && Array.isArray(step.output.navigations) ? step.output.navigations : [];
+    return list.filter(isRecord).map(move => ({ view: move.view, target: move.target, label: str(move.label) }));
+  });
+}
+
+/** How long each place stays on screen during a replay. */
+export const REPLAY_GAP_MS = 2500;
+
+/**
+ * "Show me": goes to each place the run's agent opened, one at a time, with a pause
+ * between them. Each move goes through the same gate as the assistant's own: while the
+ * user is typing nothing moves, and the replay ends there. Returns how many places
+ * were shown.
+ */
+export async function replayMoves(
+  moves: SavedMove[],
+  deps: { go: (move: SavedMove) => void; wait: (ms: number) => Promise<void>; typing: () => boolean; gapMs?: number },
+): Promise<number> {
+  let shown = 0;
+  for (const move of moves) {
+    if (shown > 0) await deps.wait(deps.gapMs ?? REPLAY_GAP_MS);
+    if (deps.typing()) break;
+    deps.go(move);
+    shown += 1;
+  }
+  return shown;
 }

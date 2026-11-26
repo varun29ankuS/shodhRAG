@@ -1812,6 +1812,9 @@ jobs:
           $log = Join-Path $data 'logs\shodh.log'
           $env:SHODH_DATA_DIR = $data
           $env:SHODH_LAUNCH_PROBE = 'embedded-preview'
+          # After its checks, the probe opens every view in each theme and waits for a
+          # picture of each (launch_probe.rs, views_tour): the pictures a reviewer looks at.
+          $env:SHODH_LAUNCH_PROBE_TOUR = 'views'
           $app = Start-Process -FilePath $exe.FullName -PassThru
           function Wait-Line([string]$pattern, [int]$seconds) {
             $deadline = (Get-Date).AddSeconds($seconds)
@@ -1878,6 +1881,25 @@ jobs:
             $creatorPage = & $colour 'preview'
             $creatorPane = & $colour 'pane'
             $creatorSummary = "Pixels after the Creator finish: preview=$creatorPage pane=$creatorPane"
+            # The views tour: the probe says when each view is shown, then waits for its
+            # picture. The names and their order are launch_probe.rs's (TOUR_VIEWS and
+            # TOUR_THEMES; scripts/release/test/release-jobs.test.mjs keeps the two equal).
+            # After a failure Wait-Line returns at once and no picture is taken.
+            $tourViews = 'ask', 'artifacts', 'library', 'workspaces', 'connectors', 'tasks', 'automations', 'activity', 'settings'
+            $tourThemes = 'dark', 'light'
+            $tourShots = 0
+            foreach ($theme in $tourThemes) {
+              foreach ($view in $tourViews) {
+                $shown = "Launch probe: view $view in $theme shown"
+                Wait-Line $shown 60
+                if (Select-String -Path $log -SimpleMatch $shown -Quiet) {
+                  $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+                  $bitmap.Save((Join-Path $evidence "view-$view-$theme.png"), [System.Drawing.Imaging.ImageFormat]::Png)
+                  $tourShots += 1
+                }
+                New-Item -ItemType File -Force (Join-Path $data "launch-probe-captured-view-$view-$theme") | Out-Null
+              }
+            }
             Wait-Line 'Launch probe: (PASS|FAIL)' 60
             $lines = @(Select-String -Path $log -Pattern 'Launch probe:' | ForEach-Object { $_.Line })
             $lines | ForEach-Object { Write-Host $_ }
@@ -1899,6 +1921,10 @@ jobs:
             if (-not ($creatorPage -like 'red*' -and $creatorPane -like 'other*')) {
               throw "$creatorSummary (expected: the page shown, the findings beside it)"
             }
+            $tourExpected = $tourViews.Count * $tourThemes.Count
+            if (-not ($lines | Where-Object { $_ -match "Launch probe: views tour done views=$($tourViews.Count) themes=$($tourThemes.Count)" })) { throw 'The views tour did not finish' }
+            if ($tourShots -ne $tourExpected) { throw "The views tour took $tourShots of $tourExpected pictures" }
+            "- $tourShots pictures, every view in dark and light, are in the windows-launch-evidence artifact (view-<name>-<theme>.png)" | Add-Content $env:GITHUB_STEP_SUMMARY
           } finally {
             if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force }
             if (Test-Path $log) { Copy-Item $log $evidence }

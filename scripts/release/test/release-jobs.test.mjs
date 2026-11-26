@@ -102,3 +102,31 @@ test("the signing job's Tauri CLI is the version the phone app's lockfile pins",
   const lock = JSON.parse(readFileSync(join(ROOT, 'mobile', 'package-lock.json'), 'utf8'));
   assert.equal(pinned, lock.packages['node_modules/@tauri-apps/cli'].version);
 });
+
+test("the Windows launch job's views tour is the probe's own list, in its order", () => {
+  const probe = readFileSync(join(ROOT, 'app', 'src-tauri', 'src', 'launch_probe.rs'), 'utf8');
+  const list = (name) => {
+    const body = new RegExp(String.raw`pub const ${name}: &\[&str\] = &\[([^\]]*)\];`).exec(probe);
+    assert.ok(body, `launch_probe.rs has ${name}`);
+    return [...body[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+  };
+  const body = code(job('launch-windows').block);
+  const quoted = (line) => [...line.matchAll(/'([^']+)'/g)].map((m) => m[1]);
+  const views = body.match(/^ +\$tourViews = (.+)$/m);
+  const themes = body.match(/^ +\$tourThemes = (.+)$/m);
+  assert.ok(views && themes, 'the job lists the views and themes it photographs');
+  assert.deepEqual(quoted(views[1]), list('TOUR_VIEWS'));
+  assert.deepEqual(quoted(themes[1]), list('TOUR_THEMES'));
+  // The job asks for the tour by its name, waits for each view by the probe's line, and
+  // answers with the file the probe waits for.
+  assert.match(body, /\$env:SHODH_LAUNCH_PROBE_TOUR = 'views'/);
+  assert.match(probe, /pub const TOUR_VIEWS_NAME: &str = "views";/);
+  assert.match(body, /\$shown = "Launch probe: view \$view in \$theme shown"/);
+  assert.match(probe, /tracing::info!\("Launch probe: view \{view\} in \{theme\} shown"\);/);
+  assert.match(body, /Join-Path \$data "launch-probe-captured-view-\$view-\$theme"/);
+  assert.match(probe, /format!\("launch-probe-captured-view-\{view\}-\{theme\}"\)/);
+  // Every picture is taken, or the job fails.
+  assert.match(body, /if \(\$tourShots -ne \$tourExpected\) \{ throw /);
+  // The macOS launch job does not ask for the tour, so the probe there ends as before.
+  assert.doesNotMatch(code(job('launch-macos').block), /SHODH_LAUNCH_PROBE_TOUR/);
+});

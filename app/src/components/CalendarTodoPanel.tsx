@@ -258,7 +258,7 @@ function TaskRow({
           tabIndex={inner}
           onClick={e => { e.stopPropagation(); toggle(); }}
           className={cn(
-            'col-start-1 row-start-1 mt-1 w-4 h-4 shrink-0 rounded-full border-2 inline-flex items-center justify-center transition-colors duration-micro',
+            'target-24 col-start-1 row-start-1 mt-1 w-4 h-4 shrink-0 rounded-full border-2 inline-flex items-center justify-center transition-colors duration-micro',
             done ? 'bg-shodh-success border-shodh-success text-shodh-ground' : 'border-shodh-border-strong hover:border-shodh-text-muted',
             FOCUS_RING,
           )}
@@ -611,7 +611,7 @@ export default function CalendarTodoPanel() {
       <div className="h-full flex items-center justify-center p-6">
         <div role="alert" className="max-w-sm text-center flex flex-col items-center gap-3">
           <AlertCircle className="w-6 h-6 text-shodh-error" aria-hidden="true" />
-          <p className="text-sm text-shodh-text-secondary">Could not load tasks.</p>
+          <p className="text-body text-shodh-text-secondary">Could not load tasks.</p>
           <p className="text-caption text-shodh-text-faint break-words">{error}</p>
           <button
             type="button"
@@ -634,16 +634,15 @@ export default function CalendarTodoPanel() {
 
   return (
     <div className="h-full overflow-hidden flex flex-col">
-      <div className="px-6 pt-3 pb-3 shrink-0">
-        <h1 className="text-lg font-bold text-shodh-text">Tasks</h1>
-        <p className="text-caption text-shodh-text-muted mt-0.5">
+      <div className="px-8 pb-3 shrink-0">
+        <p className="m-0 text-caption text-shodh-text-muted">
           {pendingCount} to do
           {overdueCount > 0 && <span className="text-shodh-error"> · {overdueCount} overdue</span>}
           {completedCount > 0 && ` · ${completedCount} done`}
         </p>
       </div>
 
-      <div className="flex-1 min-h-0 flex gap-5 px-6 pb-6">
+      <div className="flex-1 min-h-0 flex gap-5 px-8 pb-page-end">
         <section aria-label="Task list" className="flex-1 min-w-0 flex flex-col min-h-0 gap-3">
           <QuickAdd defaultDay={selectedDay} workspace={filteredWorkspace} />
 

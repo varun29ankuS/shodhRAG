@@ -182,7 +182,7 @@ export function FeedbackDialog({ isOpen, onClose, type = 'feedback' }: FeedbackD
               ) : (
                 <MessageSquare className="w-6 h-6" style={{ color: colors.primary }} aria-hidden="true" />
               )}
-              <h2 id={headingId} className="text-xl font-bold" style={{ color: colors.text }}>
+              <h2 id={headingId} className="text-title font-bold" style={{ color: colors.text }}>
                 {HEADING[feedbackType]}
               </h2>
             </div>
@@ -204,7 +204,7 @@ export function FeedbackDialog({ isOpen, onClose, type = 'feedback' }: FeedbackD
                 Your browser should open a new GitHub issue with your report. Submit it there to send it.
               </p>
               {opened.shortened && (
-                <p className="m-0 text-sm" style={{ color: colors.textMuted }}>
+                <p className="m-0 text-body" style={{ color: colors.textMuted }}>
                   {opened.copied
                     ? 'Your description was too long for the link, so the issue holds the start of it. The full text is on your clipboard: paste it into the issue.'
                     : 'Your description was too long for the link, so the issue holds the start of it, and the full text could not be copied. Copy it from here before you close this.'}
@@ -220,7 +220,7 @@ export function FeedbackDialog({ isOpen, onClose, type = 'feedback' }: FeedbackD
                   style={fieldStyle}
                 />
               )}
-              <p className="m-0 text-sm" style={{ color: colors.textMuted }}>
+              <p className="m-0 text-body" style={{ color: colors.textMuted }}>
                 {'If nothing opened, report it at '}
                 <span className="font-mono">{ISSUES_URL.replace('https://', '')}</span>.
               </p>
@@ -240,7 +240,7 @@ export function FeedbackDialog({ isOpen, onClose, type = 'feedback' }: FeedbackD
                   type="button"
                   onClick={close}
                   className={`px-6 py-3 rounded-lg font-medium transition-all ${focusRing}`}
-                  style={{ background: colors.primary, color: '#ffffff' }}
+                  style={{ background: colors.primary, color: colors.primaryText }}
                 >
                   Done
                 </button>
@@ -255,11 +255,11 @@ export function FeedbackDialog({ isOpen, onClose, type = 'feedback' }: FeedbackD
                     type="button"
                     aria-pressed={feedbackType === t}
                     onClick={() => setFeedbackType(t)}
-                    className={`flex-1 py-2 px-4 rounded-lg border-2 transition-all text-sm font-medium ${focusRing}`}
+                    className={`flex-1 py-2 px-4 rounded-lg border-2 transition-all text-body font-medium ${focusRing}`}
                     style={{
                       background: feedbackType === t ? colors.primary : colors.bgSecondary,
                       borderColor: feedbackType === t ? colors.primary : colors.border,
-                      color: feedbackType === t ? '#ffffff' : colors.text,
+                      color: feedbackType === t ? colors.primaryText : colors.text,
                     }}
                   >
                     {FEEDBACK_KIND_LABEL[t]}
@@ -268,7 +268,7 @@ export function FeedbackDialog({ isOpen, onClose, type = 'feedback' }: FeedbackD
               </div>
 
               <div>
-                <label htmlFor={titleId} className="block text-sm font-medium mb-2" style={{ color: colors.text }}>
+                <label htmlFor={titleId} className="block text-body font-medium mb-2" style={{ color: colors.text }}>
                   Title <span style={{ color: colors.error }} aria-hidden="true">*</span>
                 </label>
                 <input
@@ -286,7 +286,7 @@ export function FeedbackDialog({ isOpen, onClose, type = 'feedback' }: FeedbackD
               </div>
 
               <div>
-                <label htmlFor={descriptionId} className="block text-sm font-medium mb-2" style={{ color: colors.text }}>
+                <label htmlFor={descriptionId} className="block text-body font-medium mb-2" style={{ color: colors.text }}>
                   Description <span style={{ color: colors.error }} aria-hidden="true">*</span>
                 </label>
                 <textarea
@@ -301,7 +301,7 @@ export function FeedbackDialog({ isOpen, onClose, type = 'feedback' }: FeedbackD
                 />
               </div>
 
-              <p id={noteId} className="m-0 text-xs" style={{ color: colors.textMuted }}>
+              <p id={noteId} className="m-0 text-caption" style={{ color: colors.textMuted }}>
                 This opens a new issue on GitHub in your browser, with your report and the app version filled in; you
                 submit it there. GitHub issues are public, so leave out anything private.
               </p>
@@ -319,7 +319,7 @@ export function FeedbackDialog({ isOpen, onClose, type = 'feedback' }: FeedbackD
                   type="submit"
                   disabled={opening || !title.trim() || !description.trim()}
                   className={`px-6 py-3 rounded-lg font-medium transition-all flex items-center gap-2 disabled:opacity-50 ${focusRing}`}
-                  style={{ background: colors.primary, color: '#ffffff' }}
+                  style={{ background: colors.primary, color: colors.primaryText }}
                 >
                   <ExternalLink className="w-4 h-4" aria-hidden="true" />
                   {opening ? 'Opening GitHub…' : 'Open as a GitHub issue'}

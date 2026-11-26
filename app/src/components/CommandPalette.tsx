@@ -9,6 +9,7 @@ import { VIEW_TABS, VIEW_TAB_DESCRIPTIONS, VIEW_TAB_KEYWORDS, VIEW_TAB_LABELS } 
 import type { ViewTab } from '../lib/viewTabs';
 import { relativeTime } from '../utils/time';
 import { NAV_ICONS } from './shell/Sidebar';
+import { FOCUS_UNDERLINE } from '../lib/focusStyles';
 
 /** A primary action offered by the shell (new chat, add folder, …). */
 export interface PaletteAction {
@@ -276,7 +277,7 @@ export default function CommandPalette({
                 value={query}
                 onChange={e => setQuery(e.target.value)}
                 placeholder="Search views, actions, chats and folders…"
-                className="flex-1 bg-transparent text-body text-shodh-text placeholder:text-shodh-text-faint outline-none"
+                className={cn('flex-1 bg-transparent text-body text-shodh-text placeholder:text-shodh-text-faint outline-none', FOCUS_UNDERLINE)}
               />
               <kbd className="text-caption px-1.5 py-0.5 rounded border border-shodh-border font-mono text-shodh-text-muted shrink-0">
                 Esc

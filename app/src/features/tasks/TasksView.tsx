@@ -9,6 +9,7 @@ import TasksCalendar from './TasksCalendar';
 import { TasksStoreProvider, useTasksStore } from './TasksStore';
 import TaskDetailSheet from './TaskDetailSheet';
 import EventDetailSheet from './EventDetailSheet';
+import { PageFrame } from '../../components/shell/PageFrame';
 
 export type TasksMode = 'list' | 'calendar';
 
@@ -101,8 +102,11 @@ function TasksLayouts() {
   };
 
   return (
-    <div className="h-full flex flex-col min-h-0">
-      <div className="px-6 pt-4 shrink-0 flex items-center">
+    <PageFrame
+      fill
+      width="full"
+      title="Tasks"
+      toolbar={
         <div
           role="radiogroup"
           aria-label="Tasks layout"
@@ -135,18 +139,12 @@ function TasksLayouts() {
             );
           })}
         </div>
-      </div>
-      {stale && <StaleNotice error={error} onRetry={() => void refresh()} className="mx-6 mt-3 shrink-0" />}
+      }
+    >
+      {stale && <StaleNotice error={error} onRetry={() => void refresh()} className="mx-8 mb-3 shrink-0" />}
       <div key={mode} className="shell-view-enter flex-1 min-h-0">
-        {mode === 'list' ? <CalendarTodoPanel /> : (
-          <div className="h-full flex flex-col min-h-0">
-            <h1 className="px-6 pt-3 text-lg font-bold shrink-0">Tasks</h1>
-            <div className="flex-1 min-h-0">
-              <TasksCalendar />
-            </div>
-          </div>
-        )}
+        {mode === 'list' ? <CalendarTodoPanel /> : <TasksCalendar />}
       </div>
-    </div>
+    </PageFrame>
   );
 }

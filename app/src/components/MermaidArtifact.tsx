@@ -68,13 +68,13 @@ export function MermaidArtifact({
   };
 
   return (
-    <div className="h-full flex flex-col bg-white dark:bg-gray-900">
+    <div className="h-full flex flex-col bg-shodh-surface">
       {/* Content */}
       <div className="flex-1 overflow-auto p-6 flex items-center justify-center">
         {error ? (
-          <div className="p-4 rounded-lg border border-red-500 bg-red-50 dark:bg-red-950">
-            <p className="text-sm font-semibold mb-1 text-red-700 dark:text-red-300">Diagram Error</p>
-            <p className="text-xs text-red-600 dark:text-red-400">{error}</p>
+          <div className="p-4 rounded-lg border border-shodh-error/40 bg-shodh-error/10">
+            <p className="text-body font-semibold mb-1 text-shodh-text">Diagram Error</p>
+            <p className="text-caption text-shodh-error">{error}</p>
           </div>
         ) : (
           <div

@@ -45,7 +45,7 @@ export const ModelTrigger = forwardRef<HTMLButtonElement, ModelTriggerProps>(fun
       data-ready={ready}
       data-model-state={ready ? dot : 'none'}
       className={cn(
-        'inline-flex items-center gap-[7px] min-w-0 max-w-full shrink px-2.5 rounded-full bg-shodh-raised-2 text-small text-shodh-text-secondary hover:bg-shodh-pressed hover:text-shodh-text transition-colors duration-micro disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:bg-shodh-raised-2',
+        'inline-flex items-center gap-1.5 min-w-0 max-w-full shrink px-2.5 rounded-full bg-shodh-raised-2 text-small text-shodh-text-secondary hover:bg-shodh-pressed hover:text-shodh-text transition-colors duration-micro disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:bg-shodh-raised-2',
         COMPOSER_CONTROL_HEIGHT,
         FOCUS_RING,
         className,

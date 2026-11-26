@@ -21,7 +21,11 @@
 //!    one of the sample page). The page must come back and stay shown, with
 //!    no pane opened over it. Then the user opens the check's findings: they
 //!    dock beside the page, which narrows and stays on top where it is, and
-//!    the job reads the pixels of both.
+//!    the job reads the pixels of both;
+//! 6. last, and only when `SHODH_LAUNCH_PROBE_TOUR=views` is set too
+//!    ([`views_tour`]): every view of the app, in each theme, opened by the
+//!    main window's frontend, each waiting for the job's screenshot of it.
+//!    Pictures for people to review; no check reads them.
 //!
 //! Each fact is one `Launch probe:` log line, then `Launch probe: PASS` or
 //! `Launch probe: FAIL <what>`.
@@ -298,7 +302,79 @@ async fn run(app: &AppHandle) -> Result<(), String> {
         return Err("a layer stayed up after the pane went".to_string());
     }
 
-    creator_finish(app, &window, &data_dir, &creation).await
+    creator_finish(app, &window, &data_dir, &creation).await?;
+
+    if tour_requested(std::env::var_os(TOUR_ENV).as_deref()) {
+        views_tour(app, &data_dir).await?;
+    }
+    Ok(())
+}
+
+/// The variable asking the probe to end with the views tour.
+pub const TOUR_ENV: &str = "SHODH_LAUNCH_PROBE_TOUR";
+/// The one tour there is.
+pub const TOUR_VIEWS_NAME: &str = "views";
+/// Every view of the app, in the sidebar's order (`app/src/lib/viewTabs.ts`,
+/// which `app/tests/launchTour.test.ts` keeps this equal to).
+pub const TOUR_VIEWS: &[&str] = &[
+    "ask",
+    "artifacts",
+    "library",
+    "workspaces",
+    "connectors",
+    "tasks",
+    "automations",
+    "activity",
+    "settings",
+];
+/// Both themes, each view in each.
+pub const TOUR_THEMES: &[&str] = &["dark", "light"];
+/// How long a view is given to load its code and its first data and paint,
+/// before the job is told to take its picture. The picture is for people to
+/// review; nothing is read from it.
+const TOUR_SETTLE: Duration = Duration::from_millis(2500);
+
+/// Whether the probe ends with the views tour: only by name.
+pub fn tour_requested(env_value: Option<&OsStr>) -> bool {
+    env_value == Some(OsStr::new(TOUR_VIEWS_NAME))
+}
+
+/// The file the launch job writes once it has its screenshot of `view` in `theme`.
+pub fn view_captured_file(view: &str, theme: &str) -> String {
+    format!("launch-probe-captured-view-{view}-{theme}")
+}
+
+/// The views tour: each view of the app in each theme, opened by the main
+/// window's own frontend as a click in the sidebar opens it, one after the
+/// other, each waiting for the launch job's screenshot. It runs after every
+/// check of the probe, so it changes none of them.
+async fn views_tour(app: &AppHandle, data_dir: &Path) -> Result<(), String> {
+    let to_main = || tauri::EventTarget::Webview {
+        label: crate::background::MAIN_WINDOW.to_string(),
+    };
+    for theme in TOUR_THEMES {
+        for view in TOUR_VIEWS {
+            app.emit_to(
+                to_main(),
+                LAUNCH_PROBE_EVENT,
+                serde_json::json!({ "kind": "show", "view": view, "theme": theme }),
+            )
+            .map_err(|e| format!("the {view} view could not be asked for: {e}"))?;
+            tokio::time::sleep(TOUR_SETTLE).await;
+            tracing::info!("Launch probe: view {view} in {theme} shown");
+            let captured = data_dir.join(view_captured_file(view, theme));
+            wait_for("the launch job's screenshot of a view", 60, || {
+                captured.exists()
+            })
+            .await?;
+        }
+    }
+    tracing::info!(
+        "Launch probe: views tour done views={} themes={}",
+        TOUR_VIEWS.len(),
+        TOUR_THEMES.len()
+    );
+    Ok(())
 }
 
 /// The event main's frontend acts on for the probe (`features/launch/LaunchProbeHost`).
@@ -708,6 +784,32 @@ mod tests {
         assert!(!probe_requested(Some(OsStr::new("")), &separate));
         assert!(!probe_requested(None, &separate));
         assert!(!probe_requested(None, &normal));
+    }
+
+    #[test]
+    fn the_views_tour_runs_only_by_name_and_names_each_picture() {
+        assert!(tour_requested(Some(OsStr::new("views"))));
+        assert!(!tour_requested(Some(OsStr::new("1"))));
+        assert!(!tour_requested(Some(OsStr::new(""))));
+        assert!(!tour_requested(None));
+        assert_eq!(
+            view_captured_file("library", "dark"),
+            "launch-probe-captured-view-library-dark"
+        );
+        // Every view once, and each picture's file is its own.
+        let mut files: Vec<String> = TOUR_THEMES
+            .iter()
+            .flat_map(|theme| {
+                TOUR_VIEWS
+                    .iter()
+                    .map(move |view| view_captured_file(view, theme))
+            })
+            .collect();
+        let count = files.len();
+        files.sort();
+        files.dedup();
+        assert_eq!(files.len(), count);
+        assert_eq!(count, 18);
     }
 
     #[test]

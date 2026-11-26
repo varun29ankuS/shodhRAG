@@ -332,7 +332,7 @@ export default function TasksCalendar() {
       <div className="h-full flex items-center justify-center p-6">
         <div role="alert" className="max-w-sm text-center flex flex-col items-center gap-3">
           <AlertCircle className="w-6 h-6 text-shodh-error" aria-hidden="true" />
-          <p className="text-sm text-shodh-text-secondary">Could not load tasks and events.</p>
+          <p className="text-body text-shodh-text-secondary">Could not load tasks and events.</p>
           <p className="text-caption text-shodh-text-faint break-words">{error}</p>
           <button
             type="button"
@@ -352,7 +352,7 @@ export default function TasksCalendar() {
   const selectedLabel = selected.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
 
   return (
-    <div className="h-full flex gap-5 px-6 pb-6 pt-2 min-h-0">
+    <div className="h-full flex gap-5 px-8 pb-page-end min-h-0">
       <section aria-labelledby="tasks-calendar-month" className="flex-1 min-w-0 flex flex-col min-h-0">
         <div className="flex items-center gap-1 mb-3 shrink-0">
           <h2 id="tasks-calendar-month" className="text-body-lg font-semibold mr-auto" aria-live="polite">
@@ -466,7 +466,7 @@ export default function TasksCalendar() {
                       aria-label={`${isDone(task) ? 'Mark not done' : 'Mark done'}: ${task.title}`}
                       onClick={() => void toggleTask(task)}
                       className={cn(
-                        'mt-0.5 w-4 h-4 shrink-0 rounded border inline-flex items-center justify-center transition-colors duration-micro',
+                        'target-24 mt-0.5 w-4 h-4 shrink-0 rounded border inline-flex items-center justify-center transition-colors duration-micro',
                         isDone(task) ? 'bg-shodh-success border-shodh-success text-shodh-ground' : 'border-shodh-border-strong hover:border-shodh-text-muted',
                         FOCUS_RING,
                       )}

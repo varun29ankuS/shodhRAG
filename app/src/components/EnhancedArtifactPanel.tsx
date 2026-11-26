@@ -234,11 +234,11 @@ export function EnhancedArtifactPanel({
         style={{ backgroundColor: colors.bgSecondary, borderBottom: `1px solid ${colors.border}` }}
       >
         <div className="flex items-center gap-2">
-          <h2 className="font-semibold text-sm" style={{ color: colors.text }}>
+          <h2 className="font-semibold text-body" style={{ color: colors.text }}>
             Artifacts
           </h2>
           <span
-            className="text-xs px-2 py-0.5 rounded-full font-medium"
+            className="text-caption px-2 py-0.5 rounded-full font-medium"
             style={{ backgroundColor: `${colors.primary}18`, color: colors.primary }}
           >
             {artifacts.length}
@@ -285,7 +285,7 @@ export function EnhancedArtifactPanel({
                 {/* Group header */}
                 <button
                   onClick={() => toggleGroup(group.key)}
-                  className="w-full flex items-center gap-1.5 px-3 py-2 text-xs font-semibold uppercase tracking-wider transition-colors"
+                  className="w-full flex items-center gap-1.5 px-3 py-2 text-caption font-semibold uppercase tracking-wider transition-colors"
                   style={{ color: colors.textMuted }}
                   onMouseEnter={e => (e.currentTarget.style.backgroundColor = colors.bgHover)}
                   onMouseLeave={e => (e.currentTarget.style.backgroundColor = 'transparent')}
@@ -317,7 +317,7 @@ export function EnhancedArtifactPanel({
                               setSelectedId(artifact.id);
                               setEditMode(false);
                             }}
-                            className="w-full text-left px-3 py-2 pl-7 text-xs transition-colors truncate"
+                            className="w-full text-left px-3 py-2 pl-7 text-caption transition-colors truncate"
                             style={{
                               backgroundColor: isSelected ? `${colors.primary}14` : 'transparent',
                               color: isSelected ? colors.primary : colors.textSecondary,
@@ -352,10 +352,10 @@ export function EnhancedArtifactPanel({
               style={{ borderBottom: `1px solid ${colors.border}` }}
             >
               <div className="min-w-0">
-                <p className="text-sm font-medium truncate" style={{ color: colors.text }}>
+                <p className="text-body font-medium truncate" style={{ color: colors.text }}>
                   {selectedArtifact.title}
                 </p>
-                <p className="text-xs" style={{ color: colors.textMuted }}>
+                <p className="text-caption" style={{ color: colors.textMuted }}>
                   {getTypeName(selectedArtifact)} &bull; v{selectedArtifact.version}
                 </p>
               </div>
@@ -409,14 +409,14 @@ export function EnhancedArtifactPanel({
                   borderBottom: `1px solid ${colors.primary}30`,
                 }}
               >
-                <p className="text-xs font-medium" style={{ color: colors.primary }}>Editing</p>
+                <p className="text-caption font-medium" style={{ color: colors.primary }}>Editing</p>
                 <div className="flex gap-2">
                   <button
                     onClick={() => {
                       setEditMode(false);
                       if (selectedArtifact) setEditedContent(selectedArtifact.content);
                     }}
-                    className="px-2 py-1 text-xs rounded transition-colors"
+                    className="px-2 py-1 text-caption rounded transition-colors"
                     style={{ border: `1px solid ${colors.border}`, color: colors.text }}
                     onMouseEnter={e => (e.currentTarget.style.backgroundColor = colors.bgHover)}
                     onMouseLeave={e => (e.currentTarget.style.backgroundColor = 'transparent')}
@@ -426,7 +426,7 @@ export function EnhancedArtifactPanel({
                   <button
                     onClick={handleSave}
                     disabled={!onSave}
-                    className="px-2 py-1 text-xs rounded transition-colors flex items-center gap-1 disabled:opacity-50"
+                    className="px-2 py-1 text-caption rounded transition-colors flex items-center gap-1 disabled:opacity-50"
                     style={{ backgroundColor: colors.primary, color: colors.primaryText }}
                   >
                     <SaveIcon className="w-3 h-3" />
@@ -453,7 +453,7 @@ export function EnhancedArtifactPanel({
                     <textarea
                       value={editedContent}
                       onChange={(e) => setEditedContent(e.target.value)}
-                      className="w-full h-full min-h-[400px] p-4 font-mono text-sm rounded-lg focus:outline-none"
+                      className="w-full h-full min-h-[400px] p-4 font-mono text-body rounded-lg focus:outline-none"
                       style={{
                         backgroundColor: colors.bgTertiary,
                         border: `1px solid ${colors.border}`,

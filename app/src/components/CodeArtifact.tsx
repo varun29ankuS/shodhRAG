@@ -61,7 +61,7 @@ export function CodeArtifact({
   const isDark = theme === 'dark';
 
   return (
-    <div className="h-full flex flex-col bg-white dark:bg-gray-900">
+    <div className="h-full flex flex-col bg-shodh-surface">
       <div className="flex-1 overflow-auto">
         <CodeHighlight
           code={artifact.content}

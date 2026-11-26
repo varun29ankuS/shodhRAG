@@ -14,6 +14,7 @@ import type { FindCursor } from './conversationWindow';
 import type { ChatMessage } from './types';
 import { countOf } from '../../lib/plural';
 import { IS_MAC_PLATFORM, shortcutText, withShortcut } from '../../lib/shortcuts';
+import { FOCUS_UNDERLINE } from '../../lib/focusStyles';
 
 /** CSS custom highlight names (styled in index.css). */
 const HIGHLIGHT_ALL = 'conversation-find';
@@ -209,7 +210,7 @@ export function ConversationFind({ messages, firstVisibleIndex, reveal, onTarget
         placeholder="Find in conversation"
         aria-label="Find in conversation"
         spellCheck={false}
-        className="w-48 min-w-0 bg-transparent text-small text-shodh-text placeholder:text-shodh-text-faint outline-none"
+        className={cn('w-48 min-w-0 bg-transparent text-small text-shodh-text placeholder:text-shodh-text-faint outline-none', FOCUS_UNDERLINE)}
       />
       <span className="min-w-[72px] text-right text-caption tabular-nums text-shodh-text-muted" role="status" aria-live="polite">
         {status}

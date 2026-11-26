@@ -27,6 +27,7 @@ import { GitHubMark } from './GitHubLogo';
 import { GitHubPage } from './GitHubPage';
 import { EMPTY_GITHUB_WIZARD, type GitHubWizardState } from './GitHubSetup';
 import { useGitHubStatus } from './useGitHubStatus';
+import { PageFrame } from '../../components/shell/PageFrame';
 
 /** A connector in the gallery: its mark, name, one line, its state and one action. */
 function ConnectorTile({
@@ -166,8 +167,13 @@ export default function ConnectorsView() {
   const githubTab = (page?.connector === 'github' ? page.tab : null) as GitHubTabId | null;
 
   return (
-    <div ref={rootRef} onKeyDown={onKeyDown} className="h-full overflow-y-auto scrollbar-thin bg-shodh-ground text-shodh-text">
-      <div className="max-w-5xl mx-auto px-4 sm:px-8 py-7 flex flex-col gap-6">
+    <PageFrame
+      ref={rootRef}
+      onKeyDown={onKeyDown}
+      title="Connectors"
+      lede="Nothing connects until you set it up"
+      heading={!page}
+    >
         {page?.connector === 'slack' ? (
           <SlackPage
             slack={slack}
@@ -198,12 +204,6 @@ export default function ConnectorsView() {
           />
         ) : (
           <>
-            <header className="flex flex-col gap-1">
-              <h2 className="m-0 text-[20px] font-semibold text-shodh-text">Connectors</h2>
-              <p className="m-0 text-small text-shodh-text-secondary max-w-[640px]">
-                Tools Shodh works in. Nothing connects until you set it up, and each one says what it can reach.
-              </p>
-            </header>
             <ul ref={tilesRef} aria-label="Connectors" className="m-0 p-0 list-none grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
               {CONNECTORS.map(info => {
                 const open = () => show({ connector: info.id, tab: null });
@@ -251,7 +251,6 @@ export default function ConnectorsView() {
             </ul>
           </>
         )}
-      </div>
-    </div>
+    </PageFrame>
   );
 }

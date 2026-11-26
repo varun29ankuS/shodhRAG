@@ -631,7 +631,7 @@ export function SideThread({ open, depth, parentLabel, thread, extras, onClearSe
                     FOCUS_RING,
                   )}
                 >
-                  <Sparkles className="w-3.5 h-3.5 mt-[1px] shrink-0 text-shodh-accent-text" aria-hidden="true" />
+                  <Sparkles className="w-3.5 h-3.5 mt-px shrink-0 text-shodh-accent-text" aria-hidden="true" />
                   <span className="break-words">{q}</span>
                 </button>
               </li>
@@ -650,7 +650,7 @@ export function SideThread({ open, depth, parentLabel, thread, extras, onClearSe
                 type="button"
                 onClick={onClearSelection}
                 aria-label="Do not attach the selected text"
-                className={cn('w-5 h-5 shrink-0 inline-flex items-center justify-center rounded-full hover:bg-shodh-raised', FOCUS_RING)}
+                className={cn('target-24 w-5 h-5 shrink-0 inline-flex items-center justify-center rounded-full hover:bg-shodh-raised', FOCUS_RING)}
               >
                 <X className="w-3 h-3" aria-hidden="true" />
               </button>

@@ -134,7 +134,7 @@ function SubtaskList({ task }: { task: TodoItem }) {
                   disabled={saving}
                   onClick={() => void toggleSubtask(task.id, sub.id)}
                   className={cn(
-                    'w-4 h-4 shrink-0 rounded border inline-flex items-center justify-center transition-colors duration-micro disabled:opacity-50',
+                    'target-24 w-4 h-4 shrink-0 rounded border inline-flex items-center justify-center transition-colors duration-micro disabled:opacity-50',
                     sub.completed ? 'bg-shodh-success border-shodh-success text-shodh-ground' : 'border-shodh-border-strong hover:border-shodh-text-muted',
                     FOCUS_RING,
                   )}
@@ -322,7 +322,7 @@ export default function TaskDetailSheet({ task, onClose }: { task: TodoItem | nu
         required
         value={shown.title}
         onCommit={title => void updateTask(shown.id, { title })}
-        className="h-auto py-1.5 text-[17px] font-semibold"
+        className="h-auto py-1.5 text-subhead font-semibold"
       />
       <Provenance source={shown.source} sourceRef={shown.sourceRef} />
       <AskAboutTask task={shown} />

@@ -680,7 +680,7 @@ export function TelegramPage({
         <TelegramMark size="lg" />
         <div className="flex-1 min-w-0">
           <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-            <h2 className="m-0 text-[20px] font-semibold text-shodh-text">Telegram</h2>
+            <h2 className="m-0 text-title font-semibold text-shodh-text">Telegram</h2>
             <span role="status" aria-live="polite">
               <StatusPill pill={pill} />
             </span>
@@ -711,7 +711,7 @@ export function TelegramPage({
         <section aria-labelledby="telegram-linked" className="flex flex-col items-start gap-3 rounded-xl border border-shodh-border bg-shodh-surface p-6">
           <CheckCircle2 className="w-7 h-7 text-shodh-success" aria-hidden="true" />
           <div>
-            <h3 id="telegram-linked" className="m-0 text-[16px] font-semibold text-shodh-text">{ownerLine(status)}</h3>
+            <h3 id="telegram-linked" className="m-0 text-body-lg font-semibold text-shodh-text">{ownerLine(status)}</h3>
             <p className="m-0 mt-1 text-small text-shodh-text-secondary max-w-[60ch]">
               Ask anything in that chat: Shodh answers from all your workspaces and memories, with sources. Send /new for a fresh
               conversation. Your Telegram conversations appear in Shodh’s sidebar too.

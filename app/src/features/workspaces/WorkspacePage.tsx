@@ -258,7 +258,7 @@ export function WorkspacePage({
       <header className="flex items-start gap-3">
         <WorkspaceIcon icon={detail.icon} color={detail.color} className="w-6 h-6 mt-1" />
         <div className="flex-1 min-w-0">
-          <h2 className="m-0 text-[20px] font-semibold text-shodh-text truncate">
+          <h2 className="m-0 text-title font-semibold text-shodh-text truncate">
             {detail.name}
             {detail.archived && <span className="ml-2 align-middle text-caption font-medium px-1.5 py-0.5 rounded-full bg-shodh-raised text-shodh-text-muted">Archived</span>}
             <span className="ml-2 align-middle"><SlackAnswersBadge source={slack} workspaceId={detail.id} /></span>

@@ -290,7 +290,7 @@ export default function Sidebar({
       <div
         className={cn(
           'flex items-center gap-2.5 shrink-0',
-          collapsed ? 'flex-col px-3 pt-[18px] pb-3' : 'px-[18px] pt-[18px] pb-3.5'
+          collapsed ? 'flex-col px-3 pt-4.5 pb-3' : 'px-4.5 pt-4.5 pb-3.5'
         )}
       >
         <img

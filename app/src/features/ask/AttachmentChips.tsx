@@ -76,7 +76,7 @@ export function FileRefChip({
   onRemove?: () => void;
 }) {
   return (
-    <div className={cn('flex', compact ? 'px-3 pt-2' : 'px-[18px] pt-3')}>
+    <div className={cn('flex', compact ? 'px-3 pt-2' : 'px-4.5 pt-3')}>
       <span
         className="inline-flex items-center gap-1.5 h-7 max-w-full pl-2.5 pr-1 rounded-full bg-shodh-raised-2 text-caption text-shodh-text-secondary"
         title={`Answers in this chat search only ${file.name}, until you remove it`}
@@ -88,7 +88,7 @@ export function FileRefChip({
           onClick={() => (onRemove ? onRemove() : composerFiles.set(conversationId, null))}
           aria-label={`Search all sources instead of only ${file.name}`}
           title="Search all sources instead"
-          className={cn('w-5 h-5 shrink-0 inline-flex items-center justify-center rounded-full text-shodh-text-muted hover:bg-shodh-pressed hover:text-shodh-text', FOCUS_RING)}
+          className={cn('target-24 w-5 h-5 shrink-0 inline-flex items-center justify-center rounded-full text-shodh-text-muted hover:bg-shodh-pressed hover:text-shodh-text', FOCUS_RING)}
         >
           <X className="w-3 h-3" aria-hidden="true" />
         </button>
@@ -111,7 +111,7 @@ export function AttachmentChips({
   return (
     <ul
       aria-label="Attached to your next question"
-      className={cn('flex flex-wrap gap-1.5 m-0 list-none', compact ? 'px-3 pt-2' : 'px-[18px] pt-3')}
+      className={cn('flex flex-wrap gap-1.5 m-0 list-none', compact ? 'px-3 pt-2' : 'px-4.5 pt-3')}
     >
       {attachments.map(attachment => {
         const label = attachmentLabel(attachment);
@@ -128,7 +128,7 @@ export function AttachmentChips({
               onClick={() => composerAttachments.remove(conversationId, attachment.id)}
               aria-label={`Remove: ${label}`}
               title="Remove"
-              className={cn('w-5 h-5 shrink-0 inline-flex items-center justify-center rounded-full text-shodh-text-muted hover:bg-shodh-pressed hover:text-shodh-text', FOCUS_RING)}
+              className={cn('target-24 w-5 h-5 shrink-0 inline-flex items-center justify-center rounded-full text-shodh-text-muted hover:bg-shodh-pressed hover:text-shodh-text', FOCUS_RING)}
             >
               <X className="w-3 h-3" aria-hidden="true" />
             </button>

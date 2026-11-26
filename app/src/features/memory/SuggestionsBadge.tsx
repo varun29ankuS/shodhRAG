@@ -40,7 +40,7 @@ export function SuggestionsBadge({ onOpen }: { onOpen: () => void }) {
       type="button"
       onClick={onOpen}
       className={cn(
-        'shrink-0 h-[22px] px-2 inline-flex items-center gap-1 rounded-full border border-shodh-border bg-shodh-surface',
+        'target-24 shrink-0 h-[22px] px-2 inline-flex items-center gap-1 rounded-full border border-shodh-border bg-shodh-surface',
         'text-caption text-shodh-text-secondary hover:text-shodh-text hover:bg-shodh-raised transition-colors duration-micro',
         FOCUS_RING,
       )}

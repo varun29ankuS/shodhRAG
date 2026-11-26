@@ -82,9 +82,9 @@ export function RecallViewer({ receipt, onBack }: { receipt: string; onBack: () 
     <div className="flex flex-col gap-4">
       <header className="flex items-start justify-between gap-4">
         <div className="min-w-0 flex flex-col gap-1">
-          <h1 className="m-0 text-2xl font-bold text-shodh-text break-words">{opened?.title ?? 'Coding session'}</h1>
+          <h1 className="m-0 text-title font-bold text-shodh-text break-words">{opened?.title ?? 'Coding session'}</h1>
           {opened && (
-            <p className="m-0 text-sm text-shodh-text-muted">
+            <p className="m-0 text-body text-shodh-text-muted">
               {[toolLabel(opened.tool), opened.project, opened.branch ? `branch ${opened.branch}` : null, `${opened.turnsTotal.toLocaleString()} turns`]
                 .filter(Boolean)
                 .join(' · ')}

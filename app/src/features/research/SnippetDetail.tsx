@@ -184,7 +184,7 @@ export function SnippetDetail({ snippet, mode, onChanged, onOpenTable }: Snippet
         <p className="text-caption font-medium uppercase tracking-wider text-shodh-text-faint">
           {`${KIND_LABEL[snippet.kind]} · ${snippetSource(snippet)}`}
         </p>
-        <h3 className="text-[17px] font-semibold text-shodh-text break-words">{snippet.title.trim() || label}</h3>
+        <h3 className="text-subhead font-semibold text-shodh-text break-words">{snippet.title.trim() || label}</h3>
         {snippet.note.trim() && <p className="text-small text-shodh-text-secondary whitespace-pre-wrap break-words">{snippet.note}</p>}
         {snippet.tags.length > 0 && (
           <ul className="flex flex-wrap gap-1.5" aria-label="Tags">
@@ -204,12 +204,12 @@ export function SnippetDetail({ snippet, mode, onChanged, onOpenTable }: Snippet
             draggable={false}
           />
         ) : image.status === 'loading' ? (
-          <span role="status" className="flex items-center gap-2 py-10 text-small text-zinc-600">
+          <span role="status" className="flex items-center gap-2 py-10 text-small text-shodh-paper-ink-muted">
             <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
             Drawing the region…
           </span>
         ) : (
-          <span role="alert" className="flex items-start gap-2 p-4 text-small text-zinc-700">
+          <span role="alert" className="flex items-start gap-2 p-4 text-small text-shodh-paper-ink">
             <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-shodh-warning" aria-hidden="true" />
             {`The image could not be drawn: ${image.message}`}
           </span>

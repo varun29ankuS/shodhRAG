@@ -148,7 +148,7 @@ export function ModelChoiceControl({ model, lockedReason, onChoose, onAll }: Mod
                 }}
                 className={ITEM}
               >
-                <Check className={cn('w-3.5 h-3.5 mt-[3px] shrink-0 text-shodh-accent-text', !choice.selected && 'invisible')} aria-hidden="true" />
+                <Check className={cn('w-3.5 h-3.5 mt-0.5 shrink-0 text-shodh-accent-text', !choice.selected && 'invisible')} aria-hidden="true" />
                 <span className="min-w-0 flex flex-col">
                   <span className="text-small font-medium text-shodh-text truncate">{choice.title}</span>
                   <span className="text-caption text-shodh-text-muted truncate">{choice.detail}</span>
@@ -165,7 +165,7 @@ export function ModelChoiceControl({ model, lockedReason, onChoose, onAll }: Mod
               }}
               className={ITEM}
             >
-              <ListFilter className="w-3.5 h-3.5 mt-[3px] shrink-0 text-shodh-text-muted" aria-hidden="true" />
+              <ListFilter className="w-3.5 h-3.5 mt-0.5 shrink-0 text-shodh-text-muted" aria-hidden="true" />
               <span className="text-small text-shodh-text">All models</span>
             </button>
           </div>,

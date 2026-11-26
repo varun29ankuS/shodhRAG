@@ -1,9 +1,10 @@
 /**
- * The type scale: every font size the app uses below heading sizes, as Tailwind
- * classes (`text-caption`, `text-small`, `text-body`, `text-body-lg`, set in
- * tailwind.config.js). Nothing is smaller than 12px; secondary text is told apart
- * by colour and weight, not by a smaller size. The whole interface scales with
- * Settings → Appearance → Text size (`textSize.ts`).
+ * The type scale: every font size the app's classes use, as Tailwind classes
+ * (`text-caption` … `text-display`, set in tailwind.config.js). Eight sizes, each
+ * with a name and a job; no class sets a size outside them (`app/tests/typeScale.test.ts`).
+ * Nothing is smaller than 12px; secondary text is told apart by colour and weight,
+ * not by a smaller size. The whole interface scales with Settings → Appearance →
+ * Text size (`textSize.ts`).
  *
  * No imports: unit-tested under Node (`app/tests/typeScale.test.ts`).
  */
@@ -16,6 +17,14 @@ export const TYPE_SCALE = {
   body: '14px',
   /** Lead text, prominent labels. */
   'body-lg': '15px',
+  /** An answer's prose: the one long text the app is read in. */
+  reading: '16px',
+  /** A section's heading inside a page; a dialog's title. */
+  subhead: '17px',
+  /** A page's title (`PageFrame`). */
+  title: '20px',
+  /** The one line a nearly empty screen opens with (a new chat). */
+  display: '28px',
 } as const;
 
 export type TypeScaleName = keyof typeof TYPE_SCALE;

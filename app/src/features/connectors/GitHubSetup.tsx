@@ -84,7 +84,7 @@ export function SignInCode({ status, now }: { status: GitHubStatus; now: number 
   return (
     <div className="flex flex-col gap-3 rounded-lg border border-shodh-border bg-shodh-surface-2 p-4">
       <p className="m-0 text-small text-shodh-text-secondary">Type this code on GitHub:</p>
-      <p className="m-0 font-mono text-[28px] font-semibold tracking-[0.2em] text-shodh-text select-all" aria-label={`Code ${signIn.userCode.split('').join(' ')}`}>
+      <p className="m-0 font-mono text-display font-semibold tracking-[0.2em] text-shodh-text select-all" aria-label={`Code ${signIn.userCode.split('').join(' ')}`}>
         {signIn.userCode}
       </p>
       <div className="flex flex-wrap items-center gap-2">
@@ -355,7 +355,7 @@ export function GitHubSetup({
 
       <section aria-labelledby="github-setup-step" className="flex flex-col gap-4 rounded-xl border border-shodh-border bg-shodh-surface p-5">
         <div className="flex flex-col gap-1">
-          <h3 id="github-setup-step" ref={headingRef} tabIndex={-1} className="m-0 text-[16px] font-semibold text-shodh-text focus:outline-none">
+          <h3 id="github-setup-step" ref={headingRef} tabIndex={-1} className="m-0 text-body-lg font-semibold text-shodh-text focus:outline-none">
             {current.title}
           </h3>
           <p className="m-0 text-small text-shodh-text-secondary max-w-[64ch]">{current.detail}</p>

@@ -30,6 +30,16 @@ module.exports = {
         small: '13px',
         body: '14px',
         'body-lg': '15px',
+        reading: '16px',
+        subhead: '17px',
+        title: '20px',
+        display: '28px',
+      },
+      // Spacing is Tailwind's 4px scale and these two (src/lib/spacingScale.ts;
+      // app/tests/uiStandard.test.ts keeps them equal and allows no other value).
+      spacing: {
+        4.5: '18px',
+        'page-end': '84px',
       },
       colors: {
         // Every semantic colour resolves to a --c-* token in src/index.css.
@@ -94,6 +104,8 @@ module.exports = {
           warning: token('warning'),
           'warning-soft': token('warning-soft'),
           info: token('info'),
+          'paper-ink': token('paper-ink'),
+          'paper-ink-muted': token('paper-ink-muted'),
           violet: token('violet'),
           error: token('error'),
         },

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import type React from 'react';
 import { createPortal } from 'react-dom';
 import { KeyRound, Loader2, RefreshCw, SlidersHorizontal } from 'lucide-react';

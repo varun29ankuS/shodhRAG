@@ -330,7 +330,7 @@ export function EmbeddedPreview({ creationId, version, network, reloadSeq, focus
             shownHidden ? 'text-shodh-warning' : 'text-shodh-text-secondary',
           )}
         >
-          {status === 'opening' && !error && !end && !shownHidden && <Loader2 className="w-3.5 h-3.5 shrink-0 animate-spin" aria-hidden="true" />}
+          {status === 'opening' && !error && !end && !shownHidden && <Loader2 className="w-3.5 h-3.5 shrink-0 animate-spin motion-reduce:animate-none" aria-hidden="true" />}
           {shownHidden && <EyeOff className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />}
           <span className="truncate">{stateLine}</span>
         </p>

@@ -117,14 +117,14 @@ export default function DataManagement({ sources, onRemoveSource, onSourcesClear
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Database className="w-4 h-4" style={{ color: colors.primary }} />
-          <span className="text-sm font-semibold" style={{ color: colors.text }}>Data Management</span>
+          <span className="text-body font-semibold" style={{ color: colors.text }}>Data Management</span>
         </div>
         <button
           onClick={() => { loadStats(); }}
           className="text-caption flex items-center gap-1 px-2 py-1 rounded border transition-colors"
           style={{ borderColor: colors.border, color: colors.textMuted }}
         >
-          <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
+          <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin motion-reduce:animate-none' : ''}`} />
           Refresh
         </button>
       </div>
@@ -143,7 +143,7 @@ export default function DataManagement({ sources, onRemoveSource, onSourcesClear
               className="rounded-md p-2 text-center"
               style={{ backgroundColor: `${colors.primary}08`, border: `1px solid ${colors.border}` }}
             >
-              <div className="text-xs font-bold" style={{ color: colors.text }}>{item.value}</div>
+              <div className="text-caption font-bold" style={{ color: colors.text }}>{item.value}</div>
               <div className="text-caption" style={{ color: colors.textMuted }}>{item.label}</div>
             </div>
           ))}
@@ -153,7 +153,7 @@ export default function DataManagement({ sources, onRemoveSource, onSourcesClear
       {/* Indexed Sources from frontend state */}
       {sources.length > 0 && (
         <div>
-          <label className="text-xs font-medium block mb-1.5" style={{ color: colors.textSecondary }}>
+          <label className="text-caption font-medium block mb-1.5" style={{ color: colors.textSecondary }}>
             Indexed Sources ({sources.length})
           </label>
           <div className="space-y-1 max-h-40 overflow-y-auto pr-1">
@@ -176,10 +176,10 @@ export default function DataManagement({ sources, onRemoveSource, onSourcesClear
                 </div>
                 <button
                   onClick={(e) => onRemoveSource(source.id, e)}
-                  className="p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500/10"
+                  className="p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity hover:bg-shodh-error/10"
                   title="Remove from index"
                 >
-                  <Trash2 className="w-3 h-3 text-red-500" />
+                  <Trash2 className="w-3 h-3 text-shodh-error" />
                 </button>
               </div>
             ))}
@@ -238,7 +238,7 @@ export default function DataManagement({ sources, onRemoveSource, onSourcesClear
 
       {/* Actions */}
       <div className="space-y-1.5">
-        <label className="text-xs font-medium block mb-1" style={{ color: colors.textSecondary }}>
+        <label className="text-caption font-medium block mb-1" style={{ color: colors.textSecondary }}>
           Maintenance
         </label>
 
@@ -252,9 +252,9 @@ export default function DataManagement({ sources, onRemoveSource, onSourcesClear
             opacity: loading ? 0.5 : 1,
           }}
         >
-          <Trash2 className="w-3 h-3 text-orange-500" />
+          <Trash2 className="w-3 h-3 text-shodh-warning" />
           Clear All Documents
-          <span className="ml-auto text-caption text-orange-500">Keeps spaces</span>
+          <span className="ml-auto text-caption text-shodh-warning">Keeps spaces</span>
         </button>
 
         <button
@@ -267,19 +267,18 @@ export default function DataManagement({ sources, onRemoveSource, onSourcesClear
             opacity: loading ? 0.5 : 1,
           }}
         >
-          <AlertTriangle className="w-3 h-3 text-red-500" />
+          <AlertTriangle className="w-3 h-3 text-shodh-error" />
           Reset Entire Database
-          <span className="ml-auto text-caption text-red-500">Destructive</span>
+          <span className="ml-auto text-caption text-shodh-error">Destructive</span>
         </button>
       </div>
 
       {/* Confirmation Inline */}
       {confirmAction && (
         <div
-          className="rounded-md p-3 space-y-2"
-          style={{ backgroundColor: '#fef2f2', border: '1px solid #fca5a5' }}
+          className="rounded-md p-3 space-y-2 border border-shodh-error/40 bg-shodh-error/10"
         >
-          <p className="text-caption font-medium text-red-800">
+          <p className="text-caption font-medium text-shodh-text">
             {confirmAction === 'clear_docs'
               ? 'This will permanently delete all indexed documents from the vector store and text index. Spaces will be preserved. This cannot be undone.'
               : 'This will delete everything — all documents, vectors, and spaces. The app will need a restart. This cannot be undone.'}
@@ -287,13 +286,13 @@ export default function DataManagement({ sources, onRemoveSource, onSourcesClear
           <div className="flex gap-2">
             <button
               onClick={() => setConfirmAction(null)}
-              className="text-caption px-3 py-1 rounded border border-gray-300 text-gray-700 hover:bg-gray-100"
+              className="text-caption px-3 py-1 rounded border border-shodh-border text-shodh-text-secondary hover:bg-shodh-raised"
             >
               Cancel
             </button>
             <button
               onClick={confirmAction === 'clear_docs' ? handleClearAllDocuments : handleResetDatabase}
-              className="text-caption px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700"
+              className="text-caption px-3 py-1 rounded bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               {confirmAction === 'clear_docs' ? 'Clear All Documents' : 'Reset Database'}
             </button>

@@ -616,7 +616,7 @@ export function FocusOverlay({ session, onClose }: FocusOverlayProps) {
               onPointerCancel={onResizePointerUp}
               onKeyDown={onResizeKeyDown}
               className={cn(
-                'absolute right-0 bottom-0 z-20 w-4 h-4 cursor-nwse-resize touch-none rounded-tl-md text-shodh-text-faint',
+                'target-24 absolute right-0 bottom-0 z-20 w-4 h-4 cursor-nwse-resize touch-none rounded-tl-md text-shodh-text-faint',
                 "after:absolute after:right-1 after:bottom-1 after:w-2 after:h-2 after:border-r-2 after:border-b-2 after:border-current after:content-['']",
                 FOCUS_RING,
               )}

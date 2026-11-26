@@ -280,7 +280,7 @@ export function ArtifactPage({ selection, onBack, onOpenChat, onChange, onDelete
             <p role="alert" className="m-0 text-small text-shodh-error">{loadError}</p>
           ) : (
             <p role="status" className="m-0 inline-flex items-center gap-2 text-small text-shodh-text-muted">
-              <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+              <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />
               Opening
             </p>
           )}
@@ -362,9 +362,9 @@ export function ArtifactPage({ selection, onBack, onOpenChat, onChange, onDelete
           <button type="button" onClick={onBack} aria-label="All artifacts" title="All artifacts" className={cn(QUIET_BUTTON, 'px-2 -ml-2')}>
             <ArrowLeft className="w-4 h-4" aria-hidden="true" />
           </button>
-          <h1 className="m-0 min-w-[6rem] shrink truncate text-lg font-bold text-shodh-text" title={creation.title}>{creation.title}</h1>
+          <h1 className="m-0 min-w-[6rem] shrink truncate text-subhead font-bold text-shodh-text" title={creation.title}>{creation.title}</h1>
           <p role="status" aria-live="polite" className="m-0 min-w-0 truncate inline-flex items-center gap-1.5 text-small text-shodh-text-muted" title={statusText}>
-            {running && <Loader2 className="w-3.5 h-3.5 shrink-0 animate-spin" aria-hidden="true" />}
+            {running && <Loader2 className="w-3.5 h-3.5 shrink-0 animate-spin motion-reduce:animate-none" aria-hidden="true" />}
             <span className="truncate">{statusText}</span>
           </p>
           <div className="ml-auto flex items-center gap-1.5 shrink-0">
@@ -734,7 +734,7 @@ function DesignBadge({ design }: { design: ArtifactDesign }) {
       className={cn(QUIET_BUTTON, 'whitespace-nowrap', errors > 0 && 'text-shodh-text')}
     >
       {busy
-        ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+        ? <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />
         : check && totalIssues(check.report) === 0
           ? <CheckCircle2 className="w-3.5 h-3.5 text-shodh-success" aria-hidden="true" />
           : <Palette className="w-3.5 h-3.5" aria-hidden="true" />}

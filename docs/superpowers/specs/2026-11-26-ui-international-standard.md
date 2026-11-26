@@ -17,7 +17,7 @@ needs the running app (paint time, input latency) the spec says "baseline first"
 | 3 | **Every state on every main view**: empty, loading, error, offline | Ask has all four. `ViewSkeleton` and an error boundary wrap lazy views. | No shared pattern: each view writes its own empty and error text. "Offline" (no model reachable, computer asleep for the phone) is shown only in Ask and the sidebar. |
 | 4 | **i18n-ready**: strings external, layout survives +30% text, RTL-safe CSS, locale-aware dates and numbers | 30 date/number calls already pass `undefined` (the user's locale). `<html lang="en">`. | No message catalogue at all: every string is in JSX. 17 `toLocaleString('en-US')` and 2 `Intl.DateTimeFormat('en-CA')` pin a locale. 98 files use physical `left/right` utilities (`ml-`, `pl-`, `text-left`); 0 use logical ones (`ms-`, `ps-`). Buttons wrap at English length already (finding H). |
 | 5 | **Performance budgets**: first paint, input latency, long lists virtualised | The chat log is virtualised (`@tanstack/react-virtual`). Views are lazy and preloaded. `app/perf` measures a long chat. | Only the chat is virtualised: Library files, Activity events, Tasks, Inbox and Artifacts render every row. No budget is a gate. |
-| 6 | **Motion respects reduced-motion** | Duration tokens go to 0 ms under `prefers-reduced-motion`; loops are switched off (`index.css`). | Not tested. `framer-motion` components are not under one `MotionConfig reducedMotion="user"`. |
+| 6 | **Motion respects reduced-motion** | Duration tokens go to 0 ms under `prefers-reduced-motion`; loops are switched off (`index.css`); every `framer-motion` animation is under one `MotionConfig reducedMotion="user"` (`main.tsx`). | Not tested. 20 of 112 Tailwind loop animations (`animate-spin`, `animate-pulse`) had no `motion-reduce:animate-none`. |
 
 ## 2. What the benchmarks do that Shodh does not
 
@@ -37,12 +37,12 @@ Checked against the code at `5a2efc9f`.
 | Finding | Status | Evidence |
 |---|---|---|
 | A. No shared page frame | open | no `PageFrame`; Workspaces and Connectors still title with `h2` |
-| B. Top bar moves between views | open | not re-measured; no shared top-bar slot component exists |
+| B. Top bar moves between views | done | the top bar already ends with Sources then Inbox on every view, with Ask's own actions in a slot to their left (`App-SplitView.tsx`, "UI audit rule 2"); found while implementing, so no `TopBar` component is added |
 | C. Ask message box jumps | open | the empty chat still centres its column (`AskView.tsx`, `min-h-full flex items-center justify-center`) |
 | D. Floating pill covers controls | open | no reserved gutter in any view |
 | E. Two sets of controls | partly | the floating chat has a model control, but it only opens Ask (see 4.1) |
 | F. Model status shown twice, disagreeing | open | sidebar pill: green/amber/red/grey dot; composer chip: one accent dot |
-| G. Known failure shown only after sending | to verify | `blockedReason` reaches the composer; whether a rejected key sets it before a send is not confirmed |
+| G. Known failure shown only after sending | open | verified: `sendBlock` knows nothing of the model's state, so a rejected key is said only after a send |
 | H. Labels wrap in buttons | open | no shared no-wrap rule |
 | I. Too much text | open | copy pass not done |
 | J. Review panel covers the chat | to verify | #208 docked approvals; the review pane was not re-checked |
@@ -58,22 +58,26 @@ Checked against the code at `5a2efc9f`.
 2. **One model state, one colour.** The sidebar pill and the composer chip read one status and map it
    through one function: ready, degraded (fallback in use), failed, none. Same dot, same word. (Rule 6.)
 3. **The HTML preview uses the wide width.** Today it is the chat column's width (700 px) and 360 px
-   tall. It becomes a wide block (4.3): up to 1100 px, with a height that fits the page up to 70% of the
-   window, still resizable.
+   tall. It becomes a wide block (4.3): up to 1100 px, and 60% of the window's height (never under 360 px
+   or over 720 px), still resizable. Its frame runs no scripts, so the page cannot report its own height.
 
 ### 4.2 Foundations
 
 - **`PageFrame`** for every view but Ask: one left edge, one max width, `h1` at one top, a reserved
   primary-action slot at the title row's right, an optional toolbar row, a 56 px bottom gutter for the
   floating pill. (Rules 1, 4.)
-- **`TopBar`** with a fixed right group (Sources, Inbox) and a reserved slot for view actions. (Rule 2.)
-- **Type and spacing tokens.** The scale becomes 12, 13, 14, 15, 17, 20, 28 px, each named. Off-scale sizes
-  and Tailwind's unnamed ones are replaced. Hex colours leave `.tsx`.
+- **The top bar** already has its fixed right group and reserved slot (finding B is done); nothing is built.
+- **Type and spacing tokens.** The scale becomes 12, 13, 14, 15, 16, 17, 20, 28 px, each named. (16 px was
+  added while implementing: it is the size answers are read in, and dropping it to 15 would have shrunk
+  every answer.) Off-scale sizes and Tailwind's unnamed ones are replaced. Spacing is Tailwind's scale plus
+  two named measures. Hex colours and Tailwind's palette classes leave the components; other products'
+  logos keep their own colours.
 - **`ViewState`**: one component for empty, loading, error and offline, with one line of text and one
   action each. Every main view uses it.
 - **Buttons never wrap** (rule 7); minimum target 24×24, 28 px for icon buttons.
 - **The Ask message box sits at the bottom from the first message** (rule 3).
-- **A known model failure shows before sending** (rule 6), if "to verify" above finds it missing.
+- **A known model failure shows before sending** (rule 6): one line above the message box, with the fix
+  and "Change model". Send stays enabled.
 
 ### 4.3 The chat layout
 
@@ -112,8 +116,9 @@ functions, as `contrast.test.ts` and `mobile/tests/rules.test.ts` do.
   and chip label is checked against its container's width class. A test, not a shipped language.
 - **Frame geometry**: every view renders inside `PageFrame`; the title's left and top are constants.
 - **Screenshots**: the Windows launch test already drives the real app and uploads one screenshot. It is
-  extended to open each main view and upload one screenshot per view, in light and dark. Pictures for
-  review; the geometry probe that job already has checks that the pill covers no control.
+  extended to open every view and upload one screenshot of each, in dark and light (18 pictures). They are
+  for people to review; no check reads them. That the pill covers no control is held by the frame's
+  gutter, which the frame test ties to the pill's own height and position.
 - **Performance**: a baseline is recorded first with `app/perf`. Budgets (first paint, keystroke-to-paint in
   the composer, scroll of a 5,000-row Library) are set from it in a later PR. No number is invented here.
 
@@ -123,7 +128,7 @@ Each PR stands alone and leaves the app working.
 
 | PR | Contents | Why separate |
 |---|---|---|
-| **2a** | The three composer gaps (4.1); `PageFrame`, `TopBar`, `ViewState`; the Ask box at the bottom; buttons never wrap; the scale, focus, target and frame gates; per-view screenshots in CI | The user-visible fixes first, with the gates that keep them |
+| **2a** | The three composer gaps (4.1); `PageFrame`, `ViewState`; the Ask box at the bottom; the model notice before a send; buttons never wrap; the scale, spacing, colour, focus, target, motion and frame gates; per-view screenshots in CI | The user-visible fixes first, with the gates that keep them |
 | **2b** | Chat column 800 / wide blocks 1100; the question dots rail; virtualised Library, Activity, Tasks, Inbox and Artifacts lists | One layout change, reviewed on screenshots |
 | **2c** | The agent run view: plan, progress, summary | Touches the transcript only |
 | **2d** | i18n: catalogue, helpers, logical CSS, locale gate, strings for the shell, Ask and Settings, the +30% test | Mechanical and wide; kept out of the layout diffs |
@@ -141,3 +146,13 @@ Each PR stands alone and leaves the app working.
 6. **The text column goes to 800 px for every conversation**, not as a setting.
 7. **The dots rail hides below three questions** and has no setting.
 8. **RTL is made safe (logical CSS) but not tested in a right-to-left locale.**
+
+## 8. What 2a leaves, said plainly
+
+- **Activity's export stays where it is** (a toolbar inside the log), not in the title row's action slot:
+  moving it means lifting the log's filter state out of `AuditView`.
+- **`ViewState` is used where a view loads its own list** (Artifacts, Workspaces, Automations). Library's
+  empty state, Tasks' stale notice and Activity's unavailable line keep their own components.
+- **Finding J (the review panel) was not re-checked.**
+- **No keyboard-path test.** The gates read sources; nothing walks Tab through a rendered page.
+- **Nothing here was looked at on a screen before it was pushed.** The 18 CI pictures are the first look.

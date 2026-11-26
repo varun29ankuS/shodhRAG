@@ -9,7 +9,7 @@ function Card({ label, value, detail, title }: { label: string; value: string; d
   return (
     <div className="flex flex-col gap-1 rounded-xl border border-shodh-border-subtle bg-shodh-surface px-4 py-3 min-w-0" title={title}>
       <dt className="text-caption text-shodh-text-muted">{label}</dt>
-      <dd className="m-0 text-[20px] font-semibold tabular-nums text-shodh-text leading-tight">{value}</dd>
+      <dd className="m-0 text-title font-semibold tabular-nums text-shodh-text leading-tight">{value}</dd>
       {detail && <dd className="m-0 text-caption text-shodh-text-faint tabular-nums truncate">{detail}</dd>}
     </div>
   );

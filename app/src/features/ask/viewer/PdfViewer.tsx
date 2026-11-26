@@ -401,11 +401,11 @@ function PdfPageView({
       )}
       {doc && active && stage === 'drawing' && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none" aria-hidden="true">
-          <Loader2 className="w-5 h-5 animate-spin motion-reduce:animate-none text-zinc-500" />
+          <Loader2 className="w-5 h-5 animate-spin motion-reduce:animate-none text-shodh-paper-ink-muted" />
         </div>
       )}
       {stage === 'failed' && (
-        <div className="absolute inset-0 flex items-center justify-center p-4 text-center text-small text-zinc-700">
+        <div className="absolute inset-0 flex items-center justify-center p-4 text-center text-small text-shodh-paper-ink">
           Page {pageNumber} could not be rendered.
         </div>
       )}

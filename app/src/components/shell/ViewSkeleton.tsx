@@ -11,20 +11,20 @@ export function ViewSkeleton({ view }: { view: ViewTab }) {
     <div className="h-full overflow-hidden" role="status" aria-label="Loading">
       {view === 'settings' ? (
         <div className="h-full flex">
-          <div className="w-[220px] shrink-0 border-r border-shodh-border-subtle px-6 py-7 flex flex-col gap-3">
+          <div className="w-[220px] shrink-0 border-e border-shodh-border-subtle px-8 py-7 flex flex-col gap-3">
             <Skeleton className="h-5 w-24" />
             <Skeleton className="h-8 w-full" />
             <Skeleton className="h-8 w-full" />
             <Skeleton className="h-8 w-full" />
           </div>
-          <div className="flex-1 px-10 py-8 flex flex-col gap-4 max-w-[820px]">
+          <div className="flex-1 px-8 py-7 flex flex-col gap-4 max-w-[820px]">
             <Skeleton className="h-7 w-40" />
             <Skeleton className="h-4 w-3/4" />
             <Skeleton className="h-48 w-full rounded-xl" />
           </div>
         </div>
       ) : view === 'tasks' ? (
-        <div className="px-6 pt-4 flex flex-col gap-4">
+        <div className="px-8 pt-7 flex flex-col gap-4">
           <Skeleton className="h-8 w-44 rounded-lg" />
           <Skeleton className="h-6 w-28" />
           {Array.from({ length: 6 }, (_, i) => (

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useId, useMemo, useState } from 'react';
-import { GitBranch, Hammer, Loader2, MessageCircle, Search } from 'lucide-react';
+import { GitBranch, Hammer, MessageCircle, Search } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { relativeTime } from '../../utils/time';
 import { VisualGallery } from '../visuals/VisualGallery';
@@ -8,6 +8,8 @@ import { creationsApi, errorText, onCreationsChanged } from './api';
 import { ArtifactPage } from './ArtifactPage';
 import { STATUS_LABELS, filterCreations, selectionFor } from './model';
 import type { ArtifactSelection, CodeChange, Creation } from './model';
+import { PageFrame } from '../../components/shell/PageFrame';
+import { ViewState } from '../../components/shell/ViewState';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
@@ -92,14 +94,7 @@ export default function ArtifactsView({ onOpenChat, onChange }: ArtifactsViewPro
   }
 
   return (
-    <div className="h-full overflow-y-auto scrollbar-thin">
-      <div className="max-w-5xl mx-auto px-8 py-7 flex flex-col gap-6">
-        <header className="flex flex-col gap-1">
-          <h1 className="m-0 text-2xl font-bold text-shodh-text">Artifacts</h1>
-          <p className="m-0 text-body text-shodh-text-muted">
-            Everything Shodh made: what Creator mode built, and the diagrams, charts and tables from your answers.
-          </p>
-        </header>
+    <PageFrame title="Artifacts" lede="Everything Shodh made">
 
         <section aria-labelledby="artifacts-creations" className="flex flex-col gap-3">
           <div className="flex items-end justify-between gap-3 flex-wrap">
@@ -125,24 +120,11 @@ export default function ArtifactsView({ onOpenChat, onChange }: ArtifactsViewPro
             </label>
           </div>
 
-          {error && (
-            <p role="alert" className="m-0 text-small text-shodh-error">
-              The creations could not be read: {error}
-            </p>
-          )}
+          {error && <ViewState kind="error" title="Creations could not be read" detail={error} />}
           {creations === null && !error ? (
-            <p className="m-0 inline-flex items-center gap-2 text-small text-shodh-text-muted" role="status">
-              <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
-              Loading creations
-            </p>
+            <ViewState kind="loading" title="Loading creations" />
           ) : creations !== null && creations.length === 0 ? (
-            <div className="flex items-start gap-3 rounded-xl border border-dashed border-shodh-border px-4 py-4">
-              <Hammer className="w-4 h-4 mt-0.5 shrink-0 text-shodh-text-faint" aria-hidden="true" />
-              <p className="m-0 text-small text-shodh-text-muted">
-                Nothing built yet. In a chat, pick Creator in the mode menu of the message box and ask for an app, a game or a
-                page: it is built here, with a live preview.
-              </p>
-            </div>
+            <ViewState kind="empty" icon={Hammer} title="Nothing built yet" detail="Ask for an app, a game or a page in Creator mode." />
           ) : shown.length === 0 ? (
             <p className="m-0 text-small text-shodh-text-muted">No creation matches “{text.trim()}”.</p>
           ) : (
@@ -220,7 +202,6 @@ export default function ArtifactsView({ onOpenChat, onChange }: ArtifactsViewPro
           </div>
           <VisualGallery conversationId={null} />
         </section>
-      </div>
-    </div>
+    </PageFrame>
   );
 }

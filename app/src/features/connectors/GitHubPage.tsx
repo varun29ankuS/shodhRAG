@@ -499,7 +499,7 @@ export function GitHubPage({
         <GitHubMark size="lg" />
         <div className="flex-1 min-w-0">
           <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-            <h2 className="m-0 text-[20px] font-semibold text-shodh-text">GitHub</h2>
+            <h2 className="m-0 text-title font-semibold text-shodh-text">GitHub</h2>
             <span role="status" aria-live="polite">
               <StatusPill pill={pill} />
             </span>

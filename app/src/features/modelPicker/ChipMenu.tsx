@@ -117,7 +117,7 @@ export function ChipMenu({ picker, answerRunning, onManage, onSelected }: ChipMe
             onClick={() => choose(entry)}
             className={ITEM}
           >
-            <Check className={cn('w-3.5 h-3.5 mt-[3px] shrink-0 text-shodh-accent-text', !active && 'invisible')} aria-hidden="true" />
+            <Check className={cn('w-3.5 h-3.5 mt-0.5 shrink-0 text-shodh-accent-text', !active && 'invisible')} aria-hidden="true" />
             <span className="min-w-0 flex flex-col">
               <span className="text-small font-medium text-shodh-text">{chipEntryTitle(entry)}</span>
               <span className="text-caption text-shodh-text-muted truncate">{chipEntryDetail(entry)}</span>
@@ -145,7 +145,7 @@ export function ChipMenu({ picker, answerRunning, onManage, onSelected }: ChipMe
       )}
       <div className="my-1 border-t border-shodh-border-subtle" />
       <button type="button" role="menuitem" onClick={onManage} className={ITEM}>
-        <Settings2 className="w-3.5 h-3.5 mt-[3px] shrink-0 text-shodh-text-muted" aria-hidden="true" />
+        <Settings2 className="w-3.5 h-3.5 mt-0.5 shrink-0 text-shodh-text-muted" aria-hidden="true" />
         <span className="text-small text-shodh-text">Manage…</span>
       </button>
     </div>

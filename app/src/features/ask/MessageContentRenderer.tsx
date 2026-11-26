@@ -349,7 +349,7 @@ function MessageContent({
             className={cn(
               // Every badge has a 1px border (transparent where none shows), so a web
               // source's outline never resizes the badge as it is opened.
-              'inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 ml-[3px] rounded-[5px] border align-[3px] text-caption font-bold leading-none tabular-nums transition-colors duration-micro',
+              'target-24 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 ml-0.5 rounded-[5px] border align-[3px] text-caption font-bold leading-none tabular-nums transition-colors duration-micro',
               isActive
                 ? 'border-shodh-accent bg-shodh-accent text-shodh-on-accent'
                 : isWeb
@@ -475,9 +475,9 @@ function MessageContent({
   const markdownComponents = useMemo<Record<string, React.FC<any>>>(() => {
     const processChildren = processLatest;
     return {
-      h1: ({ children }) => <h2 className="text-[20px] font-semibold leading-snug text-shodh-text mt-6 mb-2 first:mt-0">{processChildren(children)}</h2>,
-      h2: ({ children }) => <h3 className="text-[17px] font-semibold leading-snug text-shodh-text mt-5 mb-1.5 first:mt-0">{processChildren(children)}</h3>,
-      h3: ({ children }) => <h4 className="text-[16px] font-semibold text-shodh-text mt-4 mb-1 first:mt-0">{processChildren(children)}</h4>,
+      h1: ({ children }) => <h2 className="text-title font-semibold leading-snug text-shodh-text mt-6 mb-2 first:mt-0">{processChildren(children)}</h2>,
+      h2: ({ children }) => <h3 className="text-subhead font-semibold leading-snug text-shodh-text mt-5 mb-1.5 first:mt-0">{processChildren(children)}</h3>,
+      h3: ({ children }) => <h4 className="text-reading font-semibold text-shodh-text mt-4 mb-1 first:mt-0">{processChildren(children)}</h4>,
       h4: ({ children }) => <h5 className="text-body-lg font-semibold text-shodh-text-secondary mt-3 mb-1 first:mt-0">{processChildren(children)}</h5>,
       h5: ({ children }) => <h6 className="text-body font-semibold text-shodh-text-secondary mt-3 mb-1 first:mt-0">{processChildren(children)}</h6>,
       h6: ({ children }) => <h6 className="text-body font-semibold text-shodh-text-muted mt-3 mb-1 first:mt-0">{processChildren(children)}</h6>,
@@ -571,7 +571,7 @@ function MessageContent({
   return (
     <div className="flex flex-col gap-4">
       {preprocessed.trim().length > 0 && (
-        <div ref={proseRef} className={cn('relative text-shodh-text-secondary break-words', compact ? 'text-body leading-[1.6]' : 'text-[16px] leading-[1.75]')}>
+        <div ref={proseRef} className={cn('relative text-shodh-text-secondary break-words', compact ? 'text-body leading-[1.6]' : 'text-reading leading-[1.75]')}>
           <AnswerBlocksContext.Provider value={answerBlocks}>
             <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={rehypePlugins as never} components={markdownComponents}>
               {preprocessed}

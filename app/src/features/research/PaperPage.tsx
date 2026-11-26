@@ -203,7 +203,7 @@ export function PaperPage({
     <article aria-labelledby={headingId} className="flex flex-col gap-5">
       {back}
       <header className="flex flex-col gap-1.5">
-        <h2 id={headingId} className="m-0 text-[19px] font-semibold text-shodh-text leading-snug">{paperTitle(p)}</h2>
+        <h2 id={headingId} className="m-0 text-title font-semibold text-shodh-text leading-snug">{paperTitle(p)}</h2>
         {d.authors.length > 0 && <p className="text-small text-shodh-text-secondary">{d.authors.map(a => a.name).join(', ')}{p.authors?.endsWith('et al.') ? ' et al.' : ''}</p>}
         <p className="text-small text-shodh-text-muted">
           {[p.venue, p.year, p.inLibrary ? 'In your library' : 'Not in your library', p.citedByCount !== null ? `cited by ${p.citedByCount.toLocaleString()} works (OpenAlex)` : null].filter(Boolean).join(' · ')}

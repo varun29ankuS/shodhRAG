@@ -88,7 +88,7 @@ export function AttributionFrame({ html }: { html: string }) {
       sandbox=""
       referrerPolicy="no-referrer"
       srcDoc={html}
-      className="mt-1 ml-[17px] w-[calc(100%-17px)] h-[56px] rounded-md border border-shodh-border-subtle bg-white"
+      className="mt-1 ml-4.5 w-[calc(100%-18px)] h-[56px] rounded-md border border-shodh-border-subtle bg-white"
     />
   );
 }

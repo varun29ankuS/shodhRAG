@@ -331,7 +331,7 @@ function TaskBoard({ workspaceId, workspaceName }: { workspaceId: string; worksp
     return (
       <div role="alert" className="py-8 flex flex-col items-center gap-3 text-center">
         <AlertCircle className="w-6 h-6 text-shodh-error" aria-hidden="true" />
-        <p className="m-0 text-sm text-shodh-text-secondary">Could not load tasks.</p>
+        <p className="m-0 text-body text-shodh-text-secondary">Could not load tasks.</p>
         <p className="m-0 text-caption text-shodh-text-faint break-words">{error}</p>
         <button
           type="button"

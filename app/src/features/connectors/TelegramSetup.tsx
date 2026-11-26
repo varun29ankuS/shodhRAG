@@ -158,7 +158,7 @@ export function TelegramSetup({
 
       <form onSubmit={submit} aria-labelledby="telegram-setup-step" className="flex flex-col gap-4 rounded-xl border border-shodh-border bg-shodh-surface p-5">
         <div className="flex flex-col gap-1">
-          <h3 id="telegram-setup-step" ref={headingRef} tabIndex={-1} className="m-0 text-[16px] font-semibold text-shodh-text focus:outline-none">
+          <h3 id="telegram-setup-step" ref={headingRef} tabIndex={-1} className="m-0 text-body-lg font-semibold text-shodh-text focus:outline-none">
             {current.title}
           </h3>
           {current.detail && <p className="m-0 text-small text-shodh-text-secondary max-w-[64ch]">{current.detail}</p>}

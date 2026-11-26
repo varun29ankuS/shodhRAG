@@ -52,6 +52,8 @@ import {
   whyRan,
 } from './model';
 import type { Automation, FormPrefill, Run, RunDetail, SavedMove, Template, Tone, WhenForm, WhenKind } from './model';
+import { PageFrame } from '../../components/shell/PageFrame';
+import { ViewState } from '../../components/shell/ViewState';
 
 /** Something the form's When can name: a watched folder, a paper alert. */
 interface Choice {
@@ -246,7 +248,7 @@ function Row({
         title={off ? 'Turn it on first' : running ? 'A run is going' : 'Run it now'}
         onClick={() => act('run', () => automationsApi.runNow(automation.id).then(onStarted))}
       >
-        {busy === 'run' || running ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" /> : <Play className="w-3.5 h-3.5" aria-hidden="true" />}
+        {busy === 'run' || running ? <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <Play className="w-3.5 h-3.5" aria-hidden="true" />}
         {running ? 'Running' : 'Run now'}
       </button>
       <button
@@ -256,7 +258,7 @@ function Row({
         onClick={() => act('toggle', () => (off ? automationsApi.resume(automation.id) : automationsApi.pause(automation.id)))}
       >
         {busy === 'toggle' ? (
-          <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+          <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />
         ) : off ? (
           <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
         ) : (
@@ -375,7 +377,7 @@ function AutomationForm({
               title={canDraft ? 'Fills the form below; nothing is saved' : 'Set up a model first'}
               onClick={draft}
             >
-              {drafting ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" /> : 'Draft'}
+              {drafting ? <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : 'Draft'}
             </button>
             <span className="text-caption text-shodh-text-muted">1 call</span>
           </div>
@@ -492,7 +494,7 @@ function AutomationForm({
       <div className="flex justify-end gap-2">
         <button type="button" className={cn(QUIET, 'w-24')} onClick={onCancel}>Cancel</button>
         <button type="submit" className={cn(PRIMARY, 'w-24')} disabled={saving || !name.trim() || !instruction.trim()}>
-          {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" /> : 'Save'}
+          {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : 'Save'}
         </button>
       </div>
     </form>
@@ -595,7 +597,7 @@ function RunDetailView({ runId, onOpenChat }: { runId: string; onOpenChat: (conv
             <div className="flex justify-end gap-2">
               <button type="button" className={cn(QUIET, 'w-24')} disabled={deciding} onClick={() => decide([])}>Deny</button>
               <button type="button" className={cn(PRIMARY, 'w-36')} disabled={deciding || picked.length === 0} onClick={() => decide(picked)}>
-                {deciding ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" /> : 'Approve selected'}
+                {deciding ? <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : 'Approve selected'}
               </button>
             </div>
           ) : (
@@ -619,7 +621,7 @@ function RunDetailView({ runId, onOpenChat }: { runId: string; onOpenChat: (conv
             title={moves.length === 1 ? 'Opens the place it looked at' : `Opens the ${moves.length} places it looked at, one by one`}
             onClick={showMe}
           >
-            {showing ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" /> : 'Show me'}
+            {showing ? <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : 'Show me'}
           </button>
         )}
       </div>
@@ -822,29 +824,33 @@ export function AutomationsView({ onOpenChat }: { onOpenChat: (conversationId: s
     );
 
   return (
-    <div className="h-full flex flex-col bg-shodh-ground">
-      <header className="h-14 shrink-0 flex items-center gap-4 px-6 border-b border-shodh-border">
-        <h1 className="m-0 text-body-lg font-semibold text-shodh-text">Automations</h1>
-        <div className="flex-1" />
-        <ModelControl
-          chosen={model}
-          onChange={async next => {
-            await automationsApi.setModel(next);
-            setModel(next);
-          }}
-        />
-        <button type="button" className={cn(PRIMARY, 'w-40')} onClick={() => openNew(null)}>
-          <Plus className="w-3.5 h-3.5" aria-hidden="true" />
-          New automation
-        </button>
-      </header>
-      <div className="flex-1 min-h-0 flex">
+    <PageFrame
+      fill
+      width="full"
+      title="Automations"
+      action={
+        <>
+          <ModelControl
+            chosen={model}
+            onChange={async next => {
+              await automationsApi.setModel(next);
+              setModel(next);
+            }}
+          />
+          <button type="button" className={PRIMARY} onClick={() => openNew(null)}>
+            <Plus className="w-3.5 h-3.5" aria-hidden="true" />
+            New automation
+          </button>
+        </>
+      }
+    >
+      <div className="flex-1 min-h-0 flex border-t border-shodh-border">
         <div className="flex-1 min-w-0 flex flex-col">
-          <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin px-4 py-3">
+          <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin px-8 py-3">
             {loadError ? (
-              <p className="m-0 text-small text-shodh-warning" role="alert">{loadError}</p>
+              <ViewState kind="error" title="Automations could not be loaded" detail={loadError} />
             ) : automations === null ? (
-              <p className="m-0 text-small text-shodh-text-muted" role="status">Loading…</p>
+              <ViewState kind="loading" title="Loading automations" />
             ) : automations.length === 0 ? (
               <div className="h-full flex flex-col items-center justify-center gap-3">
                 <p className="m-0 text-small text-shodh-text-muted">No automations yet</p>
@@ -885,12 +891,12 @@ export function AutomationsView({ onOpenChat }: { onOpenChat: (conversationId: s
               </ul>
             )}
           </div>
-          <p className="m-0 h-6 shrink-0 px-6 text-caption text-shodh-warning truncate" role="alert">{rowError ?? ''}</p>
-          <footer className="h-10 shrink-0 flex items-center px-6 border-t border-shodh-border">
+          <p className="m-0 h-6 shrink-0 px-8 text-caption text-shodh-warning truncate" role="alert">{rowError ?? ''}</p>
+          <footer className="h-10 shrink-0 flex items-center px-8 border-t border-shodh-border">
             <CallsToday />
           </footer>
         </div>
-        <aside className="w-[420px] shrink-0 border-l border-shodh-border overflow-y-auto scrollbar-thin p-5" aria-label="Automation">
+        <aside className="w-[420px] shrink-0 border-s border-shodh-border overflow-y-auto scrollbar-thin p-5 pb-page-end" aria-label="Automation">
           {pane.kind === 'new' && (
             <AutomationForm
               key={pane.seq}
@@ -942,6 +948,6 @@ export function AutomationsView({ onOpenChat }: { onOpenChat: (conversationId: s
           )}
         </aside>
       </div>
-    </div>
+    </PageFrame>
   );
 }

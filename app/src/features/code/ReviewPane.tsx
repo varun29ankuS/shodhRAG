@@ -223,7 +223,7 @@ function FindingCard({
       ) : (
       <div className="flex flex-col gap-1 rounded-md bg-shodh-raised px-2 py-1.5">
         <p className={cn('m-0 inline-flex items-start gap-1.5 text-caption', status.status === 'confirmed' ? 'text-shodh-success' : status.status === 'not_confirmed' ? 'text-shodh-text' : 'text-shodh-text-muted')}>
-          <StatusIcon className={cn('w-3.5 h-3.5 mt-px shrink-0', status.status === 'pending' && 'animate-spin')} aria-hidden="true" />
+          <StatusIcon className={cn('w-3.5 h-3.5 mt-px shrink-0', status.status === 'pending' && 'animate-spin motion-reduce:animate-none')} aria-hidden="true" />
           <span>{revealHidden(status.label)}</span>
         </p>
         {verify && (
@@ -519,7 +519,7 @@ export function ReviewPane() {
             disabled={designBusy}
             className={cn('ml-auto', QUIET_BUTTON)}
           >
-            {designBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" /> : <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />}
+            {designBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />}
             Check again
           </button>
           <button ref={closeRef} type="button" onClick={pane.close} className={QUIET_BUTTON}>
@@ -660,7 +660,7 @@ export function ReviewPane() {
             title="Checks the UI files here with Shodh's design rules (no model): contrast, text size, labels, alt text, focus, generated-UI tells."
             className={cn('ml-auto', QUIET_BUTTON)}
           >
-            {designBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" /> : <Palette className="w-3.5 h-3.5" aria-hidden="true" />}
+            {designBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <Palette className="w-3.5 h-3.5" aria-hidden="true" />}
             Design check
           </button>
         )}
@@ -767,7 +767,7 @@ export function ReviewPane() {
                 FOCUS_RING,
               )}
             >
-              {busy ? <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" /> : <ScanEye className="w-4 h-4" aria-hidden="true" />}
+              {busy ? <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <ScanEye className="w-4 h-4" aria-hidden="true" />}
               {busy ? 'Reviewing…' : 'Review this'}
               <Kbd shortcut="reviewCode" onAccent />
             </button>

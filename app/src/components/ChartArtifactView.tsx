@@ -8,24 +8,29 @@ import {
 import { tryParseChartSpec } from '../utils/artifactExtractor';
 import type { ChartArtifactProps } from './ChartArtifact';
 import { CHART_FONT as FONT, ChartTitle, ChartUnparsed, chartTitleColor } from './chartFrame';
+import { CHART_SERIES_COLORS } from '../lib/chartPalette';
+import { tokenColor } from '../lib/tokenColor';
 
-// Softer, more modern palette
-const DEFAULT_COLORS = [
-  '#6366f1', '#06b6d4', '#f59e0b', '#10b981', '#ef4444',
-  '#8b5cf6', '#ec4899', '#14b8a6', '#f97316', '#3b82f6',
-  '#a855f7', '#84cc16', '#e879f9', '#22d3ee', '#fb923c',
-];
+const DEFAULT_COLORS = CHART_SERIES_COLORS;
 
 /** The recharts chart; load it through `ChartArtifact`, which keeps recharts out of the startup bundle. */
 export function ChartArtifactView({ artifact, theme, height = 320 }: ChartArtifactProps) {
-  const isDark = theme === 'dark';
-  const textColor = isDark ? '#9ca3af' : '#6b7280';
-  const titleColor = chartTitleColor(theme);
-  const gridColor = isDark ? 'rgba(55,65,81,0.5)' : 'rgba(229,231,235,0.8)';
-  const tooltipBg = isDark ? '#1e293b' : '#ffffff';
-  const tooltipBorder = isDark ? '#334155' : '#e2e8f0';
-  const tooltipText = isDark ? '#e2e8f0' : '#1e293b';
-  const bgColor = isDark ? 'transparent' : 'transparent';
+  // The chart's own colours are the theme's tokens, read for the theme on screen: recharts
+  // writes them as SVG attributes, which take no CSS variable.
+  const { textColor, gridColor, tooltipBg, tooltipBorder, tooltipText, pieLabelColor } = useMemo(
+    () => ({
+      textColor: tokenColor('text-muted'),
+      gridColor: tokenColor('border'),
+      tooltipBg: tokenColor('surface'),
+      tooltipBorder: tokenColor('border-strong'),
+      tooltipText: tokenColor('text'),
+      pieLabelColor: tokenColor('text-secondary'),
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [theme],
+  );
+  const titleColor = chartTitleColor();
+  const bgColor = 'transparent';
 
   const spec = useMemo(() => tryParseChartSpec(artifact.content), [artifact.content]);
 
@@ -74,9 +79,7 @@ export function ChartArtifactView({ artifact, theme, height = 320 }: ChartArtifa
     fontSize: 12,
     fontFamily: FONT,
     padding: '8px 12px',
-    boxShadow: isDark
-      ? '0 4px 12px rgba(0,0,0,0.4)'
-      : '0 4px 12px rgba(0,0,0,0.08)',
+    boxShadow: theme === 'dark' ? '0 4px 12px rgba(0,0,0,0.4)' : '0 4px 12px rgba(0,0,0,0.08)',
     border: `1px solid ${tooltipBorder}`,
   };
 
@@ -91,7 +94,6 @@ export function ChartArtifactView({ artifact, theme, height = 320 }: ChartArtifa
     paddingTop: 4,
   };
 
-  const pieLabelColor = isDark ? '#d1d5db' : '#374151';
 
   const renderPieLabel = ({ name, percent, cx, x, y }: any) => {
     const pct = (percent * 100).toFixed(0);
@@ -169,7 +171,7 @@ export function ChartArtifactView({ artifact, theme, height = 320 }: ChartArtifa
               dataKey="value"
               paddingAngle={2}
               label={renderPieLabel}
-              labelLine={{ stroke: isDark ? '#6b7280' : '#9ca3af', strokeWidth: 1 }}
+              labelLine={{ stroke: textColor, strokeWidth: 1 }}
               strokeWidth={0}
             >
               {pieData.map((_, i) => (

@@ -243,6 +243,34 @@ export function modelDot(snapshot: ConnectionSnapshot | null): Dot {
   return status ? healthDot(status.health) : 'grey';
 }
 
+/** What the composer says before a send that is known not to work. */
+export interface ModelNoticeView {
+  /** `bad`: the provider refused the key or sign-in. `warn`: it may work again by itself. */
+  tone: 'bad' | 'warn';
+  /** One line: the provider, and what is wrong. */
+  text: string;
+  /** The provider whose connect UI fixes it. */
+  provider: ProviderId;
+  /** The fix button's label (`fixLabel`). */
+  fix: string;
+}
+
+/**
+ * The notice above the message box, when the model that would answer is known not to work
+ * now: its key or sign-in was rejected, it is rate-limited or out of quota, or its server
+ * cannot be reached. Null while it works, is not checked yet, or no model is chosen (the
+ * model control already says "Choose a model").
+ */
+export function modelNotice(snapshot: ConnectionSnapshot | null, formatTime: TimeFormat = localTime): ModelNoticeView | null {
+  if (!snapshot || !snapshot.active) return null;
+  const status = activeStatus(snapshot);
+  if (!status || status.health === 'works' || status.health === 'unchecked') return null;
+  // The provider's own words can be long: the line names the state; the status panel has the rest.
+  const what = healthText({ ...status, message: null }, formatTime);
+  const text = status.health === 'unreachable' ? what : `${status.label}: ${what}`;
+  return { tone: status.health === 'rejected' ? 'bad' : 'warn', text, provider: status.provider, fix: fixLabel(status) };
+}
+
 export interface PillView {
   /** The model's name (`modelDisplayName`), or "No model chosen". */
   model: string;

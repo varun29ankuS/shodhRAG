@@ -350,7 +350,7 @@ export function WorkspacePage({
         ))}
       </div>
 
-      <div role="tabpanel" id={`ws-panel-${tab}`} aria-labelledby={`ws-tab-${tab}`} tabIndex={0} className="focus:outline-none">
+      <div role="tabpanel" id={`ws-panel-${tab}`} aria-labelledby={`ws-tab-${tab}`} tabIndex={0} className="rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
         {tab === 'overview' && <OverviewTab workspace={detail} onChanged={() => void load()} />}
         {tab === 'sources' && <SourcesTab workspace={detail} library={library} onChanged={() => void load()} />}
         {tab === 'chats' && <ChatsTab workspace={detail} onNewChat={() => onNewChat(detail.id)} onOpenChat={onOpenChat} />}

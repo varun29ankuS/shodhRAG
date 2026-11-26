@@ -7,28 +7,13 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { dirname, join, relative } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { FOCUS_STYLE, appDir, files, lineOf, openingTags, srcDir, where } from './jsxScan.ts';
 import { TYPE_SCALE } from '../src/lib/typeScale.ts';
 import { EXTRA_SPACING } from '../src/lib/spacingScale.ts';
 import { FOCUS_UNDERLINE } from '../src/lib/focusStyles.ts';
 
-const here = dirname(fileURLToPath(import.meta.url));
-const appDir = join(here, '..');
-const srcDir = join(appDir, 'src');
-
-function files(dir: string, pattern: RegExp): string[] {
-  const out: string[] = [];
-  for (const name of readdirSync(dir)) {
-    const path = join(dir, name);
-    if (statSync(path).isDirectory()) out.push(...files(path, pattern));
-    else if (pattern.test(name)) out.push(path);
-  }
-  return out;
-}
-
-const where = (file: string) => relative(appDir, file).split('\\').join('/');
 const code = files(srcDir, /\.tsx?$/).map(file => ({ file: where(file), text: readFileSync(file, 'utf8') }));
 const views = code.filter(c => c.file.endsWith('.tsx'));
 const css = readFileSync(join(srcDir, 'index.css'), 'utf8');
@@ -42,36 +27,6 @@ function found(sources: typeof code, pattern: RegExp): string[] {
   }
   return out;
 }
-
-/** The opening tags of `names` in `text` (to the `>` that closes them), with their offsets. */
-function openingTags(text: string, names: readonly string[]): Array<{ at: number; tag: string }> {
-  const out: Array<{ at: number; tag: string }> = [];
-  for (const m of text.matchAll(new RegExp(`<(${names.join('|')})\\b`, 'g'))) {
-    let i = m.index + m[0].length;
-    let depth = 0;
-    let quote: string | null = null;
-    for (; i < text.length; i++) {
-      const c = text[i];
-      if (quote) {
-        if (c === quote) quote = null;
-      } else if (c === '/' && text[i + 1] === '/') {
-        // A comment between attributes: its apostrophes are not quotes.
-        i = text.indexOf('\n', i);
-        if (i < 0) break;
-      } else if (c === '/' && text[i + 1] === '*') {
-        i = text.indexOf('*/', i) + 1;
-        if (i < 1) break;
-      } else if (c === '"' || c === "'" || c === '`') quote = c;
-      else if (c === '{') depth += 1;
-      else if (c === '}') depth -= 1;
-      else if (c === '>' && depth === 0) break;
-    }
-    out.push({ at: m.index, tag: text.slice(m.index, i + 1) });
-  }
-  return out;
-}
-
-const lineOf = (text: string, at: number) => text.slice(0, at).split('\n').length;
 
 // ── Type ───────────────────────────────────────────────────────────
 
@@ -147,8 +102,17 @@ test("no class takes a colour from Tailwind's palette", () => {
 
 /** `outline-none` on its own (not `focus-visible:outline-none`, which is half of a focus style). */
 const BARE_OUTLINE_NONE = /(?<![\w:-])outline-none(?![\w-])/g;
-/** A style shown on focus, or a target only code focuses (a heading scrolled to, a message revealed). */
-const SHOWS_FOCUS = /focus-visible|focus:|focus-within|FOCUS_|tabIndex=\{-1\}/;
+/** A focus style by a shared constant's name, or a target only code focuses (a heading scrolled to). */
+const NAMED_OR_CODE_ONLY = /FOCUS_|tabIndex=\{-1\}/;
+/**
+ * Where the focus is drawn by something else, each with the style that draws it: a field
+ * inside a box that lights up, and dialogs, whose panel only holds the focus for what is in it.
+ */
+const DRAWN_ELSEWHERE: Record<string, RegExp> = {
+  'src/features/agent/AgentComposer.tsx': /has-\[textarea:focus-visible\]:ring-1/,
+  'src/features/tasks/fields.tsx': /focus-within:border-shodh-border-strong/,
+  'src/features/research/SnippetHost.tsx': /<Dialog\.Content[^>]*DIALOG_CLASS/,
+};
 
 test('everything that removes the outline shows focus another way', () => {
   const missing: string[] = [];
@@ -158,9 +122,15 @@ test('everything that removes the outline shows focus another way', () => {
       const tag = tags.find(t => t.at <= m.index && m.index < t.at + t.tag.length);
       // In a tag: that element. Outside one (a class constant): its own line.
       const scope = tag ? tag.tag : text.slice(text.lastIndexOf('\n', m.index) + 1, text.indexOf('\n', m.index));
-      if (!SHOWS_FOCUS.test(scope)) missing.push(`${file}:${lineOf(text, m.index)}`);
+      if (FOCUS_STYLE.test(scope) || NAMED_OR_CODE_ONLY.test(scope)) continue;
+      if (tag?.name === 'Dialog.Content') continue;
+      if (DRAWN_ELSEWHERE[file]?.test(text)) continue;
+      missing.push(`${file}:${lineOf(text, m.index)}`);
     }
   }
+  // Taking the outline away is not a focus style, however it is written.
+  assert.ok(!FOCUS_STYLE.test('outline-none focus:outline-none') && !FOCUS_STYLE.test('focus-visible:outline-none'));
+  assert.ok(FOCUS_STYLE.test('focus-visible:outline-none focus-visible:ring-2'));
   assert.deepEqual(missing, []);
   // The line under a boxless field is in the ring's colour, whose contrast is tested.
   assert.equal(FOCUS_UNDERLINE, 'focus-visible:shadow-[inset_0_-2px_0_var(--c-accent-text)]');

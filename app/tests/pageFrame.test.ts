@@ -8,7 +8,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { source, withoutComments } from './jsxScan.ts';
 import {
   DOCK_GUTTER_PX,
   PAGE_ACTION_SLOT_CLASS,
@@ -26,8 +26,6 @@ import {
 import { EXTRA_SPACING } from '../src/lib/spacingScale.ts';
 import { TYPE_SCALE } from '../src/lib/typeScale.ts';
 
-const source = (path: string) => readFileSync(new URL(`../src/${path}`, import.meta.url), 'utf8');
-const withoutComments = (text: string) => text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
 /** Every view but Ask, by its file. */
 const VIEWS: Record<string, string> = {
@@ -138,6 +136,48 @@ test('loading, empty and failed are drawn one way', () => {
     assert.match(text, /<ViewState kind="error"/, `${view}: error`);
   }
   assert.match(source(VIEWS.artifacts), /<ViewState kind="empty"/);
+
+  // Library: no folders yet, with its one action.
+  assert.match(source(VIEWS.library), /<ViewState\s+kind="empty"\s+icon=\{FolderPlus\}\s+title="No folders yet"[\s\S]*?action=\{/);
+  // Tasks: the list and the calendar load, fail and stand empty the same way.
+  const list = source('components/CalendarTodoPanel.tsx');
+  assert.match(list, /<ViewState kind="loading" title="Loading tasks" \/>/);
+  assert.match(list, /<ViewState kind="error" title="Tasks could not be loaded" detail=\{error\} onRetry=\{\(\) => void refresh\(\)\} \/>/);
+  assert.match(list, /<ViewState\s+kind="empty"\s+icon=\{CheckCircle2\}/);
+  const calendar = source('features/tasks/TasksCalendar.tsx');
+  assert.match(calendar, /<ViewState kind="error" title="Tasks and events could not be loaded" detail=\{error\} onRetry=\{\(\) => void refresh\(\)\} \/>/);
+  assert.match(calendar, /<ViewState kind="empty" title="Nothing on this day"/);
+  // Activity: the log, and the log being unavailable.
+  const table = source('features/audit/AuditTable.tsx');
+  assert.match(table, /loading \? <ViewState kind="loading" title="Loading events" \/> : <ViewState kind="empty" title="No events match these filters" \/>/);
+  assert.match(source('features/audit/AuditView.tsx'), /unavailable && <ViewState kind="error" title="Activity is unavailable" detail=\{unavailable\} \/>/);
+  // "Try again" is one button, drawn by the state itself.
+  assert.match(state, /\{onRetry && \(\s*<button\s+type="button"\s+onClick=\{onRetry\}[\s\S]*?Try again/);
+  // A folder's files, and a workspace's task board.
+  const browser = source('features/library/FileBrowser.tsx');
+  assert.match(browser, /<ViewState kind="error" title="Files could not be listed" detail=\{load\.message\} onRetry=\{\(\) => void fetchFiles\(\)\} \/>/);
+  assert.match(browser, /<ViewState kind="empty" title=\{title\} detail=\{detail\} \/>/);
+  const board = source('features/tasks/TaskBoard.tsx');
+  assert.match(board, /<ViewState kind="loading" title="Loading tasks" \/>/);
+  assert.match(board, /<ViewState kind="error" title="Tasks could not be loaded" detail=\{error\} onRetry=\{\(\) => void refresh\(\)\} \/>/);
+  for (const file of ['components/CalendarTodoPanel.tsx', 'features/tasks/TasksCalendar.tsx', 'features/tasks/TaskBoard.tsx', 'features/library/FileBrowser.tsx']) {
+    assert.doesNotMatch(source(file), />\s*Try again\s*</, `${file} draws its own retry`);
+  }
+});
+
+test("Activity's exports are the page's action, in the frame's slot", () => {
+  const audit = withoutComments(source('features/audit/AuditView.tsx'));
+  // The log hands its exports to whoever frames it, and draws them nowhere else.
+  assert.match(audit, /frame: \(action: React\.ReactNode, body: React\.ReactNode\) => React\.ReactElement;/);
+  assert.match(audit, /return frame\(\s*exports,/);
+  assert.equal(audit.match(/runExport\('jsonl'\)/g)?.length, 1);
+  assert.equal(audit.match(/runExport\('csv'\)/g)?.length, 1);
+  const exportsAt = audit.indexOf('const exports = (');
+  assert.ok(exportsAt >= 0 && audit.indexOf("runExport('jsonl')") > exportsAt && audit.indexOf("runExport('csv')") < audit.indexOf('return frame('));
+  assert.match(
+    source(VIEWS.activity),
+    /<AuditView\s+frame=\{\(action, body\) => \(\s*<PageFrame title="Activity" lede="[^"]+" action=\{action\}>\s*\{body\}\s*<\/PageFrame>/,
+  );
 });
 
 test("Ask's message box is one element at the bottom, before and after the first message", () => {

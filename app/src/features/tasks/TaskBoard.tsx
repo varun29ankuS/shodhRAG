@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { AlertCircle, Clock, Flag, ListTodo, Loader2, Plus } from 'lucide-react';
+import { Clock, Flag, ListTodo, Loader2, Plus } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { freshness } from '../../lib/freshness';
 import { StaleNotice } from '../../components/ui/StaleNotice';
+import { ViewState } from '../../components/shell/ViewState';
 import { adjacentStatus, boardColumns, columnOf } from './board';
 import type { BoardColumn } from './board';
 import { dueLabel, isOverdue } from './dueDate';
@@ -13,6 +14,7 @@ import TaskDetailSheet from './TaskDetailSheet';
 import { isDone, PRIORITY_LABELS, STATUS_LABELS } from './types';
 import type { TodoItem } from './types';
 import { agentItemKey } from '../../lib/agentHighlight';
+import { FOCUS_UNDERLINE } from '../../lib/focusStyles';
 
 /** How far (px) a pointer moves before a press on a card becomes a drag. */
 const DRAG_THRESHOLD_PX = 6;
@@ -74,7 +76,7 @@ function AddTask({ workspaceId, workspaceName }: { workspaceId: string; workspac
         onChange={e => setTitle(e.target.value)}
         onKeyDown={e => { if (e.key === 'Escape' && title) { e.preventDefault(); setTitle(''); } }}
         placeholder="Add a task to this workspace"
-        className="flex-1 min-w-0 h-8 bg-transparent text-small text-shodh-text placeholder:text-shodh-text-faint focus:outline-none"
+        className={cn('flex-1 min-w-0 h-8 bg-transparent text-small text-shodh-text placeholder:text-shodh-text-faint focus-visible:outline-none', FOCUS_UNDERLINE)}
       />
       <button
         type="submit"
@@ -319,29 +321,11 @@ function TaskBoard({ workspaceId, workspaceName }: { workspaceId: string; worksp
   }, []);
 
   if (loading && tasks.length === 0) {
-    return (
-      <div className="py-10 flex items-center justify-center" role="status">
-        <Loader2 className="w-5 h-5 animate-spin motion-reduce:animate-none text-shodh-text-muted" aria-hidden="true" />
-        <span className="sr-only">Loading tasks</span>
-      </div>
-    );
+    return <ViewState kind="loading" title="Loading tasks" />;
   }
 
   if (error && tasks.length === 0) {
-    return (
-      <div role="alert" className="py-8 flex flex-col items-center gap-3 text-center">
-        <AlertCircle className="w-6 h-6 text-shodh-error" aria-hidden="true" />
-        <p className="m-0 text-body text-shodh-text-secondary">Could not load tasks.</p>
-        <p className="m-0 text-caption text-shodh-text-faint break-words">{error}</p>
-        <button
-          type="button"
-          onClick={() => void refresh()}
-          className={cn('h-8 px-3 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border text-small hover:bg-shodh-raised', FOCUS_RING)}
-        >
-          Try again
-        </button>
-      </div>
-    );
+    return <ViewState kind="error" title="Tasks could not be loaded" detail={error} onRetry={() => void refresh()} />;
   }
 
   return (

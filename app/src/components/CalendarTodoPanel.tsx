@@ -1,8 +1,5 @@
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
-import {
-  AlertCircle, Bot, Briefcase, Check, CheckCircle2, ChevronLeft, ChevronRight, FileText, FolderOpen,
-  ListTodo, Loader2, Plus, RotateCcw, Trash2, X,
-} from 'lucide-react';
+import { Bot, Briefcase, Check, CheckCircle2, ChevronLeft, ChevronRight, FileText, FolderOpen, ListTodo, Loader2, Plus, Trash2, X } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { dayKey, monthGrid } from '../features/tasks/calendarGrid';
 import { fromInputs, isOverdue, storedDayKey, storedTime } from '../features/tasks/dueDate';
@@ -27,6 +24,8 @@ import { isDone, PRIORITIES, PRIORITY_LABELS } from '../features/tasks/types';
 import type { CalendarEvent, TodoItem } from '../features/tasks/types';
 import { useWorkspaces } from '../features/workspaces/WorkspaceContext';
 import { agentItemKey } from '../lib/agentHighlight';
+import { ViewState } from './shell/ViewState';
+import { FOCUS_UNDERLINE } from '../lib/focusStyles';
 
 type FilterTab = 'all' | 'pending' | 'completed';
 
@@ -138,7 +137,7 @@ function QuickAdd({ defaultDay, workspace }: { defaultDay: string | null; worksp
         onChange={e => setTitle(e.target.value)}
         onKeyDown={e => { if (e.key === 'Escape' && title) { e.preventDefault(); setTitle(''); } }}
         placeholder={workspace ? `Add a task to ${workspace.name}` : 'Add a task'}
-        className="flex-1 min-w-0 h-8 bg-transparent text-small text-shodh-text placeholder:text-shodh-text-faint focus:outline-none"
+        className={cn('flex-1 min-w-0 h-8 bg-transparent text-small text-shodh-text placeholder:text-shodh-text-faint focus-visible:outline-none', FOCUS_UNDERLINE)}
       />
       <input
         type="date"
@@ -599,29 +598,16 @@ export default function CalendarTodoPanel() {
 
   if (loading && tasks.length === 0) {
     return (
-      <div className="h-full flex items-center justify-center" role="status">
-        <Loader2 className="w-5 h-5 animate-spin motion-reduce:animate-none text-shodh-text-muted" aria-hidden="true" />
-        <span className="sr-only">Loading tasks</span>
+      <div className="px-8">
+        <ViewState kind="loading" title="Loading tasks" />
       </div>
     );
   }
 
   if (error && tasks.length === 0) {
     return (
-      <div className="h-full flex items-center justify-center p-6">
-        <div role="alert" className="max-w-sm text-center flex flex-col items-center gap-3">
-          <AlertCircle className="w-6 h-6 text-shodh-error" aria-hidden="true" />
-          <p className="text-body text-shodh-text-secondary">Could not load tasks.</p>
-          <p className="text-caption text-shodh-text-faint break-words">{error}</p>
-          <button
-            type="button"
-            onClick={() => void refresh()}
-            className={cn('h-8 px-3 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border text-small hover:bg-shodh-raised', FOCUS_RING)}
-          >
-            <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
-            Try again
-          </button>
-        </div>
+      <div className="px-8">
+        <ViewState kind="error" title="Tasks could not be loaded" detail={error} onRetry={() => void refresh()} />
       </div>
     );
   }
@@ -704,21 +690,22 @@ export default function CalendarTodoPanel() {
 
           <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin -mx-1 px-1">
             {filteredTasks.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-12 text-center gap-1">
-                <CheckCircle2 className="w-9 h-9 mb-2 text-shodh-text-faint opacity-50" aria-hidden="true" />
-                <p className="text-small font-medium text-shodh-text-secondary">
-                  {filter === 'completed' ? 'No completed tasks'
+              <ViewState
+                kind="empty"
+                icon={CheckCircle2}
+                title={
+                  filter === 'completed' ? 'No completed tasks'
                     : selectedDay ? 'Nothing due on this day'
                       : filteredWorkspace ? `No tasks in ${filteredWorkspace.name}`
                         : workspaceFilter.kind === 'none' ? 'No tasks outside workspaces'
-                          : 'No tasks yet'}
-                </p>
-                <p className="text-caption text-shodh-text-faint">
-                  {filter === 'all' && !selectedDay && !projectFilter && workspaceFilter.kind === 'all'
-                    ? 'Add one above, or ask Shodh to create tasks for you.'
-                    : 'Try a different filter or day.'}
-                </p>
-              </div>
+                          : 'No tasks yet'
+                }
+                detail={
+                  filter === 'all' && !selectedDay && !projectFilter && workspaceFilter.kind === 'all'
+                    ? 'Add one above, or ask Shodh.'
+                    : 'Try another filter or day.'
+                }
+              />
             ) : (
               <>
               {/* Headings for sighted users; each control already names its column to a screen reader. */}

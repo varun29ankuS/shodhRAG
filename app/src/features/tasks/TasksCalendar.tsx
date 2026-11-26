@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, Bot, Check, ChevronLeft, ChevronRight, GripVertical, Plus, RotateCcw } from 'lucide-react';
+import { Bot, Check, ChevronLeft, ChevronRight, GripVertical, Plus } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { addDays, dayKey, groupByDay, monthGrid } from './calendarGrid';
 import type { GridDay } from './calendarGrid';
@@ -9,6 +9,7 @@ import { isDone } from './types';
 import type { CalendarEvent as CalendarEntry, TodoItem as CalendarTask } from './types';
 import { ReminderBadge } from './ReminderField';
 import { agentItemKey } from '../../lib/agentHighlight';
+import { ViewState } from '../../components/shell/ViewState';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-ground';
@@ -329,20 +330,8 @@ export default function TasksCalendar() {
 
   if (error && tasks.length === 0 && events.length === 0) {
     return (
-      <div className="h-full flex items-center justify-center p-6">
-        <div role="alert" className="max-w-sm text-center flex flex-col items-center gap-3">
-          <AlertCircle className="w-6 h-6 text-shodh-error" aria-hidden="true" />
-          <p className="text-body text-shodh-text-secondary">Could not load tasks and events.</p>
-          <p className="text-caption text-shodh-text-faint break-words">{error}</p>
-          <button
-            type="button"
-            onClick={() => void refresh()}
-            className={cn('h-8 px-3 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border text-small hover:bg-shodh-raised', FOCUS_RING)}
-          >
-            <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
-            Try again
-          </button>
-        </div>
+      <div className="px-8">
+        <ViewState kind="error" title="Tasks and events could not be loaded" detail={error} onRetry={() => void refresh()} />
       </div>
     );
   }
@@ -417,9 +406,7 @@ export default function TasksCalendar() {
         <DayComposer key={selectedKey} dayKeyValue={selectedKey} inputRef={composerRef} />
         <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin flex flex-col gap-4">
           {dayEvents.length === 0 && dayTasks.length === 0 ? (
-            <p className="text-small text-shodh-text-faint">
-              Nothing on this day yet. Double-click a day (or press Enter on it) to add something, or ask Shodh to schedule it.
-            </p>
+            <ViewState kind="empty" title="Nothing on this day" detail="Add something above, or ask Shodh." />
           ) : null}
           {dayTasks.length > 0 && (
             <p className="text-caption text-shodh-text-faint">

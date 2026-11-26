@@ -240,11 +240,11 @@ export function PaperPage({
           </Tabs.List>
         )}
         {p.inLibrary && p.filePath && (
-          <Tabs.Content value="figures" className="focus-visible:outline-none">
+          <Tabs.Content value="figures" className="rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
             <PaperFigures filePath={p.filePath} paperTitle={paperTitle(p)} />
           </Tabs.Content>
         )}
-        <Tabs.Content value="overview" className="flex flex-col gap-5 focus-visible:outline-none">
+        <Tabs.Content value="overview" className="flex flex-col gap-5 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
           <Concepts title="Proposes" items={d.proposes} kind="method" onOpenConcept={onOpenConcept} />
           <Concepts title="Methods" items={d.methods} kind="method" onOpenConcept={onOpenConcept} />
           <Concepts title="Datasets" items={d.datasets} kind="dataset" onOpenConcept={onOpenConcept} />

@@ -45,7 +45,7 @@ Checked against the code at `5a2efc9f`.
 | G. Known failure shown only after sending | open | verified: `sendBlock` knows nothing of the model's state, so a rejected key is said only after a send |
 | H. Labels wrap in buttons | open | no shared no-wrap rule |
 | I. Too much text | open | copy pass not done |
-| J. Review panel covers the chat | to verify | #208 docked approvals; the review pane was not re-checked |
+| J. Review panel covers the chat | fixed in 2a | The pane was already docked; its question box, model line and result states are fixed (section 8) |
 | K. Ask says it made an artifact | open | no `make_artifact` tool anywhere in the code |
 
 ## 4. What gets built
@@ -149,10 +149,30 @@ Each PR stands alone and leaves the app working.
 
 ## 8. What 2a leaves, said plainly
 
-- **Activity's export stays where it is** (a toolbar inside the log), not in the title row's action slot:
-  moving it means lifting the log's filter state out of `AuditView`.
-- **`ViewState` is used where a view loads its own list** (Artifacts, Workspaces, Automations). Library's
-  empty state, Tasks' stale notice and Activity's unavailable line keep their own components.
-- **Finding J (the review panel) was not re-checked.**
-- **No keyboard-path test.** The gates read sources; nothing walks Tab through a rendered page.
+Closed in 2a, after first being left out:
+
+- **Activity's exports are the page's action**, in the title row's slot. `AuditView` hands its exports to
+  whoever frames it (`frame(action, body)`), so the log's filter state stays where it was.
+- **`ViewState` draws loading, empty and failed in Library (and a folder's files), Tasks (list, calendar and a workspace's board) and Activity** as well as
+  Artifacts, Workspaces and Automations, with one "Try again" button drawn by the state itself. The stale
+  notice (`components/ui/StaleNotice`) stays a separate, shared component: it sits above data that is still
+  shown, where `ViewState` stands in place of data.
+- **Finding J was re-checked and its open parts fixed.** The pane was already docked (the shell gives it its
+  width, so it covers nothing). Still open, now fixed: the question box showed only for "Your question"; a
+  subscription model, which cannot take a review, was named as where the code would go and the review then
+  failed with a line of text; and the result area was blank until a review came back. Now the app names the
+  model a review would really reach (`code_review_target` reads the call's plan), "Review this" is off with
+  "No model can review code" and "Switch model" when there is none, and the result area says no model,
+  working, failed or none yet.
+- **A keyboard-path test** (`app/tests/keyboardPath.test.ts`): the order Tab takes through the shell, Ask,
+  the message box, the model menu and Settings, focus shown at every stop on it, nothing clickable by mouse
+  only, and the menus' arrow keys walked through one shared function. Writing it found the focus gate
+  accepting `focus:outline-none` as a focus style; the gate is now strict, and the nine stops it had let
+  through (tab panels, two boxless task fields, an editor) draw a ring or a line.
+
+Still true:
+
+- **The keyboard path is read from the sources, not walked in a rendered page.** The app's tests run in Node
+  without a DOM. The test holds the order elements are written in and the styles they carry; it cannot see a
+  focus ring that is drawn but clipped or covered.
 - **Nothing here was looked at on a screen before it was pushed.** The 18 CI pictures are the first look.

@@ -42,6 +42,7 @@ import { RecallViewer } from '../recall/RecallViewer';
 import { isReceipt } from '../recall/recallModel';
 import { WhatsNewSection } from '../whatsNew/WhatsNewSection';
 import { PageFrame } from '../../components/shell/PageFrame';
+import { ViewState } from '../../components/shell/ViewState';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-ground';
@@ -55,9 +56,6 @@ const QUIET_BUTTON = cn(
   'h-8 px-2.5 inline-flex items-center gap-1.5 rounded-lg text-small text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
   FOCUS_RING,
 );
-
-/** File types the indexer reads, for the empty state. */
-const SUPPORTED_SUMMARY = 'PDF, Word, Excel, PowerPoint, CSV, Markdown, text and code files';
 
 interface LibraryViewProps {
   sources: LibrarySource[];
@@ -390,23 +388,18 @@ function UnlistedFilesCard({
 
 function EmptyLibrary({ onAddFolder }: { onAddFolder: () => void }) {
   return (
-    <section aria-labelledby="library-empty" className="rounded-2xl border border-dashed border-shodh-border-strong bg-shodh-surface px-8 py-10 flex flex-col items-center text-center gap-4">
-      <span className="w-12 h-12 rounded-xl bg-shodh-accent-soft inline-flex items-center justify-center" aria-hidden="true">
-        <FolderPlus className="w-6 h-6 text-shodh-accent-text" />
-      </span>
-      <div className="flex flex-col gap-1.5 max-w-md">
-        <h2 id="library-empty" className="text-subhead font-semibold text-shodh-text">Add a folder to start searching it</h2>
-        <p className="text-small leading-relaxed text-shodh-text-muted">
-          Shodh reads the {SUPPORTED_SUMMARY} in the folder and its subfolders, and indexes them on this computer. Nothing
-          is uploaded. Answers in Ask then cite the exact passage they came from.
-        </p>
-      </div>
-      <button type="button" onClick={onAddFolder} className={PRIMARY_BUTTON}>
-        <FolderPlus className="w-4 h-4" aria-hidden="true" />
-        Add folder
-      </button>
-      <p className="text-caption text-shodh-text-faint">You can also drop a folder or file anywhere on this window.</p>
-    </section>
+    <ViewState
+      kind="empty"
+      icon={FolderPlus}
+      title="No folders yet"
+      detail="Add a folder to search it. Nothing is uploaded."
+      action={
+        <button type="button" onClick={onAddFolder} className={PRIMARY_BUTTON}>
+          <FolderPlus className="w-4 h-4" aria-hidden="true" />
+          Add folder
+        </button>
+      }
+    />
   );
 }
 

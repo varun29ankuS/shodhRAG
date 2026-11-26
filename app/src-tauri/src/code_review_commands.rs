@@ -230,16 +230,29 @@ pub(crate) async fn run_and_store(
     Ok(review)
 }
 
-/// The model a review would be sent to now: the configured one (the fallback
-/// may answer with another of the user's models). `None` when no model is set.
+/// The model a review would be sent to now. A review is a direct call, so it is
+/// the first model of the call's plan that such a call can reach: the configured
+/// one, or, when that one answers only through the assistant (a subscription) or
+/// is not connected, the first of the user's backups that can take it. `None`
+/// when no model is set, or none of them can review: the pane says so before
+/// anything is sent, instead of sending and failing.
 pub(crate) fn review_target(app: &AppHandle) -> Option<crate::agent_tools::ReviewTarget> {
     let llm = app.state::<LLMState>();
     let local_only = data_dir(app)
         .ok()
         .and_then(|dir| crate::app_settings::SettingsStore::in_dir(&dir).load().ok())
         .is_some_and(|s| s.policy.local_only);
-    if let Some(model) = crate::model_picker_commands::configured_model(&llm) {
-        return Some(crate::agent_tools::ReviewTarget {
+    if let Some(requested) = crate::model_picker_commands::configured_model(&llm) {
+        let answering = match crate::model_fallback::PlanSource::read(app) {
+            Ok(source) => first_reachable(&source.plan_as_known(
+                app,
+                &requested,
+                shodh_rag::harness::model_fallback::CallNeeds::direct(""),
+            )),
+            // The plan could not be read: the configured model is what a review asks for.
+            Err(_) => Some(requested),
+        };
+        return answering.map(|model| crate::agent_tools::ReviewTarget {
             model: format!("{} · {}", model.provider.label(), model.model),
             cloud: !model.provider.is_local() && !local_only,
         });
@@ -252,6 +265,15 @@ pub(crate) fn review_target(app: &AppHandle) -> Option<crate::agent_tools::Revie
         model: "the model on this computer".to_string(),
         cloud: false,
     })
+}
+
+/// The first model of `plan` a call can reach: the one that would answer it.
+fn first_reachable(
+    plan: &shodh_rag::harness::model_fallback::Plan,
+) -> Option<shodh_rag::harness::model_catalog::ModelRef> {
+    plan.candidates()
+        .find(|candidate| candidate.reachable)
+        .map(|candidate| candidate.model.clone())
 }
 
 /// Which model the pane's review goes to, said before it is sent.
@@ -427,6 +449,59 @@ mod fresh_eyes_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod review_target_tests {
+    //! Which model the pane names before a review is sent: the one that would answer.
+
+    use shodh_rag::harness::model_catalog::{ModelRef, PrivacyNote, ProviderId};
+    use shodh_rag::harness::model_fallback::{Candidate, Health, Origin, Plan};
+
+    use super::first_reachable;
+
+    fn candidate(id: &str, origin: Origin, reachable: bool) -> Candidate {
+        Candidate {
+            model: ModelRef::new(ProviderId::OpenRouter, id),
+            name: id.to_string(),
+            origin,
+            context_length: None,
+            privacy: PrivacyNote::ProviderTerms,
+            free: false,
+            paid: true,
+            health: Health::Healthy,
+            availability: None,
+            reachable,
+        }
+    }
+
+    #[test]
+    fn the_configured_model_reviews_when_a_direct_call_reaches_it() {
+        let plan = Plan {
+            requested: candidate("configured", Origin::Requested, true),
+            fallbacks: vec![candidate("backup", Origin::Automatic, true)],
+        };
+        assert_eq!(
+            first_reachable(&plan).map(|m| m.model),
+            Some("configured".to_string())
+        );
+    }
+
+    #[test]
+    fn a_model_that_cannot_take_a_review_is_never_named() {
+        // A subscription answers only through the assistant: its backup is what reviews.
+        let plan = Plan {
+            requested: candidate("subscription", Origin::Requested, false),
+            fallbacks: vec![candidate("backup", Origin::Automatic, true)],
+        };
+        assert_eq!(
+            first_reachable(&plan).map(|m| m.model),
+            Some("backup".to_string())
+        );
+        // With no backup, no model is named and the pane sends nothing.
+        let alone = Plan::only(candidate("subscription", Origin::Requested, false));
+        assert_eq!(first_reachable(&alone), None);
     }
 }
 

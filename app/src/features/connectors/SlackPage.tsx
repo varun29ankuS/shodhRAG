@@ -332,7 +332,7 @@ export function SlackPage({
             })}
           </div>
 
-          <div role="tabpanel" id={`slack-panel-${tab}`} aria-labelledby={`slack-tab-${tab}`} tabIndex={0} className="focus:outline-none">
+          <div role="tabpanel" id={`slack-panel-${tab}`} aria-labelledby={`slack-tab-${tab}`} tabIndex={0} className="rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
             {tab === 'overview' && <OverviewTab {...tabProps} onTab={onTab} />}
             {tab === 'answering' && <AnsweringTab {...tabProps} workspaces={workspaces} />}
             {tab === 'indexing' && <IndexingTab {...tabProps} workspaces={workspaces} />}

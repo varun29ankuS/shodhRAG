@@ -150,7 +150,11 @@ test('mode and permissions live in one menu, which keeps its shape', () => {
   assert.match(menu, /if \(next === 'creator' && work !== 'creator' && confirming\?\.kind !== 'work'\)/);
   assert.match(menu, /if \(next === 'auto' && permission !== 'auto' && confirming\?\.kind !== 'permission'\)/);
   // Keyboard: arrows, Home/End, Esc returns focus to the trigger; disabled items are skipped.
-  for (const key of ['ArrowDown', 'ArrowUp', 'Home', 'End', 'Escape', 'Tab']) assert.match(menu, new RegExp(`'${key}'`));
+  // The arrows, Home and End move by the shared rule (lib/menuKeys.ts; keyboardPath.test.ts walks it).
+  for (const key of ['Escape', 'Tab']) assert.match(menu, new RegExp(`'${key}'`));
+  assert.match(menu, /nextMenuIndex\(e\.key, index, items\.length\)/);
+  const menuKeys = source('lib/menuKeys.ts');
+  for (const key of ['ArrowDown', 'ArrowUp', 'Home', 'End']) assert.match(menuKeys,new RegExp(`case '${key}':`));
   assert.match(menu, /:not\(\[aria-disabled="true"\]\)/);
   assert.match(menu, /if \(restore\) buttonRef\.current\?\.focus\(\)/);
   assert.match(menu, /aria-haspopup="menu"/);

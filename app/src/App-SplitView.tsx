@@ -1665,7 +1665,7 @@ function AppSplitView() {
                 </button>
                 {showSystemPromptEditor && (
                   <>
-                    <div className="fixed inset-0 z-40" onClick={() => { setShowSystemPromptEditor(false); setEditingInstructionIdx(null); }} />
+                    <div aria-hidden="true" className="fixed inset-0 z-40" onClick={() => { setShowSystemPromptEditor(false); setEditingInstructionIdx(null); }} />
                     <div
                       ref={instructionsPopoverRef}
                       role="dialog"

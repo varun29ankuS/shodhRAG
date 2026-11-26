@@ -38,6 +38,7 @@ import { countOf } from '../../lib/plural';
 import { notify } from '../../lib/notify';
 import { agentItemKey, revealAgentItem } from '../../lib/agentHighlight';
 import { announce } from '../../lib/announcer';
+import { ViewState } from '../../components/shell/ViewState';
 
 const ROW_HEIGHT = 34;
 const OVERSCAN = 8;
@@ -288,9 +289,9 @@ export function AuditTable({ rows, total, loading, onLoadMore, onSelectConversat
         className="relative h-[480px] overflow-y-auto scrollbar-thin"
       >
         {rows.length === 0 ? (
-          <p className="px-4 py-10 text-center text-small text-shodh-text-muted">
-            {loading ? 'Loading events…' : 'No events match these filters.'}
-          </p>
+          <div className="p-4">
+            {loading ? <ViewState kind="loading" title="Loading events" /> : <ViewState kind="empty" title="No events match these filters" />}
+          </div>
         ) : (
           <div style={{ height: totalHeight }} className="relative">
             {visibleIndexes.map(index => {

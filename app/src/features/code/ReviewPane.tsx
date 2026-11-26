@@ -1,28 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  AlertOctagon,
-  AlertTriangle,
-  BookOpen,
-  CheckCircle2,
-  CircleHelp,
-  Copy,
-  Info,
-  Loader2,
-  Palette,
-  Play,
-  RefreshCw,
-  ScanEye,
-  Send,
-  ShieldAlert,
-  Wrench,
-  X,
-  XCircle,
-} from 'lucide-react';
+import { AlertOctagon, AlertTriangle, BookOpen, CheckCircle2, CircleHelp, Copy, Info, Loader2, Palette, Play, RefreshCw, ScanEye, Send, ShieldAlert, SlidersHorizontal, Wrench, X, XCircle } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { notify } from '../../lib/notify';
 import { ariaKeyShortcuts, IS_MAC_PLATFORM } from '../../lib/shortcuts';
 import { Kbd } from '../../components/ui/Kbd';
+import { ViewState } from '../../components/shell/ViewState';
+import { MODEL_CHANGED_EVENT } from '../modelPicker/modelApi';
+import { requestModelPicker } from '../modelPicker/navigation';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useDockedWidth } from '../../lib/sidePane';
 import { useChatSession } from '../ask/ChatSessionContext';
@@ -275,6 +260,8 @@ export function ReviewPane() {
   const [folder, setFolder] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** What the request still needs (a question, lines to review), before anything is sent. */
+  const [hint, setHint] = useState<string | null>(null);
   const [model, setModel] = useState<ReviewTarget | null | undefined>(undefined);
   const [pending, setPending] = useState<Pending | null>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -301,32 +288,42 @@ export function ReviewPane() {
   useEffect(() => {
     if (!subject) return;
     setError(null);
+    setHint(null);
     setPending(null);
     if (subject.kind === 'folder') setCheck('architecture');
     setFolder(subject.kind === 'folder' ? subject.folder : subject.kind === 'file' ? folderOf(subject.path) : '.');
     closeRef.current?.focus({ preventScroll: true });
     let cancelled = false;
-    codeApi
-      .target()
-      .then(found => {
-        if (!cancelled) setModel(found);
-      })
-      .catch(() => {
-        if (!cancelled) setModel(null);
-      });
+    const read = () => {
+      codeApi
+        .target()
+        .then(found => {
+          if (!cancelled) setModel(found);
+        })
+        .catch(() => {
+          if (!cancelled) setModel(null);
+        });
+    };
+    read();
+    // "Switch model" below, or a change anywhere else: the pane says the new one at once.
+    window.addEventListener(MODEL_CHANGED_EVENT, read);
     return () => {
       cancelled = true;
+      window.removeEventListener(MODEL_CHANGED_EVENT, read);
     };
   }, [subject?.title, subject?.kind]);
 
   const run = useCallback(async () => {
-    if (!pane || !subject || busy) return;
+    // Nothing is sent when no model can take it: the pane says so in place of a result.
+    if (!pane || !subject || busy || model === null) return;
     const request = requestFor(subject, check, { question, flows, context, folder }, canVerify, HELPERS);
     if (typeof request === 'string') {
-      setError(request);
+      // What is missing before a review can be asked for, said beside the button.
+      setHint(request);
       return;
     }
     setBusy(true);
+    setHint(null);
     setError(null);
     try {
       const found = await codeApi.review(request, workspaceId, conversation?.id ?? null);
@@ -336,7 +333,7 @@ export function ReviewPane() {
     } finally {
       setBusy(false);
     }
-  }, [pane, subject, busy, check, question, flows, context, folder, canVerify, workspaceId, conversation?.id]);
+  }, [pane, subject, busy, model, check, question, flows, context, folder, canVerify, workspaceId, conversation?.id]);
 
   // The shortcut pressed inside the pane runs the review.
   const runRequest = pane?.runRequest ?? 0;
@@ -512,7 +509,7 @@ export function ReviewPane() {
         <header className="flex items-center gap-2 px-4 h-12 shrink-0 border-b border-shodh-border-subtle">
           <Palette className="w-4 h-4 text-shodh-text-secondary" aria-hidden="true" />
           <h2 className="m-0 text-small font-semibold text-shodh-text">Design check</h2>
-          <p className="m-0 min-w-0 truncate font-mono text-caption text-shodh-text-muted">{revealHidden(design.target.label)}</p>
+          <p className="m-0 min-w-0 truncate text-caption text-shodh-text-muted">{revealHidden(design.target.label)}</p>
           <button
             type="button"
             onClick={() => void runDesign(again, subject)}
@@ -622,8 +619,18 @@ export function ReviewPane() {
   const sentTo = model === undefined
     ? 'the configured model'
     : model === null
-      ? 'no model yet (set one up in Settings → Model)'
+      ? 'no model'
       : `${model.model}${model.cloud ? ', off this computer' : ', on this computer'}`;
+  // No model is set, or none of the user's models takes a review (a subscription answers
+  // only through the assistant): said before sending, with the fix, and nothing is sent.
+  const noReviewer = model === null;
+
+  const changeModel = (
+    <button type="button" onClick={requestModelPicker} className={QUIET_BUTTON}>
+      <SlidersHorizontal className="w-3.5 h-3.5" aria-hidden="true" />
+      Switch model
+    </button>
+  );
 
   const onCheckKey = (e: React.KeyboardEvent, index: number) => {
     const delta = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0;
@@ -651,7 +658,7 @@ export function ReviewPane() {
       <header className="flex items-center gap-2 px-4 h-12 shrink-0 border-b border-shodh-border-subtle">
         <ScanEye className="w-4 h-4 text-shodh-text-secondary" aria-hidden="true" />
         <h2 className="m-0 text-small font-semibold text-shodh-text">Code review</h2>
-        <p className="m-0 min-w-0 truncate font-mono text-caption text-shodh-text-muted">{revealHidden(subject.title)}</p>
+        <p className="m-0 min-w-0 truncate text-caption text-shodh-text-muted">{revealHidden(subject.title)}</p>
         {designRequest && (
           <button
             type="button"
@@ -724,12 +731,11 @@ export function ReviewPane() {
               </button>
             ))}
           </div>
-          {check === 'custom' && (
-            <label className="flex flex-col gap-1 text-caption text-shodh-text-secondary">
-              What should the reviewer look at?
-              <textarea value={question} onChange={e => setQuestion(e.target.value)} rows={2} maxLength={4000} className="rounded-md border border-shodh-border bg-shodh-surface px-2 py-1.5 text-small text-shodh-text" />
-            </label>
-          )}
+          {/* Always shown: a question goes with any check, and "Your question" needs one. */}
+          <label className="flex flex-col gap-1 text-caption text-shodh-text-secondary">
+            {check === 'custom' ? 'Your question' : 'Your question (optional)'}
+            <textarea value={question} onChange={e => setQuestion(e.target.value)} rows={2} maxLength={4000} className="rounded-md border border-shodh-border bg-shodh-surface px-2 py-1.5 text-small text-shodh-text" />
+          </label>
           {check === 'architecture' && (
             <>
               {subject.kind !== 'folder' && (
@@ -760,7 +766,7 @@ export function ReviewPane() {
             <button
               type="button"
               onClick={() => void run()}
-              disabled={busy}
+              disabled={busy || noReviewer}
               aria-keyshortcuts={ariaKeyShortcuts('reviewCode', IS_MAC_PLATFORM)}
               className={cn(
                 'inline-flex items-center gap-2 h-8 px-3 rounded-lg text-small font-semibold bg-shodh-accent text-shodh-on-accent hover:bg-shodh-accent-hover disabled:opacity-60',
@@ -771,16 +777,34 @@ export function ReviewPane() {
               {busy ? 'Reviewing…' : 'Review this'}
               <Kbd shortcut="reviewCode" onAccent />
             </button>
-            <p className="m-0 text-caption text-shodh-text-muted">
-              {ready ? `Sends ${reviewedWords(ready)} to ${sentTo}. Never this conversation.` : `Sends only what is selected here to ${sentTo}. Never this conversation.`}
-            </p>
+            {!noReviewer && (
+              <p className="m-0 text-caption text-shodh-text-muted">
+                {ready ? `Sends ${reviewedWords(ready)} to ${sentTo}. Never this conversation.` : `Sends only what is selected here to ${sentTo}. Never this conversation.`}
+              </p>
+            )}
           </div>
-          {error && (
-            <p role="alert" className="m-0 text-small text-shodh-error">
-              {error}
+          {hint && (
+            <p role="alert" className="m-0 text-small text-shodh-text">
+              {hint}
             </p>
           )}
         </section>
+
+        {/* The result: one of none yet, working, failed, or the findings below. */}
+        {noReviewer ? (
+          <ViewState
+            kind="offline"
+            title="No model can review code"
+            detail="A review needs a model with an API key, or a local one."
+            action={changeModel}
+          />
+        ) : busy ? (
+          <ViewState kind="loading" title="Reviewing" />
+        ) : error ? (
+          <ViewState kind="error" title="The review failed" detail={error} action={changeModel} />
+        ) : !review && !pending ? (
+          <ViewState kind="empty" icon={ScanEye} title="No review yet" detail="Findings show here, each with its line." />
+        ) : null}
 
         {pending && (
           <section

@@ -14,10 +14,10 @@ import {
   MessageCircle,
   Minimize2,
   MoreHorizontal,
-  RotateCcw,
   Search,
   X,
 } from 'lucide-react';
+import { ViewState } from '../../components/shell/ViewState';
 import { cn } from '../../lib/utils';
 import { prefetchPdfBytes } from '../ask/viewer/pdfDocCache';
 import { VIEWER_FIND_EVENT } from '../ask/viewer/PdfViewer';
@@ -561,13 +561,8 @@ export function FileBrowser({ source, onExit, onAskAboutFile, onFileCount }: Fil
         >
           {load.status === 'loading' && <ListSkeleton />}
           {load.status === 'error' && (
-            <div role="alert" className="m-6 p-4 rounded-xl border border-shodh-border bg-shodh-surface flex flex-col gap-2 items-start">
-              <p className="text-small text-shodh-text">Could not list the files of {source.name}.</p>
-              <p className="text-caption text-shodh-text-faint break-words">{load.message}</p>
-              <button type="button" onClick={() => void fetchFiles()} className={BUTTON}>
-                <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
-                Try again
-              </button>
+            <div className="p-6">
+              <ViewState kind="error" title="Files could not be listed" detail={load.message} onRetry={() => void fetchFiles()} />
             </div>
           )}
           {load.status === 'ready' && shown.length === 0 && (
@@ -1135,14 +1130,23 @@ function ListSkeleton() {
 }
 
 function EmptyFolder({ filtering, filter, indexing, rootEmpty }: { filtering: boolean; filter: string; indexing: boolean; rootEmpty: boolean }) {
-  let message: string;
-  if (filtering) message = `No file names here contain “${filter.trim()}”.`;
-  else if (indexing) message = 'Indexing is running. Files appear here once it finishes.';
-  else if (rootEmpty) message = 'Nothing from this folder is in the index yet. Index it again from the Library to add its files.';
-  else message = 'This folder is empty.';
+  let title: string;
+  let detail: string | null = null;
+  if (filtering) {
+    title = 'No matching files';
+    detail = `No file name here contains “${filter.trim()}”.`;
+  } else if (indexing) {
+    title = 'Indexing';
+    detail = 'Files show here when it finishes.';
+  } else if (rootEmpty) {
+    title = 'Nothing indexed yet';
+    detail = 'Index this folder again from the Library.';
+  } else {
+    title = 'This folder is empty';
+  }
   return (
-    <div className="flex-1 flex items-center justify-center p-8">
-      <p role="status" className="max-w-sm text-center text-small text-shodh-text-muted">{message}</p>
+    <div className="flex-1 flex items-center justify-center p-6">
+      <ViewState kind="empty" title={title} detail={detail} />
     </div>
   );
 }

@@ -453,7 +453,7 @@ export function EnhancedArtifactPanel({
                     <textarea
                       value={editedContent}
                       onChange={(e) => setEditedContent(e.target.value)}
-                      className="w-full h-full min-h-[400px] p-4 font-mono text-body rounded-lg focus:outline-none"
+                      className="w-full h-full min-h-[400px] p-4 font-mono text-body rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       style={{
                         backgroundColor: colors.bgTertiary,
                         border: `1px solid ${colors.border}`,

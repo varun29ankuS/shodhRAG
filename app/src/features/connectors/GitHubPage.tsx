@@ -563,7 +563,7 @@ export function GitHubPage({
             ))}
           </div>
 
-          <div role="tabpanel" id={`github-panel-${tab}`} aria-labelledby={`github-tab-${tab}`} tabIndex={0} className="focus:outline-none">
+          <div role="tabpanel" id={`github-panel-${tab}`} aria-labelledby={`github-tab-${tab}`} tabIndex={0} className="rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
             {tab === 'overview' && <OverviewTab {...tabProps} onTab={onTab} onSignIn={() => void signIn()} />}
             {tab === 'repositories' && <RepositoriesTab {...tabProps} highlight={highlight} />}
             {tab === 'activity' && <ActivityTab {...tabProps} />}

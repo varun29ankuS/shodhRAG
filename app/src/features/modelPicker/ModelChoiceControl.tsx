@@ -3,6 +3,7 @@ import type React from 'react';
 import { createPortal } from 'react-dom';
 import { Check, ListFilter } from 'lucide-react';
 import { cn } from '../../lib/utils';
+import { nextMenuIndex } from '../../lib/menuKeys';
 import type { DockModelLabel } from '../../lib/dockProtocol';
 import { ModelTrigger } from './ModelTrigger';
 
@@ -90,13 +91,10 @@ export function ModelChoiceControl({ model, lockedReason, onChoose, onAll }: Mod
       close(true);
       return;
     }
-    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp' && e.key !== 'Home' && e.key !== 'End') return;
     const items = Array.from(panelRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"],[role="menuitem"]') ?? []);
-    if (items.length === 0) return;
+    const next = nextMenuIndex(e.key, items.indexOf(document.activeElement as HTMLButtonElement), items.length);
+    if (next === null) return;
     e.preventDefault();
-    const at = items.indexOf(document.activeElement as HTMLButtonElement);
-    const next =
-      e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1 : e.key === 'ArrowDown' ? (at + 1) % items.length : (at - 1 + items.length) % items.length;
     items[next]?.focus();
   };
 

@@ -763,7 +763,7 @@ export function TelegramPage({
             })}
           </div>
 
-          <div role="tabpanel" id={`telegram-panel-${tab}`} aria-labelledby={`telegram-tab-${tab}`} tabIndex={0} className="focus:outline-none">
+          <div role="tabpanel" id={`telegram-panel-${tab}`} aria-labelledby={`telegram-tab-${tab}`} tabIndex={0} className="rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
             {tab === 'overview' && <OverviewTab {...tabProps} onTab={onTab} />}
             {tab === 'people' && <PeopleTab {...tabProps} workspaces={workspaces} />}
             {tab === 'settings' && <SettingsTab {...tabProps} onDisconnect={() => setConfirmDisconnect(true)} />}

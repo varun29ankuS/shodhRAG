@@ -42,7 +42,14 @@ tauri-plugin-barcode-scanner = "=2.5.3"
 tauri-plugin-biometric = "=2.5.0"
 # The phone's model name (Android's system properties, iOS's uname), and
 # Android's logcat.
-libc = "0.2"
+#
+# Below 0.2.190: from that version libc has `in6_ifreq` on macOS only, and
+# netdev 0.46 (through iroh 1.4.1's netwatch 0.19, which takes no newer
+# netdev) reads the interfaces' IPv6 flags with it on every Apple system, so
+# the phone link does not compile for iOS with a newer libc (netdev 0.48
+# reads them on macOS only). The bound goes when iroh moves to a netwatch
+# that takes netdev 0.48 or later.
+libc = ">=0.2.174, <0.2.190"
 
 [target.'cfg(target_os = "android")'.dependencies]
 # The phone's link key and its paired computer, in SharedPreferences

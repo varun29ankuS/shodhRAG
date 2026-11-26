@@ -126,7 +126,7 @@ function QuickAdd({ defaultDay, workspace }: { defaultDay: string | null; worksp
   const control = 'h-8 rounded-lg border border-shodh-border bg-shodh-surface px-2 text-small text-shodh-text hover:border-shodh-border-strong focus:outline-none focus-visible:ring-2 focus-visible:ring-ring';
 
   return (
-    <form onSubmit={submit} aria-label="Add a task" className="flex items-center gap-2 p-1.5 pl-3 rounded-xl border border-shodh-border bg-shodh-raised">
+    <form onSubmit={submit} aria-label="Add a task" className="shrink-0 flex flex-wrap items-center gap-2 p-1.5 pl-3 rounded-xl border border-shodh-border bg-shodh-raised">
       <Plus className="w-4 h-4 shrink-0 text-shodh-text-faint" aria-hidden="true" />
       <label htmlFor={titleId} className="sr-only">{workspace ? `New task in ${workspace.name}` : 'New task'}</label>
       <input
@@ -137,16 +137,16 @@ function QuickAdd({ defaultDay, workspace }: { defaultDay: string | null; worksp
         onChange={e => setTitle(e.target.value)}
         onKeyDown={e => { if (e.key === 'Escape' && title) { e.preventDefault(); setTitle(''); } }}
         placeholder={workspace ? `Add a task to ${workspace.name}` : 'Add a task'}
-        className={cn('flex-1 min-w-0 h-8 bg-transparent text-small text-shodh-text placeholder:text-shodh-text-faint focus-visible:outline-none', FOCUS_UNDERLINE)}
+        className={cn('flex-[1_1_14rem] min-w-0 h-8 bg-transparent text-small text-shodh-text placeholder:text-shodh-text-faint focus-visible:outline-none', FOCUS_UNDERLINE)}
       />
       <input
         type="date"
         aria-label="Due date (optional)"
         value={date}
         onChange={e => setDate(e.target.value)}
-        className={cn(control, 'w-[9.5rem] tabular-nums')}
+        className={cn(control, 'tabular-nums')}
       />
-      <select aria-label="Priority" value={priority} onChange={e => setPriority(e.target.value)} className={cn(control, 'w-[6.5rem]')}>
+      <select aria-label="Priority" value={priority} onChange={e => setPriority(e.target.value)} className={control}>
         {PRIORITIES.map(p => <option key={p} value={p}>{PRIORITY_LABELS[p]}</option>)}
       </select>
       <button
@@ -628,8 +628,9 @@ export default function CalendarTodoPanel() {
         </p>
       </div>
 
-      <div className="flex-1 min-h-0 flex gap-5 px-8 pb-page-end">
-        <section aria-label="Task list" className="flex-1 min-w-0 flex flex-col min-h-0 gap-3">
+      <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin px-8 pb-page-end">
+      <div className="flex flex-wrap items-start gap-5">
+        <section aria-label="Task list" className="flex-[1_1_24rem] min-w-0 flex flex-col gap-3">
           <QuickAdd defaultDay={selectedDay} workspace={filteredWorkspace} />
 
           <div className="flex items-center gap-1 shrink-0 flex-wrap">
@@ -688,7 +689,7 @@ export default function CalendarTodoPanel() {
             </div>
           </div>
 
-          <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin -mx-1 px-1">
+          <div className="-mx-1 px-1">
             {filteredTasks.length === 0 ? (
               <ViewState
                 kind="empty"
@@ -740,7 +741,7 @@ export default function CalendarTodoPanel() {
           </div>
         </section>
 
-        <aside aria-label="Calendar and projects" className="w-64 shrink-0 flex flex-col gap-5 min-h-0 overflow-y-auto scrollbar-thin">
+        <aside aria-label="Calendar and projects" className="flex-[1_1_15rem] max-w-sm min-w-0 flex flex-col gap-5">
           <MiniCalendar activeDays={activeDays} selected={selectedDay} onSelect={setSelectedDay} />
 
           {workspaceOptions.length > 0 && (
@@ -836,6 +837,7 @@ export default function CalendarTodoPanel() {
             <dt className="text-shodh-text-muted">Events</dt><dd className="tabular-nums font-semibold text-shodh-info text-right">{events.length}</dd>
           </dl>
         </aside>
+      </div>
       </div>
 
     </div>

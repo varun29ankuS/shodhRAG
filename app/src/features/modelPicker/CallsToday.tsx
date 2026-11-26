@@ -10,8 +10,8 @@ type Read = { state: 'loading' } | { state: 'ready'; usage: ModelUsageToday } | 
 
 /**
  * One line under Settings → Model → Model: the model calls Shodh made today, by
- * spender, and when the provider's day starts again. The line keeps its height in
- * every state.
+ * spender, and when the provider's day starts again. The line is never shorter than
+ * one line of text, and wraps where it has no room.
  */
 export function CallsToday() {
   const [read, setRead] = useState<Read>({ state: 'loading' });
@@ -39,7 +39,7 @@ export function CallsToday() {
         ? "Today's model calls couldn't be read."
         : 'Counting today’s model calls…';
   return (
-    <p className="m-0 min-h-[1.25rem] truncate text-caption text-shodh-text-muted" role="status" title={text}>
+    <p className="m-0 min-h-[1.25rem] min-w-0 text-caption text-shodh-text-muted" role="status">
       {text}
     </p>
   );

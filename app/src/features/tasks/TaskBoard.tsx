@@ -65,7 +65,7 @@ function AddTask({ workspaceId, workspaceName }: { workspaceId: string; workspac
   };
 
   return (
-    <form onSubmit={submit} aria-label={`Add a task to ${workspaceName}`} className="flex items-center gap-2 p-1.5 pl-3 rounded-xl border border-shodh-border bg-shodh-raised">
+    <form onSubmit={submit} aria-label={`Add a task to ${workspaceName}`} className="flex flex-wrap items-center gap-2 p-1.5 pl-3 rounded-xl border border-shodh-border bg-shodh-raised">
       <Plus className="w-4 h-4 shrink-0 text-shodh-text-faint" aria-hidden="true" />
       <label htmlFor={inputId} className="sr-only">New task in {workspaceName}</label>
       <input
@@ -76,7 +76,7 @@ function AddTask({ workspaceId, workspaceName }: { workspaceId: string; workspac
         onChange={e => setTitle(e.target.value)}
         onKeyDown={e => { if (e.key === 'Escape' && title) { e.preventDefault(); setTitle(''); } }}
         placeholder="Add a task to this workspace"
-        className={cn('flex-1 min-w-0 h-8 bg-transparent text-small text-shodh-text placeholder:text-shodh-text-faint focus-visible:outline-none', FOCUS_UNDERLINE)}
+        className={cn('flex-[1_1_14rem] min-w-0 h-8 bg-transparent text-small text-shodh-text placeholder:text-shodh-text-faint focus-visible:outline-none', FOCUS_UNDERLINE)}
       />
       <button
         type="submit"

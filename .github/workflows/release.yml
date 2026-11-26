@@ -1922,7 +1922,12 @@ jobs:
               throw "$creatorSummary (expected: the page shown, the findings beside it)"
             }
             $tourExpected = $tourViews.Count * $tourThemes.Count
-            if (-not ($lines | Where-Object { $_ -match "Launch probe: views tour done views=$($tourViews.Count) themes=$($tourThemes.Count)" })) { throw 'The views tour did not finish' }
+            if (-not ($lines | Where-Object { $_ -match "Launch probe: views tour done views=$($tourViews.Count) themes=$($tourThemes.Count) clipped=\d+" })) { throw 'The views tour did not finish' }
+            # Every view measured its own text, in both themes, and none of it is cut off
+            # or spills out of its box (features/launch/textFit.ts).
+            $tourMeasured = @($lines | Where-Object { $_ -match 'Launch probe: view \S+ in \S+ text page=\d+x\d+ clipped=\d+' }).Count
+            if ($tourMeasured -ne $tourExpected) { throw "The views tour measured the text of $tourMeasured of $tourExpected views" }
+            if (-not ($lines | Where-Object { $_ -match "Launch probe: views tour done views=$($tourViews.Count) themes=$($tourThemes.Count) clipped=0\s*$" })) { throw 'Text is cut off in a view (the "Launch probe: clipped" lines say where)' }
             if ($tourShots -ne $tourExpected) { throw "The views tour took $tourShots of $tourExpected pictures" }
             "- $tourShots pictures, every view in dark and light, are in the windows-launch-evidence artifact (view-<name>-<theme>.png)" | Add-Content $env:GITHUB_STEP_SUMMARY
           } finally {

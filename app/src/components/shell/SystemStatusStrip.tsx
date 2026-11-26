@@ -669,15 +669,15 @@ export function SystemStatusStrip({
         className={cn(
           collapsed
             ? 'relative w-10 h-10 rounded-[10px] inline-flex items-center justify-center hover:bg-shodh-raised transition-colors duration-micro'
-            : 'flex items-center gap-2 h-8 w-full px-3 rounded-[10px] border border-shodh-border text-left hover:bg-shodh-raised transition-colors duration-micro min-w-0',
+            : 'flex flex-wrap items-center gap-x-2 gap-y-0.5 min-h-8 w-full px-3 py-1.5 rounded-[10px] border border-shodh-border text-left hover:bg-shodh-raised transition-colors duration-micro min-w-0',
           FOCUS_RING,
         )}
       >
         <SearchIcon className="w-4 h-4 shrink-0 text-shodh-text-muted" aria-hidden="true" />
         {!collapsed && (
-          <span className="text-caption font-medium text-shodh-text-secondary truncate flex-1">Search · {search.short}</span>
+          <span className="flex-1 min-w-0 whitespace-normal break-words text-caption font-medium text-shodh-text-secondary">Search · {search.short}</span>
         )}
-        {!collapsed && <Kbd shortcut="openSystemStatus" />}
+        {!collapsed && <Kbd shortcut="openSystemStatus" className="ms-auto" />}
         <ToneDot tone={search.tone} className={collapsed ? 'absolute top-1.5 right-1.5' : undefined} />
       </button>
 

@@ -45,10 +45,10 @@ export const PAGE_COLUMN_CLASS = 'w-full px-8 pt-7 pb-page-end flex flex-col gap
 export const PAGE_WIDTH_CLASS = 'mx-auto max-w-5xl';
 
 /** The title row: the title at the left, the primary action's slot at the right. */
-export const PAGE_TITLE_ROW_CLASS = 'flex items-center gap-4 min-h-9';
+export const PAGE_TITLE_ROW_CLASS = 'flex flex-wrap items-center gap-x-4 gap-y-2 min-h-9';
 
 /** The page title: one size and weight on every view. */
-export const PAGE_TITLE_CLASS = 'm-0 min-w-0 truncate text-title font-semibold text-shodh-text';
+export const PAGE_TITLE_CLASS = 'm-0 shrink-0 whitespace-nowrap text-title font-semibold text-shodh-text';
 
 /** The reserved slot for a view's one primary action. It keeps its place when empty. */
-export const PAGE_ACTION_SLOT_CLASS = 'ms-auto shrink-0 flex items-center gap-2 min-h-9';
+export const PAGE_ACTION_SLOT_CLASS = 'ms-auto min-w-0 flex flex-wrap items-center justify-end gap-2 min-h-9';

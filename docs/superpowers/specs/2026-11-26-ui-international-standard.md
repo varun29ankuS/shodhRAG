@@ -175,4 +175,15 @@ Still true:
 - **The keyboard path is read from the sources, not walked in a rendered page.** The app's tests run in Node
   without a DOM. The test holds the order elements are written in and the styles they carry; it cannot see a
   focus ring that is drawn but clipped or covered.
-- **Nothing here was looked at on a screen before it was pushed.** The 18 CI pictures are the first look.
+- **The first look at the 18 CI pictures found text cut off that every gate had passed**: the Automations
+  title and footer, the Tasks add row, the sidebar's search chip and a chat list squeezed to one row. The
+  gates read class names; none measured a rendered page. Now one does. In the Windows launch job's views
+  tour the window measures every text it draws, in each view and theme (`features/launch/textFit.ts`): text
+  wider than its box, text taller than a box that hides the rest, and a field's placeholder or value wider
+  than the field. One hit fails the job, with every hit in the log. Nothing is passed over by name.
+  What it covers is what the tour shows: nine views with the launch profile's data, at the probe's window
+  size. A long name a user types can still be shortened with an ellipsis where a row gives it a title.
+- **The fixes it forced are in the layout, not in widths**: the page title never shortens and the action slot
+  wraps under it; Automations' model choice is in the toolbar row and its side pane opens only when it holds
+  something; the Tasks add row wraps and the page has one scroller; the sidebar's views and chats share a
+  scroller when the window is short, so the chats keep room for a few rows.

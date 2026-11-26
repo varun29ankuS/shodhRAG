@@ -127,6 +127,13 @@ test("the Windows launch job's views tour is the probe's own list, in its order"
   assert.match(probe, /format!\("launch-probe-captured-view-\{view\}-\{theme\}"\)/);
   // Every picture is taken, or the job fails.
   assert.match(body, /if \(\$tourShots -ne \$tourExpected\) \{ throw /);
+  // Every view's text is measured, and one cut-off text fails the job: by the probe's
+  // own FAIL line, and by the count the tour ends with.
+  assert.match(probe, /"Launch probe: view \{view\} in \{theme\} text page=\{\}x\{\} clipped=\{\}"/);
+  assert.match(body, /if \(\$tourMeasured -ne \$tourExpected\) \{ throw /);
+  assert.match(probe, /"Launch probe: views tour done views=\{\} themes=\{\} clipped=\{clipped_total\}"/);
+  assert.match(body, /views tour done views=\$\(\$tourViews\.Count\) themes=\$\(\$tourThemes\.Count\) clipped=0\\s\*\$" \}\)\) \{ throw /);
+  assert.match(probe, /if clipped_total > 0 \{\s+return Err\(/);
   // The macOS launch job does not ask for the tour, so the probe there ends as before.
   assert.doesNotMatch(code(job('launch-macos').block), /SHODH_LAUNCH_PROBE_TOUR/);
 });

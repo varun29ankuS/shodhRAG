@@ -138,7 +138,7 @@ export function ConversationHistory({
   };
 
   return (
-    <section aria-labelledby={headingId} className="flex-1 min-h-0 flex flex-col">
+    <section aria-labelledby={headingId} className="flex-1 min-h-[12rem] flex flex-col">
       <h2
         id={headingId}
         className="px-5 pt-4 pb-1 text-caption font-semibold tracking-[0.08em] uppercase text-shodh-text-faint shrink-0"

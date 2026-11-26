@@ -8,12 +8,16 @@
  *   target handed to its view, then the view opened);
  * - `openDesign`: the user clicks the design check's badge, and its findings open;
  * - `show`: the views tour, after every check: one view opened as a click in the sidebar
- *   opens it, in one theme, with the findings pane closed, for the job's picture of it.
+ *   opens it, in one theme, with the findings pane closed, for the job's picture of it;
+ * - `measure`: the tour's check of the view now shown: every text on it that does not fit
+ *   its box (`textFit.ts`), reported with `launch_probe_text_fit`.
  *
  * Rust then checks, from this window's own reports, that the page stayed shown.
  */
 import { useEffect, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
+import { clippedText } from './textFit';
 import { navigationFromEvent, publishTarget } from '../agent/navigation';
 import type { NavigatedEvent } from '../agent/events';
 import { normalizeViewTab } from '../../lib/viewTabs';
@@ -77,6 +81,16 @@ export function LaunchProbeHost(): null {
           themeRef.current.toggleTheme();
         }
         window.dispatchEvent(new CustomEvent('switchTab', { detail: tab }));
+      } else if (payload.kind === 'measure' && typeof payload.view === 'string' && typeof payload.theme === 'string') {
+        const { count, lines } = clippedText(document);
+        invoke('launch_probe_text_fit', {
+          view: payload.view,
+          theme: payload.theme,
+          width: window.innerWidth,
+          height: window.innerHeight,
+          count,
+          clipped: lines,
+        }).catch(error => console.error('Launch probe: the text measure was not delivered:', error));
       }
     })
       .then(fn => {

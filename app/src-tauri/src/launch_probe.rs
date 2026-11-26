@@ -25,7 +25,10 @@
 //! 6. last, and only when `SHODH_LAUNCH_PROBE_TOUR=views` is set too
 //!    ([`views_tour`]): every view of the app, in each theme, opened by the
 //!    main window's frontend, each waiting for the job's screenshot of it.
-//!    Pictures for people to review; no check reads them.
+//!    The pictures are for people to review. What is checked is the text: the
+//!    window measures every text it draws in each view ([`launch_probe_text_fit`]),
+//!    and one that is cut off or spills out of its box fails the probe, after
+//!    the last picture, with every such text logged.
 //!
 //! Each fact is one `Launch probe:` log line, then `Launch probe: PASS` or
 //! `Launch probe: FAIL <what>`.
@@ -33,6 +36,7 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use shodh_rag::harness::events::NavigationTarget;
@@ -67,6 +71,75 @@ const PANE: CssRect = CssRect {
 
 static STARTED: AtomicBool = AtomicBool::new(false);
 static LOADED: AtomicBool = AtomicBool::new(false);
+
+/// The main window's measure of the text in one view of the tour.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TextFit {
+    view: String,
+    theme: String,
+    /// The page's size when it was measured (CSS pixels).
+    width: u32,
+    height: u32,
+    /// How many texts do not fit.
+    count: u32,
+    /// One line for each (the first [`MAX_CLIPPED_LINES`]).
+    clipped: Vec<String>,
+}
+
+/// The measures the window has reported, in the order it reported them.
+static TEXT_FITS: Mutex<Vec<TextFit>> = Mutex::new(Vec::new());
+/// The most lines kept of one view's measure, and the most of one line
+/// (`features/launch/textFit.ts` sends no more).
+const MAX_CLIPPED_LINES: usize = 60;
+const MAX_CLIPPED_LINE_CHARS: usize = 400;
+
+/// The main window's answer to the tour's `measure`: the text of the view it
+/// shows that does not fit its box. Kept only while the probe runs; any other
+/// instance drops it.
+#[tauri::command]
+pub fn launch_probe_text_fit(
+    view: String,
+    theme: String,
+    width: u32,
+    height: u32,
+    count: u32,
+    clipped: Vec<String>,
+) {
+    if !STARTED.load(Ordering::SeqCst) {
+        return;
+    }
+    let known = TOUR_VIEWS.contains(&view.as_str()) && TOUR_THEMES.contains(&theme.as_str());
+    if !known {
+        return;
+    }
+    let clipped = clipped
+        .into_iter()
+        .take(MAX_CLIPPED_LINES)
+        .map(|line| line.chars().take(MAX_CLIPPED_LINE_CHARS).collect())
+        .collect();
+    TEXT_FITS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(TextFit {
+            view,
+            theme,
+            width,
+            height,
+            count,
+            clipped,
+        });
+}
+
+/// The measure the window reported of `view` in `theme`, once it has.
+fn text_fit_of(view: &str, theme: &str) -> Option<TextFit> {
+    TEXT_FITS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .rev()
+        .find(|fit| fit.view == view && fit.theme == theme)
+        .cloned()
+}
 
 /// Whether this instance runs the probe: by name, and only on a separate profile.
 pub fn probe_requested(env_value: Option<&OsStr>, profile: &Profile) -> bool {
@@ -352,6 +425,7 @@ async fn views_tour(app: &AppHandle, data_dir: &Path) -> Result<(), String> {
     let to_main = || tauri::EventTarget::Webview {
         label: crate::background::MAIN_WINDOW.to_string(),
     };
+    let mut clipped_total: u32 = 0;
     for theme in TOUR_THEMES {
         for view in TOUR_VIEWS {
             app.emit_to(
@@ -361,6 +435,29 @@ async fn views_tour(app: &AppHandle, data_dir: &Path) -> Result<(), String> {
             )
             .map_err(|e| format!("the {view} view could not be asked for: {e}"))?;
             tokio::time::sleep(TOUR_SETTLE).await;
+            // The text of the view as it now stands, measured by the window itself.
+            app.emit_to(
+                to_main(),
+                LAUNCH_PROBE_EVENT,
+                serde_json::json!({ "kind": "measure", "view": view, "theme": theme }),
+            )
+            .map_err(|e| format!("the {view} view could not be asked for its measure: {e}"))?;
+            wait_for("the window's measure of a view's text", 30, || {
+                text_fit_of(view, theme).is_some()
+            })
+            .await?;
+            let fit = text_fit_of(view, theme)
+                .ok_or_else(|| format!("the measure of {view} in {theme} was lost"))?;
+            for line in &fit.clipped {
+                tracing::error!("Launch probe: clipped {view} {theme} {line}");
+            }
+            tracing::info!(
+                "Launch probe: view {view} in {theme} text page={}x{} clipped={}",
+                fit.width,
+                fit.height,
+                fit.count
+            );
+            clipped_total = clipped_total.saturating_add(fit.count);
             tracing::info!("Launch probe: view {view} in {theme} shown");
             let captured = data_dir.join(view_captured_file(view, theme));
             wait_for("the launch job's screenshot of a view", 60, || {
@@ -370,10 +467,16 @@ async fn views_tour(app: &AppHandle, data_dir: &Path) -> Result<(), String> {
         }
     }
     tracing::info!(
-        "Launch probe: views tour done views={} themes={}",
+        "Launch probe: views tour done views={} themes={} clipped={clipped_total}",
         TOUR_VIEWS.len(),
         TOUR_THEMES.len()
     );
+    // After the last picture, so a failure still leaves every view to look at.
+    if clipped_total > 0 {
+        return Err(format!(
+            "{clipped_total} texts are cut off or spill out of their boxes in the views tour (each is a \"Launch probe: clipped\" line)"
+        ));
+    }
     Ok(())
 }
 

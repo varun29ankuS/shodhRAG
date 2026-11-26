@@ -157,7 +157,7 @@ function ModelControl({ chosen, onChange }: { chosen: ModelRef | null; onChange:
   const chat = view?.active?.model ?? null;
   const tag = limitTag(chosen, chat);
   return (
-    <div className="flex items-center gap-2 min-w-0">
+    <div className="flex flex-wrap items-center gap-2 min-w-0">
       <label htmlFor={id} className="text-small text-shodh-text-muted shrink-0">Model</label>
       <select
         id={id}
@@ -171,7 +171,7 @@ function ModelControl({ chosen, onChange }: { chosen: ModelRef | null; onChange:
             .catch(err => setError(errorText(err)))
             .finally(() => setSaving(false));
         }}
-        className={cn(FIELD, 'h-8 w-56 truncate')}
+        className={cn(FIELD, 'h-8 min-w-0 max-w-full')}
       >
         <option value="">Same as chat</option>
         {choices.map(c => (
@@ -179,7 +179,7 @@ function ModelControl({ chosen, onChange }: { chosen: ModelRef | null; onChange:
         ))}
       </select>
       <span
-        className="w-36 truncate text-caption text-shodh-text-secondary"
+        className="text-caption text-shodh-text-secondary"
         title={error ?? tag.tooltip}
         role={error ? 'alert' : undefined}
       >
@@ -236,10 +236,10 @@ function Row({
       )}
     >
       <button type="button" onClick={onSelect} className={cn('flex-1 min-w-0 flex items-center gap-3 text-left h-full rounded-md', FOCUS_RING)}>
-        <span className="w-44 shrink-0 truncate text-small font-medium text-shodh-text" title={automation.name}>{automation.name}</span>
-        <span className="w-48 shrink-0 truncate text-small text-shodh-text-secondary" title={automation.when}>{automation.when}</span>
+        <span className="flex-[2] min-w-0 truncate text-small font-medium text-shodh-text" title={automation.name}>{automation.name}</span>
+        <span className="flex-[2] min-w-0 truncate text-small text-shodh-text-secondary" title={automation.when}>{automation.when}</span>
         <Chip automation={automation} now={now} />
-        <span className="flex-1 min-w-0 truncate text-small text-shodh-text-muted" title={last}>{last}</span>
+        <span className="flex-[3] min-w-0 truncate text-small text-shodh-text-muted" title={last}>{last}</span>
       </button>
       <button
         type="button"
@@ -823,51 +823,54 @@ export function AutomationsView({ onOpenChat }: { onOpenChat: (conversationId: s
       }),
     );
 
+  // The side pane holds a form or one automation; with neither, the list has the page.
+  const paneOpen = pane.kind === 'new' || ((pane.kind === 'detail' || pane.kind === 'edit') && Boolean(selected));
+
   return (
     <PageFrame
       fill
       width="full"
       title="Automations"
       action={
-        <>
-          <ModelControl
-            chosen={model}
-            onChange={async next => {
-              await automationsApi.setModel(next);
-              setModel(next);
-            }}
-          />
-          <button type="button" className={PRIMARY} onClick={() => openNew(null)}>
-            <Plus className="w-3.5 h-3.5" aria-hidden="true" />
-            New automation
-          </button>
-        </>
+        <button type="button" className={PRIMARY} onClick={() => openNew(null)}>
+          <Plus className="w-3.5 h-3.5" aria-hidden="true" />
+          New automation
+        </button>
+      }
+      toolbar={
+        <ModelControl
+          chosen={model}
+          onChange={async next => {
+            await automationsApi.setModel(next);
+            setModel(next);
+          }}
+        />
       }
     >
       <div className="flex-1 min-h-0 flex border-t border-shodh-border">
-        <div className="flex-1 min-w-0 flex flex-col">
+        <div className="flex-[1_1_24rem] min-w-0 flex flex-col">
           <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin px-8 py-3">
             {loadError ? (
               <ViewState kind="error" title="Automations could not be loaded" detail={loadError} />
             ) : automations === null ? (
               <ViewState kind="loading" title="Loading automations" />
             ) : automations.length === 0 ? (
-              <div className="h-full flex flex-col items-center justify-center gap-3">
+              <div className="min-h-full flex flex-col items-center justify-center gap-3">
                 <p className="m-0 text-small text-shodh-text-muted">No automations yet</p>
                 {templates.length > 0 && (
-                  <ul className="m-0 p-0 list-none flex flex-wrap justify-center gap-3" aria-label="Templates">
+                  <ul className="m-0 p-0 list-none w-full grid grid-cols-[repeat(auto-fit,minmax(13rem,1fr))] gap-3" aria-label="Templates">
                     {templates.map(t => (
-                      <li key={t.id} className="w-64 h-32 flex flex-col gap-1 rounded-xl border border-shodh-border p-3">
-                        <p className="m-0 text-small font-semibold text-shodh-text truncate" title={t.name}>{t.name}</p>
-                        <p className="m-0 text-caption text-shodh-text-secondary truncate" title={t.when}>{t.when}</p>
-                        <p className="m-0 text-caption text-shodh-text-muted truncate" title={t.estimate}>{t.estimate}</p>
-                        <div className="flex-1" />
-                        <button type="button" className={cn(QUIET, 'self-end w-24')} onClick={() => setUp(t)}>Set up</button>
+                      <li key={t.id} className="min-w-0 flex flex-col gap-1 rounded-xl border border-shodh-border p-3">
+                        <p className="m-0 text-small font-semibold text-shodh-text break-words">{t.name}</p>
+                        <p className="m-0 text-caption text-shodh-text-secondary break-words">{t.when}</p>
+                        <p className="m-0 text-caption text-shodh-text-muted break-words">{t.estimate}</p>
+                        <div className="flex-1 min-h-2" />
+                        <button type="button" className={cn(QUIET, 'self-end')} onClick={() => setUp(t)}>Set up</button>
                       </li>
                     ))}
                   </ul>
                 )}
-                <button type="button" className={cn(PRIMARY, 'w-40')} onClick={() => openNew(null)}>
+                <button type="button" className={PRIMARY} onClick={() => openNew(null)}>
                   <Plus className="w-3.5 h-3.5" aria-hidden="true" />
                   New automation
                 </button>
@@ -892,11 +895,12 @@ export function AutomationsView({ onOpenChat }: { onOpenChat: (conversationId: s
             )}
           </div>
           <p className="m-0 h-6 shrink-0 px-8 text-caption text-shodh-warning truncate" role="alert">{rowError ?? ''}</p>
-          <footer className="h-10 shrink-0 flex items-center px-8 border-t border-shodh-border">
+          <footer className="min-h-10 shrink-0 flex items-center px-8 py-2 border-t border-shodh-border">
             <CallsToday />
           </footer>
         </div>
-        <aside className="w-[420px] shrink-0 border-s border-shodh-border overflow-y-auto scrollbar-thin p-5 pb-page-end" aria-label="Automation">
+        {paneOpen && (
+        <aside className="flex-[1_1_24rem] min-w-0 border-s border-shodh-border overflow-y-auto scrollbar-thin p-5 pb-page-end" aria-label="Automation">
           {pane.kind === 'new' && (
             <AutomationForm
               key={pane.seq}
@@ -943,10 +947,8 @@ export function AutomationsView({ onOpenChat }: { onOpenChat: (conversationId: s
               onOpenChat={onOpenChat}
             />
           )}
-          {(pane.kind === 'none' || ((pane.kind === 'detail' || pane.kind === 'edit') && !selected)) && (
-            <p className="m-0 text-small text-shodh-text-muted">Pick an automation</p>
-          )}
         </aside>
+        )}
       </div>
     </PageFrame>
   );

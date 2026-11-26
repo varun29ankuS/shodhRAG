@@ -78,10 +78,21 @@ test('mode and model share one height token with the row', () => {
   assert.match(withoutComments(source('features/modelPicker/ModelChip.tsx')), /<ModelTrigger/);
 });
 
-test('one model state colour: the accent dot, or an icon with the reason in the label', () => {
+test("one model state, one colour: the composer's dot is the sidebar's, from one mapping", () => {
   const trigger = withoutComments(source('features/modelPicker/ModelTrigger.tsx'));
-  assert.match(trigger, /bg-shodh-accent/);
-  assert.doesNotMatch(trigger, /bg-shodh-(info|warning|error|success)\b/);
+  // The trigger writes no colour of its own: its dot is the state's, through DOT_CLASS.
+  assert.match(trigger, /DOT_CLASS\[dot\]/);
+  assert.doesNotMatch(trigger, /bg-shodh-(accent|info|warning|error|success)\b/);
+  // Ask's chip, the floating chat and the sidebar's status all take the state from modelDot.
+  const chip = withoutComments(source('features/modelPicker/ModelChip.tsx'));
+  assert.match(chip, /dot=\{modelDot\(connection\)\}/);
+  assert.match(withoutComments(source('features/modelPicker/useModelLabel.ts')), /const dot = modelDot\(snapshot\);/);
+  const status = withoutComments(source('features/connection/connectionStatus.ts'));
+  assert.match(status, /dot: modelDot\(snapshot\),/);
+  // And one name: the sidebar's status and the composer's control both use modelDisplayName.
+  assert.match(status, /const model = modelDisplayName\(models, active\.model\);/);
+  assert.match(withoutComments(source('features/modelPicker/modelFormat.ts')), /label: modelDisplayName\(/);
+  assert.match(withoutComments(source('features/connection/ConnectionStatusChip.tsx')), /pillView\(snapshot, localTime, models\?\.models \?\? \[\]\)/);
 });
 
 test('what the answer works on, and when permissions apply', () => {

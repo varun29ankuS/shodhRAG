@@ -3,6 +3,7 @@ import { ArrowUpRight, Check, Copy, CornerLeftUp, FileDown, FileText, FolderPlus
 import { useTheme } from '../../contexts/ThemeContext';
 import { invoke } from '@tauri-apps/api/core';
 import { cn } from '../../lib/utils';
+import { WIDE_BLOCK_HOST_CLASS } from './wideBlock';
 import type { ViewTab } from '../../lib/viewTabs';
 import { useMediaQuery } from '../../hooks/useMediaQuery';
 import { AgentComposer } from '../agent/AgentComposer';
@@ -1586,7 +1587,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
         ref={setScrollerRef}
         onFocus={onFocusIn}
         onBlur={onFocusOut}
-        className="flex-1 overflow-y-auto scrollbar-thin"
+        className={cn('flex-1 overflow-y-auto scrollbar-thin', WIDE_BLOCK_HOST_CLASS)}
         style={{ paddingTop: CONVERSATION_TOP_PX, paddingBottom: composerSpace }}
       >
         <DiagramHostContext.Provider value={diagramHost}>

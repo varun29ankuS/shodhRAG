@@ -12,6 +12,8 @@ import type { RuntimeSetupState } from '../features/setup/runtimeSetupHost';
 import { isPermissionMode, isWorkKind } from '../features/agent/composerRow.ts';
 import type { WorkKind } from '../features/agent/composerRow';
 import type { AgentMode } from '../features/agent/agentModes';
+import { DOTS } from '../features/connection/connectionStatus.ts';
+import type { Dot } from '../features/connection/connectionStatus.ts';
 import { SEND_KEYS } from './sendKey.ts';
 import type { SendKey } from './sendKey.ts';
 
@@ -67,11 +69,35 @@ export interface DockSnapshot {
   sendKey: SendKey;
 }
 
-/** The model control's text: the model's name, and whether one answers. */
+/**
+ * The model control: the model's name, whether one is chosen, its state's colour (the
+ * sidebar's, `modelDot`), and the models its menu offers (the composer chip's: the picks
+ * and the recent ones).
+ */
 export interface DockModelLabel {
   label: string;
   ready: boolean;
+  dot: Dot;
+  choices: DockModelChoice[];
 }
+
+/** A row of the floating chat's model menu. Main alone knows which model `id` stands for. */
+export interface DockModelChoice {
+  id: string;
+  /** "Best free", or a recent model's name. */
+  title: string;
+  /** The model and its provider. */
+  detail: string;
+  /** It answers now. */
+  selected: boolean;
+}
+
+/** The most rows the model menu sends (main offers fewer: four picks and four recent). */
+export const MAX_MODEL_CHOICES = 12;
+/** The longest title or detail of a row (characters). */
+export const MAX_CHOICE_TEXT = 160;
+/** A row's id: 1 to 256 printable ASCII characters, no spaces. */
+export const MODEL_CHOICE_ID = /^[!-~]{1,256}$/;
 
 /** What the dock may ask main to do. Anything else is refused. */
 export type DockAction =
@@ -99,8 +125,10 @@ export type DockAction =
   | { kind: 'setWork'; work: WorkKind }
   /** The mode menu: the permission (Auto after its confirming click; never Creator). */
   | { kind: 'setPermission'; mode: AgentMode }
-  /** The model control: main shows Ask with its model menu open. */
-  | { kind: 'pickModel' };
+  /** The model menu's "All models": main shows Ask with its full model menu open. */
+  | { kind: 'pickModel' }
+  /** The model menu: one of the rows main offered (`DockModelChoice.id`). */
+  | { kind: 'setModel'; id: string };
 
 export const RUNTIME_OPS = ['install', 'refresh', 'dismissInstalled'] as const;
 export type RuntimeOp = typeof RUNTIME_OPS[number];
@@ -132,6 +160,7 @@ const ACTION_FIELDS: Record<Kind, Record<string, Field>> = {
   setWork: { work: { type: 'string' } },
   setPermission: { mode: { type: 'string' } },
   pickModel: {},
+  setModel: { id: { type: 'string' } },
 };
 
 /** An approval, review token or command id: 1 to 128 printable ASCII characters, no spaces. */
@@ -195,6 +224,9 @@ export function parseDockAction(value: unknown): DockAction | null {
     case 'setPermission':
       if (!isPermissionMode(value.mode)) return null;
       break;
+    case 'setModel':
+      if (!MODEL_CHOICE_ID.test(value.id as string)) return null;
+      break;
     default:
       break;
   }
@@ -231,6 +263,22 @@ function isRuntimeState(value: unknown): value is RuntimeSetupState {
     && isNumberOrNull(value.installedAt);
 }
 
+function isModelChoice(value: unknown): value is DockModelChoice {
+  return isRecord(value)
+    && typeof value.id === 'string' && MODEL_CHOICE_ID.test(value.id)
+    && typeof value.title === 'string' && value.title.length <= MAX_CHOICE_TEXT
+    && typeof value.detail === 'string' && value.detail.length <= MAX_CHOICE_TEXT
+    && typeof value.selected === 'boolean';
+}
+
+function isModelLabel(value: unknown): value is DockModelLabel {
+  return isRecord(value)
+    && typeof value.label === 'string'
+    && typeof value.ready === 'boolean'
+    && (DOTS as readonly unknown[]).includes(value.dot)
+    && Array.isArray(value.choices) && value.choices.length <= MAX_MODEL_CHOICES && value.choices.every(isModelChoice);
+}
+
 /** Main's snapshot as the dock receives it, or null when it is not one. */
 export function parseDockSnapshot(value: unknown): DockSnapshot | null {
   if (!isRecord(value) || value.v !== 1) return null;
@@ -256,10 +304,10 @@ export function parseDockSnapshot(value: unknown): DockSnapshot | null {
     && isWorkKind(s.work)
     && (s.permission === null || isPermissionMode(s.permission))
     && (s.codeAvailable === null || typeof s.codeAvailable === 'boolean')
-    && isRecord(s.model) && typeof s.model.label === 'string' && typeof s.model.ready === 'boolean'
+    && isModelLabel(s.model)
     && (SEND_KEYS as readonly unknown[]).includes(s.sendKey);
   if (!ok) return null;
-  const model = s.model as { label: string; ready: boolean };
+  const model = s.model as DockModelLabel;
   return {
     v: 1,
     conversationId: s.conversationId as string | null,
@@ -281,7 +329,12 @@ export function parseDockSnapshot(value: unknown): DockSnapshot | null {
     work: s.work as WorkKind,
     permission: s.permission as AgentMode | null,
     codeAvailable: s.codeAvailable as boolean | null,
-    model: { label: model.label, ready: model.ready },
+    model: {
+      label: model.label,
+      ready: model.ready,
+      dot: model.dot,
+      choices: model.choices.map(c => ({ id: c.id, title: c.title, detail: c.detail, selected: c.selected })),
+    },
     sendKey: s.sendKey as SendKey,
   };
 }
@@ -402,7 +455,7 @@ export function snapshotOf(input: SnapshotInput, relay = true): DockSnapshot {
     work: input.work,
     permission: input.permission,
     codeAvailable: input.codeAvailable,
-    model: { label: input.model.label, ready: input.model.ready },
+    model: input.model,
     sendKey: input.sendKey,
   };
   const transcript = lastAnswer?.transcript ?? null;

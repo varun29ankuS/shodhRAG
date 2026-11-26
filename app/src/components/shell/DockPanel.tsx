@@ -44,7 +44,7 @@ export interface DockModel {
   wrapComposer?: (composer: React.ReactNode) => React.ReactNode;
   /**
    * The composer row's model control: the in-page chat's own model menu, or the floating
-   * chat's trigger, which asks main to show Ask with its model menu open.
+   * chat's, drawn from the rows main sent, whose pick main applies.
    */
   modelControl: React.ReactNode;
 }

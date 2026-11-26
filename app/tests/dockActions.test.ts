@@ -38,6 +38,7 @@ function recording(state: Partial<Pick<DockTarget, 'isStreaming' | 'draft'>> & {
     setWork: work => calls.push(`setWork(${work})`),
     setPermission: mode => calls.push(`setPermission(${mode})`),
     pickModel: () => calls.push('pickModel()'),
+    setModel: id => calls.push(`setModel(${id})`),
   };
   return { target, calls };
 }
@@ -110,6 +111,7 @@ test("the transcript's buttons in the floating chat act in main", () => {
   act({ kind: 'setWork', work: 'code' }, target);
   act({ kind: 'setPermission', mode: 'plan' }, target);
   act({ kind: 'pickModel' }, target);
+  act({ kind: 'setModel', id: 'pick:free' }, target);
   assert.deepEqual(calls, [
     'setOpen(false)',
     'openInAsk()',
@@ -123,6 +125,7 @@ test("the transcript's buttons in the floating chat act in main", () => {
     'setWork(code)',
     'setPermission(plan)',
     'pickModel()',
+    'setModel(pick:free)',
   ]);
 });
 

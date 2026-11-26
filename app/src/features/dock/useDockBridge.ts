@@ -26,7 +26,7 @@ import { applyDockAction } from './dockActions';
 import type { DockTarget } from './dockActions';
 import { useDraftSubmit } from './useDraftSubmit';
 import { useConversationModes } from '../ask/useConversationModes';
-import { useModelLabel } from '../modelPicker/useModelLabel';
+import { useDockModel } from '../modelPicker/useModelLabel';
 import { requestModelPicker } from '../modelPicker/navigation';
 import { useSendKey } from '../../hooks/useSendKey';
 
@@ -65,7 +65,7 @@ export function useDockBridge({ active, sources, onExpand }: DockBridgeOptions):
   const { submit } = useDraftSubmit(sources);
   // The composer's mode menu and model control, as Ask shows them.
   const modes = useConversationModes();
-  const modelLabel = useModelLabel(active);
+  const { model: modelLabel, choose: chooseModel } = useDockModel(active);
   const { sendKey } = useSendKey();
   // The layer shows while the assistant builds the page the user is watching: open at first.
   const [open, setOpen] = useState(true);
@@ -157,6 +157,17 @@ export function useDockBridge({ active, sources, onExpand }: DockBridgeOptions):
     setWork: modes.pickWork,
     setPermission: modes.changeAgentMode,
     pickModel: requestModelPicker,
+    setModel: id => {
+      void chooseModel(id).then(result => {
+        if (result.kind === 'changed') {
+          notify.success(isStreaming ? `${result.name} will answer your next question` : `${result.name} will answer from now on`);
+        } else if (result.kind === 'refused') {
+          notify.error('The model was not changed', { description: result.error.message });
+        } else if (result.kind === 'unknown') {
+          notify.error('The model was not changed', { description: 'That model is no longer offered. Open the menu again.' });
+        }
+      });
+    },
   };
   const targetRef = useRef(target);
   targetRef.current = target;

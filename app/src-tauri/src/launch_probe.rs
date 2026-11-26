@@ -132,7 +132,7 @@ fn snapshot() -> serde_json::Value {
         "work": "research",
         "permission": "ask",
         "codeAvailable": false,
-        "model": { "label": "Launch probe", "ready": false },
+        "model": { "label": "Launch probe", "ready": false, "dot": "grey", "choices": [] },
         "sendKey": "enter"
     })
 }

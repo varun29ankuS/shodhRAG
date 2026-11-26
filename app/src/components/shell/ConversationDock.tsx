@@ -20,7 +20,7 @@ import type { DockAction } from '../../lib/dockProtocol';
 import { DockPanel, blockedReasonOf } from './DockPanel';
 import { useConversationModes } from '../../features/ask/useConversationModes';
 import { ModelChip } from '../../features/modelPicker/ModelChip';
-import { useModelLabel } from '../../features/modelPicker/useModelLabel';
+import { useDockModel } from '../../features/modelPicker/useModelLabel';
 import { useSendKey } from '../../hooks/useSendKey';
 import { RUN_LOCKED_REASON } from '../../features/agent/composerRow';
 import type { DockModel } from './DockPanel';
@@ -131,7 +131,7 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
   const visible = offAsk && !dismissed && messages.length > 0;
   // The composer's mode menu and model, as Ask shows them.
   const modes = useConversationModes();
-  const modelLabel = useModelLabel(visible);
+  const { model: modelLabel } = useDockModel(visible);
   const { sendKey } = useSendKey();
   // Each visit starts minimised; an expand or collapse made on another view
   // does not carry over.

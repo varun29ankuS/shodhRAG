@@ -4,9 +4,10 @@ import { notify } from '../../lib/notify';
 import { ModelTrigger } from './ModelTrigger';
 import { OPEN_MODEL_PICKER_EVENT, useModelPicker } from './modelApi';
 import { ChipMenu } from './ChipMenu';
-import { sourceText } from './modelFormat';
-import { modelLabelOf } from './useModelLabel';
+import { modelLabelOf, sourceText } from './modelFormat';
 import { OPEN_PICKER_REQUEST_EVENT, takeModelPickerRequest } from './navigation';
+import { modelDot } from '../connection/connectionStatus';
+import { useConnectionSnapshot } from '../connection/useConnectionSnapshot';
 
 const PANEL_WIDTH = 340;
 const EDGE = 8;
@@ -105,6 +106,8 @@ export function ModelChip({ answerRunning, onOpenSettings, takesPickerRequests =
 
   const active = view?.active ?? null;
   const { label, ready } = modelLabelOf(view);
+  // The same state, in the same colour, as the sidebar's model status.
+  const { snapshot: connection } = useConnectionSnapshot();
   const source = sourceText(active);
 
   return (
@@ -113,6 +116,7 @@ export function ModelChip({ answerRunning, onOpenSettings, takesPickerRequests =
         ref={triggerRef}
         label={label}
         ready={ready}
+        dot={modelDot(connection)}
         lockedReason={lockedReason}
         onClick={() => setOpen(o => !o)}
         aria-haspopup="dialog"

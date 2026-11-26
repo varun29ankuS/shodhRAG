@@ -6,6 +6,7 @@
  */
 import type { ActiveModel, ProviderId } from '../modelPicker/modelTypes.ts';
 import { PROVIDER_LABELS, isProviderId, readModelRef } from '../modelPicker/modelTypes.ts';
+import type { CatalogModel, ModelRef } from '../modelPicker/modelTypes.ts';
 import { friendlyModel } from '../agent/format.ts';
 
 /** Emitted by the backend with a snapshot whenever a status changes. */
@@ -101,7 +102,8 @@ export function readSnapshot(value: unknown): ConnectionSnapshot | null {
   };
 }
 
-export type Dot = 'green' | 'red' | 'amber' | 'grey';
+export const DOTS = ['green', 'red', 'amber', 'grey'] as const;
+export type Dot = typeof DOTS[number];
 
 /** Green works, red rejected, amber limited, grey not checked or unreachable. */
 export function healthDot(health: Health): Dot {
@@ -222,8 +224,27 @@ export function activeStatus(snapshot: ConnectionSnapshot): ProviderStatus | nul
   return provider ? snapshot.providers.find(p => p.provider === provider) ?? null : null;
 }
 
+/**
+ * The model's name wherever the app states which model answers (the sidebar's status, the
+ * composer's model control, the floating chat's): the catalogue's name when the model is
+ * listed, else its id without the provider prefix and ":free" (`friendlyModel`).
+ */
+export function modelDisplayName(models: readonly CatalogModel[], ref: ModelRef): string {
+  return models.find(m => m.provider === ref.provider && m.id === ref.model)?.name ?? friendlyModel(ref.model);
+}
+
+/**
+ * The one colour of the model that answers, wherever the app shows it: its provider's
+ * health, grey when no model is chosen, it is not listed, or the status is not read yet.
+ */
+export function modelDot(snapshot: ConnectionSnapshot | null): Dot {
+  if (!snapshot || !snapshot.active) return 'grey';
+  const status = activeStatus(snapshot);
+  return status ? healthDot(status.health) : 'grey';
+}
+
 export interface PillView {
-  /** The model's friendly name (`friendlyModel`, as the answer's status line shows it), or "No model chosen". */
+  /** The model's name (`modelDisplayName`), or "No model chosen". */
   model: string;
   /** "OpenRouter · saved key", or null without a model. */
   via: string | null;
@@ -237,7 +258,11 @@ function sentence(line: string): string {
 }
 
 /** What the sidebar's model status shows (one wording wherever the status appears). */
-export function pillView(snapshot: ConnectionSnapshot | null, formatTime: TimeFormat = localTime): PillView {
+export function pillView(
+  snapshot: ConnectionSnapshot | null,
+  formatTime: TimeFormat = localTime,
+  models: readonly CatalogModel[] = [],
+): PillView {
   if (!snapshot) return { model: 'Model', via: null, dot: 'grey', description: 'Connection status loading' };
   const active = snapshot.active;
   if (!active) {
@@ -245,13 +270,13 @@ export function pillView(snapshot: ConnectionSnapshot | null, formatTime: TimeFo
   }
   const status = activeStatus(snapshot);
   const label = status?.label ?? PROVIDER_LABELS[active.model.provider];
-  const model = friendlyModel(active.model.model);
+  const model = modelDisplayName(models, active.model);
   const via = `${label} · ${sourceShort(status?.source ?? null)}`;
   const health = status ? healthText(status, formatTime) : 'Not connected';
   return {
     model,
     via,
-    dot: status ? healthDot(status.health) : 'grey',
+    dot: modelDot(snapshot),
     description: `${active.model.model} through ${label} (${status ? sourceText(status) : 'not connected'}). ${sentence(health)}`,
   };
 }

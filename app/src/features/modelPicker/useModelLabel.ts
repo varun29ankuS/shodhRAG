@@ -1,22 +1,28 @@
-import { useMemo } from 'react';
+import { useCallback, useMemo, useRef } from 'react';
 import { useModelPicker } from './modelApi';
-import { modelName } from './modelFormat';
-import type { PickerView } from './modelTypes';
-
-/** The model control's text: the active model's name, or what to do when there is none. */
-export function modelLabelOf(view: PickerView | null): { label: string; ready: boolean } {
-  const active = view?.active ?? null;
-  if (active) return { label: modelName(view?.models ?? [], active.model), ready: true };
-  return { label: view ? 'Choose a model' : 'Model', ready: false };
-}
+import { modelDot } from '../connection/connectionStatus.ts';
+import { modelLabelOf } from './modelFormat';
+import { useConnectionSnapshot } from '../connection/useConnectionSnapshot';
+import type { DockModelLabel } from '../../lib/dockProtocol';
+import { applyDockChoice, dockModelChoices } from './dockChoices';
+import type { DockChoiceResult } from './dockChoices';
 
 /**
- * The model the next answer uses, for a composer that cannot open the model menu itself
- * (the floating chat over the preview). Read while `active`, and again on every model
- * change anywhere in the app.
+ * The model control of a chat that shows main's state rather than reading the models itself
+ * (the floating chat, in the page or over the preview): the model's name, the colour of its
+ * state, and the rows of its menu, with `choose` to apply one of them. Read while `active`,
+ * and again on every model change anywhere in the app.
  */
-export function useModelLabel(active: boolean): { label: string; ready: boolean } {
-  const { view } = useModelPicker(active);
+export function useDockModel(active: boolean): { model: DockModelLabel; choose: (id: string) => Promise<DockChoiceResult> } {
+  const picker = useModelPicker(active);
+  const { snapshot } = useConnectionSnapshot();
+  const { view } = picker;
   const { label, ready } = modelLabelOf(view);
-  return useMemo(() => ({ label, ready }), [label, ready]);
+  const dot = modelDot(snapshot);
+  const choices = useMemo(() => dockModelChoices(view), [view]);
+  const model = useMemo(() => ({ label, ready, dot, choices }), [label, ready, dot, choices]);
+  const pickerRef = useRef(picker);
+  pickerRef.current = picker;
+  const choose = useCallback((id: string) => applyDockChoice(id, pickerRef.current), []);
+  return { model, choose };
 }

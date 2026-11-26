@@ -562,3 +562,27 @@
 [data-sonner-toast][data-visible='true'] {
   pointer-events: auto;
 }
+
+/*
+ * The conversation's wide blocks (features/ask/wideBlock.ts, whose numbers these are).
+ * The scroller is a size container; a wide block is as wide as the conversation allows, up
+ * to 1100px, keeping the column's 28px clear at each edge, and is centred on the text
+ * column by equal negative margins. Outside a conversation (the floating chat) the rule
+ * does not apply and the block is the width of what holds it.
+ */
+.ask-log {
+  container: ask-log / inline-size;
+}
+
+@container ask-log (min-width: 0px) {
+  .ask-wide {
+    width: min(1100px, calc(100cqw - 56px));
+    margin-inline: calc((100% - min(1100px, calc(100cqw - 56px))) / 2);
+  }
+}
+
+/* A previewed page (features/ask/htmlPreview.ts): its frame cannot be measured, so it takes
+   a share of the window and the user drags it. */
+.html-preview-frame {
+  height: clamp(360px, 60vh, 720px);
+}

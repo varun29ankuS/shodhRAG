@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import type React from 'react';
 import { cn } from '../../lib/utils';
-import { HTML_PREVIEW_SANDBOX, previewDocument } from './htmlPreview';
+import { HTML_PREVIEW_HEIGHT_CLASS, HTML_PREVIEW_SANDBOX, previewDocument } from './htmlPreview';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-shodh-surface';
@@ -81,7 +81,7 @@ export function HtmlPreviewBlock({ code, language, actions, raw, codeRef }: Html
           sandbox={HTML_PREVIEW_SANDBOX}
           referrerPolicy="no-referrer"
           srcDoc={previewDocument(shown)}
-          className="block w-full h-[360px] bg-white resize-y"
+          className={cn('block w-full bg-white resize-y', HTML_PREVIEW_HEIGHT_CLASS)}
         />
       ) : (
         <div ref={codeRef}>{raw}</div>

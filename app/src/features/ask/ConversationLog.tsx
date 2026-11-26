@@ -11,6 +11,7 @@ import {
 import type { ChatMessage } from './types';
 
 import { CONVERSATION_TOP_PX, MESSAGE_INDEX_ATTR } from './windowLayout';
+import { TEXT_COLUMN_PX } from './wideBlock';
 
 /** Messages rendered beyond the visible ones, above and below. */
 const OVERSCAN_MESSAGES = 3;
@@ -139,8 +140,8 @@ export const ConversationLog = forwardRef<ConversationLogHandle, ConversationLog
 
   return (
     <div
-      className="relative max-w-[700px] mx-auto"
-      style={{ height: totalSize }}
+      className="relative mx-auto"
+      style={{ height: totalSize, maxWidth: TEXT_COLUMN_PX }}
       role="log"
       aria-label="Conversation"
       aria-live="off"

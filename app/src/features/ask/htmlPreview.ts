@@ -15,6 +15,13 @@ export const HTML_PREVIEW_SANDBOX = '';
 export const HTML_PREVIEW_POLICY =
   "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; form-action 'none'; base-uri 'none'";
 
+/**
+ * The preview's height. The frame runs no scripts, so the page cannot say how tall it is:
+ * the frame takes 60% of the window's height, never under 360 px or over 720 px, and the
+ * user can drag it taller or shorter. Its width is the wide block's (`wideBlock.ts`).
+ */
+export const HTML_PREVIEW_HEIGHT_CLASS = 'html-preview-frame';
+
 /** Languages of a fenced block shown as a page preview. */
 export function isHtmlLanguage(language: string): boolean {
   const lang = language.toLowerCase();

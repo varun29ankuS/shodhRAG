@@ -13,6 +13,7 @@ import { CodeHighlight } from '../../components/CodeHighlight';
 import { ReviewableSnippet } from '../code/ReviewThisButton';
 import { HtmlPreviewBlock } from './HtmlPreviewBlock';
 import { isHtmlLanguage } from './htmlPreview';
+import { WIDE_BLOCK_CLASS } from './wideBlock';
 import { TableArtifact } from '../../components/TableArtifact';
 import { ArtifactPreviewCard } from '../../components/ArtifactPreviewCard';
 import type { SearchHit } from './types';
@@ -390,7 +391,8 @@ function MessageContent({
         ? /language-([\w-]+)/.exec(child.props.className || '')?.[1] ?? ''
         : '';
       if (VISUAL_LANGUAGES.has(lang) || isMermaidLanguage(lang) || lang === 'math') return <>{children}</>;
-      return <div className="my-4 rounded-xl overflow-hidden border border-shodh-border bg-shodh-surface">{children}</div>;
+      // A previewed page is a wide block: it breaks out of the text column (index.css, .ask-wide).
+      return <div className={cn('my-4 rounded-xl overflow-hidden border border-shodh-border bg-shodh-surface', isHtmlLanguage(lang) && WIDE_BLOCK_CLASS)}>{children}</div>;
     },
     code: ({ children, className }) => {
       const match = /language-([\w-]+)/.exec(className || '');

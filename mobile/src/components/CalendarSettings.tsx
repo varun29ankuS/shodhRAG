@@ -92,8 +92,8 @@ export function CalendarSettings() {
               </span>
               <span className="row-sub">
                 {choice.useWithShodh
-                  ? 'On: events of the calendars you ticked go to Shodh on your computer, where search and the assistant can use them (for example, to say when you are free). They travel only over your encrypted link.'
-                  : 'Off: events of the calendars you ticked show here only. They are not sent to your computer, not searched, and the assistant never sees them.'}
+                  ? 'On: sent to your computer over your encrypted link, for search and the assistant.'
+                  : 'Off: shown here only. Never sent to your computer.'}
               </span>
             </span>
             <Switch label="Let Shodh use my calendar" checked={choice.useWithShodh} disabled={saving} onChange={on => save({ ...choice, useWithShodh: on })} />
@@ -140,7 +140,7 @@ function BriefMinutes() {
   return (
     <div className="setting">
       <span className="row-title">A brief before your meetings</span>
-      <span className="row-sub">Shodh tells you, this long before a meeting, when your library or your conversations have something on it. Nothing is shown for meetings nothing matches.</span>
+      <span className="row-sub">How long before a meeting Shodh brings up what matches it.</span>
       <div className="segmented segmented-4" role="radiogroup" aria-label="A brief before your meetings">
         {BRIEF_CHOICES.map(choice => (
           <button key={choice.label} type="button" role="radio" className="segment" aria-checked={minutes === choice.value} onClick={() => choose(choice.value)}>

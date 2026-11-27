@@ -91,9 +91,12 @@ export function Home({ now = () => new Date() }: { now?: () => Date }) {
             <img src={logo} alt="" className="brand-logo" width={34} height={34} />
             <h1 className="greeting">{greeting(today)}</h1>
           </div>
-          <p className={`line${words.dot === 'waiting' && status.state === 'offline' ? ' line-waiting' : ''}`} style={{ marginTop: 8 }}>
-            {words.line}
-          </p>
+          {/* Connected says itself in the bar's status; any other state says what it means. */}
+          {status.state !== 'connected' && (
+            <p className={`line${words.dot === 'waiting' && status.state === 'offline' ? ' line-waiting' : ''}`} style={{ marginTop: 8 }}>
+              {words.line}
+            </p>
+          )}
         </div>
 
         <form className="askbox" style={{ margin: '24px 20px 0' }} onSubmit={submit}>
@@ -104,7 +107,7 @@ export function Home({ now = () => new Date() }: { now?: () => Date }) {
             id="home-ask"
             value={question}
             onChange={event => setQuestion(event.target.value)}
-            placeholder={connected ? 'Ask about your library' : queueable ? 'Ask now. It is sent when your computer wakes' : 'Connect to your computer to ask'}
+            placeholder={connected ? 'Ask about your library' : queueable ? 'Sent when it wakes' : 'Not connected'}
             enterKeyHint="send"
             autoComplete="off"
           />
@@ -268,7 +271,7 @@ function TodayCard({ today }: { today: Date }) {
   const due = (agenda.tasks ?? []).filter(t => t.status !== 'completed' && t.dueDate?.slice(0, 10) === dayKey(today)).length;
   const summary =
     agenda.events === null
-      ? 'Your agenda and tasks show when your computer answers.'
+      ? 'Waits for your computer.'
       : items.length === 0
         ? due === 0
           ? 'Nothing on your calendar today.'

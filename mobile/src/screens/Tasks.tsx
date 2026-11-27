@@ -108,7 +108,7 @@ export function Tasks({ now = () => new Date() }: { now?: () => Date }) {
         await queue.add({ kind: 'edit', command, args: withRef, label }, id);
         show('Saved on your phone. It is sent when your computer wakes.');
       } else {
-        show('Connect to your computer to change your tasks.', 'problem');
+        show('Not connected', 'problem');
       }
     } catch (e) {
       show(errorText(e), 'problem');

@@ -297,7 +297,7 @@ export function Ask({
           value={followUp}
           onChange={event => setFollowUp(event.target.value)}
           placeholder={
-            connected ? (kind === 'code' ? 'Ask a question about this code' : 'Ask a follow-up') : queueable ? 'Ask now. It is sent when your computer wakes' : 'Connect to your computer to ask'
+            connected ? (kind === 'code' ? 'Ask about this code' : 'Ask a follow-up') : queueable ? 'Sent when it wakes' : 'Not connected'
           }
           enterKeyHint="send"
           autoComplete="off"

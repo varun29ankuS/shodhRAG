@@ -47,6 +47,7 @@ import {
   tabClass,
 } from './ui';
 import type { TelegramStatusState } from './useTelegramStatus';
+import { InfoPopover } from '../../components/ui/InfoPopover';
 
 interface TabProps {
   status: TelegramStatus;
@@ -178,7 +179,7 @@ function OwnerSection(props: TabProps) {
   return (
     <Section
       title="You"
-      description="Your own chat with the bot is your Shodh: all your workspaces and memories, the model you chose, with sources. It can’t change anything."
+      description={'Your Shodh in Telegram. It can’t change anything.'}
     >
       {status.owner ? (
         <div className="flex flex-wrap items-center gap-3 rounded-lg border border-shodh-border-subtle bg-shodh-surface px-4 py-3">
@@ -339,8 +340,7 @@ function GroupsSection(props: TabProps) {
     <Section title="Groups" description={groupPrivacyLine(status)}>
       {status.groups.length === 0 ? (
         <p className="m-0 text-small text-shodh-text-muted">
-          Add the bot to a Telegram group and it appears here, waiting for you. Nobody there gets an answer until you allow it.
-        </p>
+          Groups wait here until you allow them.</p>
       ) : (
         <ul className="m-0 p-0 list-none flex flex-col divide-y divide-shodh-border-subtle rounded-lg border border-shodh-border-subtle bg-shodh-surface">
           {[...waiting, ...allowed].map(g => (
@@ -490,9 +490,8 @@ function DisconnectConfirm({ status, busy, onDone, run }: { status: TelegramStat
       <div>
         <p className="m-0 text-body font-semibold text-shodh-text">Disconnect {bot}?</p>
         <p className="m-0 mt-0.5 text-small text-shodh-text-secondary max-w-[68ch]">
-          The token is deleted from this computer and the bot stops answering, you and everyone you allowed. Keep the Telegram
-          conversations in Shodh’s sidebar, or remove them too? Messages already in Telegram stay there.
-        </p>
+          Deletes the token; the bot stops. Keep its chats in Shodh?{' '}<InfoPopover label="What happens" title="What happens">The token is deleted from this computer and the bot stops answering, you and everyone you allowed. Keep the Telegram
+          conversations in Shodh’s sidebar, or remove them too? Messages already in Telegram stay there.</InfoPopover></p>
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <button type="button" className={OUTLINE_BUTTON} disabled={busy} autoFocus onClick={() => run(false)}>
@@ -713,9 +712,7 @@ export function TelegramPage({
           <div>
             <h3 id="telegram-linked" className="m-0 text-body-lg font-semibold text-shodh-text">{ownerLine(status)}</h3>
             <p className="m-0 mt-1 text-small text-shodh-text-secondary max-w-[60ch]">
-              Ask anything in that chat: Shodh answers from all your workspaces and memories, with sources. Send /new for a fresh
-              conversation. Your Telegram conversations appear in Shodh’s sidebar too.
-            </p>
+              Ask in that chat. /new starts fresh.</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <button type="button" className={PRIMARY_BUTTON} autoFocus onClick={() => { setJustLinked(false); onTab('overview'); }}>

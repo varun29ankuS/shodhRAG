@@ -8,6 +8,7 @@ import type { AgentEventEnvelope } from '../agent/events';
 import { codeIntelApi, errorText } from './api';
 import type { ConversationSavings } from './api';
 import { chipLabel, sessionDetail, sessionSentence, showsChip } from './format';
+import { InfoPopover } from '../../components/ui/InfoPopover';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-shodh-surface';
@@ -137,10 +138,9 @@ export function TokensSavedChip({ conversationId, answerRunning, onOpenActivity 
           </h2>
           <p className="m-0 text-small text-shodh-text-secondary tabular-nums">{sessionDetail(view)}</p>
           <p className="m-0 text-small text-shodh-text-muted">
-            Shodh removes passing-test lines, and after a successful run build progress, from what the model reads of a
+            Passing tests and build progress trimmed for the model.{' '}<InfoPopover label="What is trimmed" title="What is trimmed">Shodh removes passing-test lines, and after a successful run build progress, from what the model reads of a
             command&apos;s output. Errors, warnings and failing tests are kept, and the model can read the full output.
-            You always see it.
-          </p>
+            You always see it.</InfoPopover></p>
           <p className="m-0 text-caption text-shodh-text-faint">{view.method}</p>
           <SwitchRow
             label="Shorten command output"

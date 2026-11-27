@@ -77,9 +77,7 @@ export function CreateWorkspaceDialog({
             <div className="flex-1 min-w-0">
               <Dialog.Title className="text-body-lg font-semibold">New workspace</Dialog.Title>
               <Dialog.Description id={ids.desc} className="text-small text-shodh-text-muted">
-                A workspace keeps the sources, instructions and chats of one piece of work together. Chats in it
-                search only its sources.
-              </Dialog.Description>
+                Sources, instructions and chats of one piece of work.</Dialog.Description>
             </div>
             <Dialog.Close
               aria-label="Close"

@@ -42,7 +42,8 @@ use crate::llm_commands::LLMState;
 pub const SIGN_IN_EVENT: &str = "connect-sign-in";
 
 /// One line, next to the Claude button.
-pub const CLAUDE_TERMS_NOTE: &str = "Anthropic's terms limit this; your account may be restricted. Use an API key.";
+pub const CLAUDE_TERMS_NOTE: &str =
+    "Anthropic's terms limit this; your account may be restricted. Use an API key.";
 
 /// Why Ollama models are shown but cannot be chosen.
 pub const OLLAMA_NOTE: &str =

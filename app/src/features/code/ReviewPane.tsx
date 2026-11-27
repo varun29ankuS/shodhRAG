@@ -187,7 +187,7 @@ function FindingCard({
             type="button"
             onClick={() => onAsk({ kind: 'fix', text: applyFixMessage(replace), sent: () => undefined })}
             disabled={fixProblem !== null}
-            title={fixProblem ?? 'Shows the message first. The conversation then makes this one edit, and Shodh asks you before it is written, in every mode.'}
+            title={fixProblem ?? 'Shows the message first; asks before writing.'}
             className={QUIET_BUTTON}
           >
             <Wrench className="w-3.5 h-3.5" aria-hidden="true" />
@@ -220,7 +220,7 @@ function FindingCard({
                 type="button"
                 onClick={() => onAsk({ kind: 'check', text: checkMessage(verify), sent: () => pane?.awaitCheck(key, verify.command) })}
                 disabled={checkProblem !== null || status.status === 'pending'}
-                title={checkProblem ?? 'Shows the message first. The conversation then runs the command only as its mode and Shodh’s command rules allow, asking you first where they say so.'}
+                title={checkProblem ?? 'Shows the message first; runs only as the rules allow.'}
                 className={QUIET_BUTTON}
               >
                 <Play className="w-3.5 h-3.5" aria-hidden="true" />
@@ -664,7 +664,7 @@ export function ReviewPane() {
             type="button"
             onClick={() => void runDesign(designRequest, subject)}
             disabled={designBusy}
-            title="Checks the UI files here with Shodh's design rules (no model): contrast, text size, labels, alt text, focus, generated-UI tells."
+            title={'Design rules check. No model.'}
             className={cn('ms-auto', QUIET_BUTTON)}
           >
             {designBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <Palette className="w-3.5 h-3.5" aria-hidden="true" />}
@@ -818,7 +818,7 @@ export function ReviewPane() {
             <p className="m-0 text-caption text-shodh-text-muted">
               {pending.kind === 'fix'
                 ? 'This exact message goes to the conversation. Its edit asks you before it is written, in every mode.'
-                : 'This exact message goes to the conversation. The command runs only as its mode and Shodh’s command rules allow.'}
+                : 'Sent as is; runs only as the rules allow.'}
             </p>
             <pre className="m-0 px-2 py-1.5 max-h-64 overflow-auto scrollbar-thin rounded bg-shodh-raised font-mono text-caption text-shodh-text whitespace-pre-wrap break-words">{revealHidden(pending.text)}</pre>
             <div className="flex items-center gap-2">
@@ -851,7 +851,7 @@ export function ReviewPane() {
             {review.report.diagram && (
               <figure className="m-0 flex flex-col gap-1">
                 <MermaidBlock source={review.report.diagram} dark={theme === 'dark'} />
-                <figcaption className="text-caption text-shodh-text-muted">Modules and their imports. Thick red edges labelled “problem” or “cycle” are the ones the findings and Shodh’s cycle check point at.</figcaption>
+                <figcaption className="text-caption text-shodh-text-muted">Modules and imports. Red edges are problems.</figcaption>
               </figure>
             )}
             <ol className="m-0 p-0 list-none flex flex-col gap-2">

@@ -115,7 +115,7 @@ export default function EvidenceTableSettings() {
       </form>
       <SwitchRow
         label="Table diagnostics"
-        description="Adds “Run quality check on this paper” to a table's papers: it fills one paper and keeps every model call it made (prompts with the paper's passages, and the raw replies) in Shodh's database, so you can export them from the table to compare models or report a problem. The kept calls stay on this computer."
+        description={'Keeps each model call for export, on this computer.'}
         checked={settings.diagnostics}
         disabled={saving}
         onChange={on => void save(settings.dailyCallCap, on)}

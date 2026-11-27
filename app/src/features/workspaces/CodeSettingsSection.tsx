@@ -8,6 +8,7 @@ import { INPUT, LABEL, OUTLINE_BUTTON, SECTION_TITLE, TEXTAREA } from './ui';
 import { desktopPlatform } from '../../lib/startupText';
 import { COMMAND_LIMITS, commandLimitHint, commandSandboxText, parseCommandLimit } from './commandLimits';
 import type { CommandLimitKey } from './commandLimits';
+import { InfoPopover } from '../../components/ui/InfoPopover';
 
 const linesOf = (text: string) => text.split('\n').map(l => l.trim()).filter(Boolean);
 
@@ -33,10 +34,9 @@ function FormerLevelNotice({ level, parked, onDone }: {
     <div role="status" className="flex flex-col gap-2 p-3 rounded-xl border border-shodh-border bg-shodh-raised">
       <p className="m-0 text-small font-semibold text-shodh-text">{`This workspace was set to “${name}”`}</p>
       <p className="m-0 text-small text-shodh-text-secondary">
-        Each conversation now picks its mode in the message box (Ask, Accept edits, Plan or Auto), so this workspace
+        Modes are now per chat.{' '}<InfoPopover label="Modes and builds" title="Modes and builds">Each conversation now picks its mode in the message box (Ask, Accept edits, Plan or Auto), so this workspace
         asks until you pick one. Builds and tests run without asking only where commands are sandboxed or after you
-        trust the workspace below.
-      </p>
+        trust the workspace below.</InfoPopover></p>
       {parked.length > 0 && (
         <p className="m-0 text-small text-shodh-text-secondary">
           {`These commands were on its list but never ran without asking, so they stay parked: ${parked.join(', ')}.`}
@@ -91,8 +91,8 @@ function BuildTrustPanel({ workspaceId }: { workspaceId: string }) {
         {status.sandboxed
           ? 'Commands run in a sandbox on this computer, so Auto mode runs builds and tests by themselves.'
           : status.trusted
-            ? 'You trust this workspace: Auto mode runs its builds and tests by themselves, with your account. Any change to the files that choose what they run ends the trust.'
-            : 'Builds and tests run the project\'s own code with your account and network: commands are not sandboxed on this computer. Auto mode asks before the first one in each conversation.'}
+            ? 'Trusted: Auto runs builds and tests. Edits to them end it.'
+            : 'Builds run unsandboxed. Auto asks first in each chat.'}
       </p>
       {status.lapsed && <p className="m-0 text-small text-shodh-warning">{`The trust ended: ${status.lapsed}.`}</p>}
       {status.problem && <p className="m-0 text-small text-shodh-text-muted">{`Trust is not available: ${status.problem}.`}</p>}
@@ -193,9 +193,7 @@ export function CodeSettingsSection({ workspaceId }: { workspaceId: string }) {
       <div>
         <h3 id={ids.title} className={SECTION_TITLE}>Code mode commands</h3>
         <p id={ids.help} className="m-0 text-small text-shodh-text-muted">
-          Each conversation picks its mode in the message box: Ask, Accept edits, Plan or Auto. Commands that delete
-          files, reset or rewrite git history, or push always ask, whatever the mode.
-        </p>
+          Modes are per chat. Deletes, resets and pushes always ask.</p>
       </div>
       {error && <p role="alert" className="m-0 text-small text-shodh-error">The settings could not be read: {error}</p>}
       {saved && saved.formerLevel && (
@@ -240,8 +238,7 @@ export function CodeSettingsSection({ workspaceId }: { workspaceId: string }) {
             className={cn(TEXTAREA, 'font-mono text-small')}
           />
           <p className="m-0 text-caption text-shodh-text-muted">
-            Auto mode already runs tests, builds, linters, and git and file commands that only read, when each is one plain command. A line here also runs by itself in Auto mode when the command is exactly that line, with nothing added, and has no ; | &amp; &gt; $ or backticks. It still asks while another command is running, and after a change you did not review: tests run code the assistant may have changed.
-          </p>
+            A line here also runs by itself in Auto.{' '}<InfoPopover label="When a line runs" title="When a line runs">Auto mode already runs tests, builds, linters, and git and file commands that only read, when each is one plain command. A line here also runs by itself in Auto mode when the command is exactly that line, with nothing added, and has no ; | &amp; &gt; $ or backticks. It still asks while another command is running, and after a change you did not review: tests run code the assistant may have changed.</InfoPopover></p>
         </div>
         <fieldset
           className="m-0 p-0 border-0 flex flex-col gap-2"
@@ -250,8 +247,7 @@ export function CodeSettingsSection({ workspaceId }: { workspaceId: string }) {
         >
           <legend className={cn(SECTION_TITLE, 'p-0 mb-0.5')}>Command limits</legend>
           <p id={ids.limitsHelp} className="m-0 text-small text-shodh-text-muted">
-            Each command runs in its own process under these limits, together with everything it starts, and may have 64 processes at once. A command still running at the time limit is stopped. Beyond the memory or process limit, Windows refuses what is asked for and macOS stops the command. macOS has no CPU cap: commands there run at a lower priority instead.
-          </p>
+            Limits for each command.{' '}<InfoPopover label="How limits work" title="How limits work">Each command runs in its own process under these limits, together with everything it starts, and may have 64 processes at once. A command still running at the time limit is stopped. Beyond the memory or process limit, Windows refuses what is asked for and macOS stops the command. macOS has no CPU cap: commands there run at a lower priority instead.</InfoPopover></p>
           {parsedLimits.map(({ spec, parsed }) => {
             const inputId = `${ids.limits}-${spec.key}`;
             const errorId = `${inputId}-error`;

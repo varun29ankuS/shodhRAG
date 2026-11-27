@@ -294,9 +294,7 @@ function SearchStep(props: StepProps) {
       <div className="flex flex-col gap-1">
         <StepHeading {...props}>Getting Shodh ready</StepHeading>
         <p className="text-small text-shodh-text-muted">
-          Two things run on this computer: search models, which find passages in your files by meaning, and the
-          answer engine, which writes the answers from them.
-        </p>
+          Search models and the answer engine run on this computer.</p>
       </div>
       {setup.phase === 'checking' && (
         <p role="status" className="flex items-center gap-2 text-small text-shodh-text-muted">
@@ -332,8 +330,7 @@ function ModelStep({ llmStatus, ...props }: StepProps & { llmStatus: FirstRunFlo
       <div className="flex flex-col gap-1">
         <StepHeading {...props}>Choose the model that answers</StepHeading>
         <p className="text-small text-shodh-text-muted">
-          Search finds the passages; a language model writes the answer from them. Connect one way below, then pick a model. You can change this any time in Settings.
-        </p>
+          Connect a model to write the answers.</p>
       </div>
       {llmStatus.connected && (
         <p role="status" className="flex items-center gap-2 p-3 rounded-xl bg-shodh-success-soft text-small text-shodh-text">
@@ -362,9 +359,7 @@ function FolderStep({ sources, unlistedFiles, onAddFolder, ...props }: StepProps
       <div className="flex flex-col gap-1">
         <StepHeading {...props}>Add your first folder</StepHeading>
         <p className="text-small text-shodh-text-muted">
-          Pick a folder of documents: PDFs, Word, Excel, PowerPoint, text or code. Shodh indexes it and its subfolders on
-          this computer.
-        </p>
+          Pick a folder. It is indexed on this computer.</p>
       </div>
       {unlistedFiles > 0 && (
         <p className="m-0 flex items-start gap-2 px-3 py-2 rounded-lg bg-shodh-raised text-small text-shodh-text-secondary">

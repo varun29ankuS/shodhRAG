@@ -318,8 +318,7 @@ export function GitHubSetup({
     <div className="flex flex-col gap-5">
       {localOnly && (
         <Callout tone="neutral" role="status">
-          Local-only mode is on, so Shodh does not connect to GitHub. Turn it off in Settings → Privacy to set GitHub up.
-        </Callout>
+          Off in Local-only mode.</Callout>
       )}
 
       <nav aria-label="Setup progress" className="flex flex-col gap-2">

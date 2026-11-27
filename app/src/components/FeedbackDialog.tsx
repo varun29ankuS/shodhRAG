@@ -8,6 +8,7 @@ import { captureError, addBreadcrumb } from '../lib/errorReporting';
 import { FEEDBACK_KIND_LABEL, ISSUES_URL, feedbackIssueLink, issueBody } from '../lib/feedbackIssue';
 import type { FeedbackKind, FeedbackReport } from '../lib/feedbackIssue';
 import { IS_MAC_PLATFORM, shortcutText, withShortcut } from '../lib/shortcuts';
+import { InfoPopover } from './ui/InfoPopover';
 
 interface FeedbackDialogProps {
   isOpen: boolean;
@@ -206,8 +207,8 @@ export function FeedbackDialog({ isOpen, onClose, type = 'feedback' }: FeedbackD
               {opened.shortened && (
                 <p className="m-0 text-body" style={{ color: colors.textMuted }}>
                   {opened.copied
-                    ? 'Your description was too long for the link, so the issue holds the start of it. The full text is on your clipboard: paste it into the issue.'
-                    : 'Your description was too long for the link, so the issue holds the start of it, and the full text could not be copied. Copy it from here before you close this.'}
+                    ? 'Too long for the link: paste the full text from your clipboard.'
+                    : 'Too long for the link: copy the full text before closing.'}
                 </p>
               )}
               {opened.shortened && !opened.copied && (
@@ -302,9 +303,8 @@ export function FeedbackDialog({ isOpen, onClose, type = 'feedback' }: FeedbackD
               </div>
 
               <p id={noteId} className="m-0 text-caption" style={{ color: colors.textMuted }}>
-                This opens a new issue on GitHub in your browser, with your report and the app version filled in; you
-                submit it there. GitHub issues are public, so leave out anything private.
-              </p>
+                Opens a public GitHub issue.{' '}<InfoPopover label="About feedback" title="About feedback">This opens a new issue on GitHub in your browser, with your report and the app version filled in; you
+                submit it there. GitHub issues are public, so leave out anything private.</InfoPopover></p>
 
               <div className="flex gap-3 justify-end pt-4 border-t" style={{ borderColor: colors.border }}>
                 <button

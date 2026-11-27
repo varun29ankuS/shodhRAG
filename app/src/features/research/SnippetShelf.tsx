@@ -64,7 +64,7 @@ export function SnippetShelf({ filePath = null, emptyText }: { filePath?: string
         <p className="py-6 text-center text-small text-shodh-text-muted">
           {debounced
             ? 'No snippet matches.'
-            : emptyText ?? 'No snippets yet. In a PDF, press S (or the scissors button) and drag a rectangle to save a figure, table or passage.'}
+            : emptyText ?? 'No snippets yet. In a PDF, press S and drag.'}
         </p>
       ) : (
         <ul className="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-3" aria-label="Snippets">

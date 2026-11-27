@@ -100,7 +100,7 @@ export default function CodeSkillsSettings() {
       <div className="flex flex-col gap-3 border-t border-shodh-border-subtle pt-4">
         <SwitchRow
           label="Shorten command output"
-          description="In Code conversations the model reads command output without passing-test lines, and, after a successful run, without build progress. Errors, warnings and failing tests are kept, the model can read the full output, and you always see it. Each conversation can change this from its message box; this is what new ones start with."
+          description={'Trims passing tests and build progress for the model.'}
           checked={shortenByDefault ?? true}
           disabled={saving !== null || shortenByDefault === null}
           onChange={toggleDefault}

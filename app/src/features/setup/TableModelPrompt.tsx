@@ -51,9 +51,7 @@ function SuggestionToast() {
             Install the table model for better tables (212 MB)
           </span>
           <span id="table-model-suggested-text" className="text-caption text-shodh-text-muted">
-            Some of your PDFs have tables. Without the model they are read with layout rules only, and rows or cells
-            can be missed. You can also install it later in Settings → Search.
-          </span>
+            Some PDFs have tables. The model reads them better.</span>
         </div>
       </div>
       <div className="flex items-center gap-1.5 justify-end">

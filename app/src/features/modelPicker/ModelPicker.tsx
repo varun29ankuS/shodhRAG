@@ -340,9 +340,7 @@ export function ModelPickerPanel({ picker, answerRunning, onSelected, onOpenSett
           <div className="mx-1 mt-2 px-2.5 py-2 rounded-lg border border-dashed border-shodh-border flex items-start gap-2 text-caption text-shodh-text-muted">
             <Cpu className="w-3.5 h-3.5 mt-0.5 shrink-0" aria-hidden="true" />
             <span>
-              <span className="font-medium text-shodh-text-secondary">{view.llamaCppFile}</span> (llama.cpp) is not listed: the
-              agent needs tool calling, which in-process models do not provide. Serve a local model with LM Studio to answer on this computer.
-            </span>
+              <span className="font-medium text-shodh-text-secondary">{view.llamaCppFile}</span> llama.cpp isn’t listed: it can’t use tools.</span>
           </div>
         )}
       </div>

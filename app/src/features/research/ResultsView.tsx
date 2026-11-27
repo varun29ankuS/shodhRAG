@@ -51,8 +51,7 @@ function ReportSummary({ report }: { report: ExtractionReport }) {
       </p>
       {!report.tableModel && (
         <p className="text-shodh-text-muted">
-          Tables were read with the layout heuristics only, so table extraction quality is reduced: merged headers, spanning cells and some tables can be missed. Install the table model in Settings to structure tables with it.
-        </p>
+          Read without the table model. Install it in Settings.</p>
       )}
       {report.skipped.length > 0 && (
         <details>
@@ -222,8 +221,7 @@ export function ResultsView({ filePath, workspace = null }: { filePath: string; 
             <ReportSummary report={data.report} />
           ) : (
             <p className="text-small text-shodh-text-muted">
-              No results have been extracted from this paper yet. Extraction reads the parser’s table blocks: numbers under metric headers, row labels as methods, datasets from headers and captions. Every value is taken verbatim from its cell.
-            </p>
+              No results yet. Values come verbatim from cells.</p>
           )}
           {data && data.review.length > 0 && (
             <section aria-labelledby={`${useModelId}-review`} className="flex flex-col gap-2">

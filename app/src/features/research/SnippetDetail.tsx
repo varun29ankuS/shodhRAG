@@ -344,8 +344,7 @@ export function SnippetDetail({ snippet, mode, onChanged, onOpenTable }: Snippet
           </div>
           {table === 'none' ? (
             <p className="text-small text-shodh-text-muted">
-              The parsed document has no table overlapping this region. The parser may not have recognised it as a table; its text is below.
-            </p>
+              No table found here; its text is below.</p>
           ) : (
             <TableBlock table={table} />
           )}

@@ -57,9 +57,7 @@ function ChatsTab({ workspace, onNewChat, onOpenChat }: { workspace: WorkspaceDe
       </div>
       {chats.length === 0 ? (
         <p className="m-0 text-small text-shodh-text-muted">
-          No chats yet. A chat started here searches only this workspace’s sources and follows its instructions. Move
-          an existing chat here from its menu in the sidebar.
-        </p>
+          No chats yet.</p>
       ) : (
         <ul className="m-0 p-0 list-none divide-y divide-shodh-border-subtle">
           {chats.map(c => (
@@ -367,7 +365,7 @@ export function WorkspacePage({
           <VisualGallery
             conversationId={null}
             conversationIds={chatIds}
-            emptyText="No visuals in this workspace’s chats yet. Diagrams, charts, plots, equations and tables from its answers appear here."
+            emptyText={'No visuals yet.'}
           />
         )}
         {tab === 'results' && <ResultsTab workspace={detail} />}

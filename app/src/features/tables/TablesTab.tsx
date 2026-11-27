@@ -622,9 +622,7 @@ function TableEditor({
               />
             ) : (
               <p className="m-0 text-small text-shodh-text-muted">
-                Choose a cell to see its quote, its page in the paper and why it is marked. In the table, arrow keys
-                move between cells and column headers; Enter opens a cell.
-              </p>
+                Choose a cell to see its quote and page.</p>
             )}
           </aside>
         </div>
@@ -716,9 +714,7 @@ export function TablesTab({ workspace }: { workspace: WorkspaceDetail }) {
       {tables === null && !error && <p role="status" className="m-0 text-small text-shodh-text-muted">Loading tables…</p>}
       {tables !== null && tables.length === 0 && (
         <p className="m-0 text-small text-shodh-text-muted">
-          No tables yet. A table compares this workspace's papers question by question: the model answers each cell
-          with a quote that Shodh checks against the paper, so every value can be traced to its page.
-        </p>
+          No tables yet.</p>
       )}
       {tables !== null && tables.length > 0 && (
         <ul className="m-0 p-0 list-none divide-y divide-shodh-border-subtle">

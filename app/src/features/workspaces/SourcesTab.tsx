@@ -252,9 +252,7 @@ function AddSources({
       {mode === 'files' && (
         <div className="flex flex-col gap-2">
           <p className="m-0 text-small text-shodh-text-muted">
-            Single files, for example one paper from a large folder. Answers search a file once it is indexed: files
-            outside your Library folders show as not indexed until you add their folder in Library.
-          </p>
+            Single files. Add their folder in Library to index them.</p>
           <div>
             <button type="button" className={OUTLINE_BUTTON} onClick={() => void chooseFiles()} disabled={adding}>
               <FileText className="w-3.5 h-3.5" aria-hidden="true" /> Choose files…
@@ -416,9 +414,7 @@ export function SourcesTab({
           <p role="status" className="m-0 text-small text-shodh-text-muted">Checking the index…</p>
         ) : workspace.sources.length === 0 ? (
           <p className="m-0 text-small text-shodh-text-secondary">
-            Nothing yet: answers in this workspace find nothing until you add sources (or turn on “Search all my
-            library” for a question).
-          </p>
+            No sources yet.</p>
         ) : (
           <p role="status" className="m-0 text-small text-shodh-text-secondary">
             {`${health.searchableFiles.toLocaleString()} ${health.searchableFiles === 1 ? 'file' : 'files'}`}

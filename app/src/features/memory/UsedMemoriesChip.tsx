@@ -6,6 +6,7 @@ import { errorText, markNotRelevant, onSuggestionsChanged, usedMemories } from '
 import { requestMemoryEdit } from './navigation';
 import { FORGOTTEN_MEMORY, chipText, markedNotRelevant, rowOf } from './usedMemories';
 import type { UsedMemory } from './usedMemories';
+import { InfoPopover } from '../../components/ui/InfoPopover';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-ground';
@@ -207,9 +208,8 @@ export function UsedMemoriesChip({ runId, ids, workspaceName, onOpenSettings }: 
             </ul>
           )}
           <p className="m-0 px-3.5 py-2 border-t border-shodh-border-subtle text-caption text-shodh-text-faint">
-            Memories the answer drew on grow stronger; “Not relevant” makes one weigh less in later answers without deleting it.
-            “Always included” ones go with every question: who you are, your projects, preferences and the notes you asked Shodh to keep.
-          </p>
+            Used memories grow stronger.{' '}<InfoPopover label="How memories work" title="How memories work">Memories the answer drew on grow stronger; “Not relevant” makes one weigh less in later answers without deleting it.
+            “Always included” ones go with every question: who you are, your projects, preferences and the notes you asked Shodh to keep.</InfoPopover></p>
         </section>
       )}
     </div>

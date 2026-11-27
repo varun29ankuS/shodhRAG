@@ -104,14 +104,14 @@ export default function PrivacySettings() {
     <div className="flex flex-col gap-5">
       <SwitchRow
         label="Local-only mode"
-        description="Nothing leaves this computer: the assistant cannot use the web, and only a local model (Ollama) may answer. Applies to the assistant in Ask."
+        description={'Nothing leaves this computer; local models only.'}
         checked={policy.localOnly}
         disabled={saving}
         onChange={localOnly => void change({ ...policy, localOnly })}
       />
       <SwitchRow
         label="Let the assistant use the web"
-        description="Allows web search, reading web pages, searching papers and downloading open files into your source folders. Every request is recorded in Usage & Audit."
+        description={'Web search, pages and papers. Every request is logged.'}
         checked={policy.webAccess && !policy.localOnly}
         disabled={saving || policy.localOnly}
         onChange={webAccess => void change({ ...policy, webAccess })}
@@ -246,7 +246,7 @@ function CodeModeSettings() {
     <div className="flex flex-col gap-3 pt-5 border-t border-shodh-border">
       <SwitchRow
         label="Code mode"
-        description="Off: answers only read your files. On: a conversation in a workspace with one code folder can switch to Code, where the assistant edits files and runs commands in that folder."
+        description={'Lets a workspace chat edit files and run commands.'}
         checked={enabled}
         disabled={saving || confirming}
         onChange={next => (next ? setConfirming(true) : void save(false))}
@@ -335,7 +335,7 @@ function UpdateSettings() {
     <div className="flex flex-col gap-3 pt-5 border-t border-shodh-border">
       <SwitchRow
         label="Check for updates"
-        description="A few minutes after start and then once a day, Shodh asks GitHub whether a newer version exists. Nothing about you or your documents is sent, and nothing is installed until you choose to. Never in Local-only mode."
+        description={'Checks GitHub daily; installs only when you choose. Sends nothing about you.'}
         checked={status.checkAutomatically && !blocked}
         disabled={busy || blocked}
         onChange={enabled => void toggle(enabled)}

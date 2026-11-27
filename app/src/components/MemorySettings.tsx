@@ -493,7 +493,7 @@ export default function MemorySettings(props: MemorySettingsProps) {
       {scope === null && (
       <SwitchRow
         label="Use memories in answers"
-        description="Before each answer, Shodh recalls what it remembers that is relevant to your question and tells the model, marked as possibly outdated. Turn off to answer without them; your memories are kept."
+        description={'Recalls relevant memories before each answer.'}
         checked={prefs?.injectMemories ?? true}
         disabled={prefs === null || savingPrefs}
         onChange={next => prefs && void changePrefs({ ...prefs, injectMemories: next })}

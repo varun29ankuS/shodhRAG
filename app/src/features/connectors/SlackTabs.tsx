@@ -451,7 +451,7 @@ export function AnsweringTab(props: TabProps & { workspaces: WorkspaceListing[] 
     <div className="flex flex-col gap-8">
       <SwitchRow
         label="Answer in Slack"
-        description="Shodh keeps a connection to Slack and answers mentions in the channels below, and direct messages from your members."
+        description={'Answers mentions here and members’ direct messages.'}
         checked={on}
         disabled={busy || status.state === 'local_only'}
         onChange={next => void run(() => slackApi.setEnabled(next), 'The Slack connector could not be switched')}
@@ -983,7 +983,7 @@ function MemoriesList({ status, busy, setBusy }: TabProps) {
   return (
     <Section
       title="From Slack"
-      description="“@shodh remember: …” saves at once: yours into your memories, anyone else’s for their channel only, used only for Slack answers there."
+      description={'“@shodh remember” saves at once; others’ only for their channel.'}
     >
       {!available ? (
         <Callout tone="warning" role="alert">Memories from Slack need the app database, which could not be opened. The audit page says why.</Callout>
@@ -1002,9 +1002,7 @@ function MemoriesList({ status, busy, setBusy }: TabProps) {
         <div className="flex flex-col items-start gap-1 rounded-lg border border-dashed border-shodh-border px-4 py-6">
           <p className="m-0 text-small font-medium text-shodh-text">Nothing saved from Slack yet</p>
           <p className="m-0 text-small text-shodh-text-muted max-w-[60ch]">
-            In a channel Shodh answers in, anyone can write “@shodh remember: the launch moved to May”. It shows up here,
-            with who saved it and where.
-          </p>
+            Saved with “@shodh remember”.</p>
         </div>
       ) : (
         <ul aria-label="Memories from Slack" className="m-0 p-0 list-none flex flex-col divide-y divide-shodh-border-subtle rounded-lg border border-shodh-border-subtle bg-shodh-surface">

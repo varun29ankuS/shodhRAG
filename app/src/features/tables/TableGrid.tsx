@@ -279,9 +279,7 @@ export function TableGrid({
   return (
     <div className="overflow-x-auto scrollbar-thin rounded-xl border border-shodh-border">
       <p id={helpId} className="sr-only">
-        Arrow keys move between the column headers and the cells. On a column header, Enter sorts by it and Shift+F10
-        or the menu key opens its options. On a cell, Enter opens it beside the table.
-      </p>
+        Arrows move; Enter opens or sorts.</p>
       <table ref={tableRef} role="grid" aria-describedby={helpId} className="w-max min-w-full border-collapse text-start">
         <caption className="sr-only">{caption}</caption>
         <thead className="bg-shodh-raised">

@@ -225,9 +225,7 @@ function InstructionsEditor({ workspace, onSaved }: { workspace: WorkspaceDetail
         <div>
           <h3 id={`${ids.text}-title`} className={SECTION_TITLE}>Instructions</h3>
           <p id={ids.help} className="m-0 text-small text-shodh-text-muted">
-            Sent with every question in this workspace, marked as your instructions. They say how to answer; sources
-            still decide what is true. The assistant can propose changes, which you approve and can see as a diff.
-          </p>
+            Sent with every question here. Sources decide what is true.</p>
         </div>
       </div>
       {stale && (

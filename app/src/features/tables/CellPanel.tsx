@@ -127,9 +127,7 @@ function PaperPanel({
       </div>
       {diagnostics && (
         <p className="m-0 text-caption text-shodh-text-muted">
-          The quality check fills this paper and keeps every model call it made (cells that are current or cached cost
-          no call: clear them first for a fresh check). It counts against today's calls.
-        </p>
+          Keeps every model call. Counts against today’s calls.</p>
       )}
       <p role="status" aria-live="polite" className={cn('m-0 text-small', notice ? NOTICE_CLASSES[notice.tone] : 'sr-only')}>
         {notice?.text ?? ''}

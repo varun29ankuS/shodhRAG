@@ -192,7 +192,7 @@ export default function AnswerCheckSettings() {
       </div>
       <SwitchRow
         label="Re-check flagged statements"
-        description="When statements are flagged, ask the model once to cite the right passage, correct them or remove them. Costs one extra turn; the earlier draft stays in the conversation."
+        description={'Fix flagged statements once. Costs one more turn.'}
         checked={answers?.autoRepair ?? true}
         disabled={answers === null || saving}
         onChange={value => void change({ autoRepair: value })}

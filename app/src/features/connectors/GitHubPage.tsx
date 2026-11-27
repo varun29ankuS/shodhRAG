@@ -214,7 +214,7 @@ function RepositoriesTab({ status, busy, setBusy, onStatus, highlight }: TabProp
     <div className="flex flex-col gap-6">
       <Section
         title="On your list"
-        description="Shodh reaches only these repositories. Read is enough to fetch and read issues; write and merge always ask you first."
+        description={'Only these repositories. Write and merge ask first.'}
         actions={
           signedIn && !adding ? (
             <button type="button" className={OUTLINE_BUTTON} onClick={() => setAdding(true)}>
@@ -290,7 +290,7 @@ function ActivityTab({ now }: TabProps) {
   return (
     <Section
       title="Activity"
-      description="Everything Shodh did on GitHub and every change to this connector, newest first. The full record is in Activity → Audit log."
+      description={'Newest first. The full record is in Activity.'}
       actions={
         <button type="button" className={QUIET_BUTTON} disabled={loading} onClick={() => void load()}>
           <RefreshCw className={cn('w-3.5 h-3.5', loading && 'animate-spin motion-reduce:animate-none')} aria-hidden="true" /> Refresh

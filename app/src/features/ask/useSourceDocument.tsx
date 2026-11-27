@@ -275,7 +275,7 @@ export function useSourceDocument(hit: SearchHit, { onPageChange }: SourceDocume
         message={
           record === 'note'
             ? 'This source is a note saved in Shodh. Its indexed text is shown below.'
-            : 'This source is an item in your Shodh calendar. Its indexed details are shown below; use Open in Calendar to see or edit it.'
+            : 'A calendar item. Open in Calendar to edit it.'
         }
         passage={passage}
         tone="info"

@@ -8,6 +8,7 @@ import { codeMapApi, errorText } from './api';
 import type { CodeMapView } from './api';
 import { codeMapChipLabel, codeMapDetails, codeMapTone, readCodeMapView } from './codeMapFormat';
 import type { CodeMapTone } from './codeMapFormat';
+import { InfoPopover } from '../../components/ui/InfoPopover';
 
 /** Emitted by `code_map_commands.rs` when a map's state or progress changes. */
 const CODE_MAP_EVENT = 'code-map-status';
@@ -164,11 +165,14 @@ export function CodeMapChip({ workspaceId }: CodeMapChipProps) {
               </li>
             ))}
           </ul>
-          <p className="m-0 text-small text-shodh-text-muted">
-            Shodh keeps a map of {view.name}&apos;s Rust, TypeScript, JavaScript, Python and Go code on this computer, and
-            updates it when files change and after the assistant edits or runs commands. The assistant uses it to find
-            where things are defined and who uses them, and shows you each place. Ignored files, build folders, .env files
-            and keys are never read.
+          <p className="m-0 flex items-center gap-1 text-small text-shodh-text-muted">
+            Kept on this computer. Never reads .env files or keys.
+            <InfoPopover label="About the code map" title="Code map">
+              Shodh keeps a map of {view.name}&apos;s Rust, TypeScript, JavaScript, Python and Go code on this computer, and
+              updates it when files change and after the assistant edits or runs commands. The assistant uses it to find
+              where things are defined and who uses them, and shows you each place. Ignored files, build folders, .env files
+              and keys are never read.
+            </InfoPopover>
           </p>
           <div className="flex flex-wrap gap-1.5">
             {building ? (

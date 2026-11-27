@@ -281,7 +281,7 @@ export default function DataManagement({ sources, onRemoveSource, onSourcesClear
           <p className="text-caption font-medium text-shodh-text">
             {confirmAction === 'clear_docs'
               ? 'This will permanently delete all indexed documents from the vector store and text index. Spaces will be preserved. This cannot be undone.'
-              : 'This will delete everything — all documents, vectors, and spaces. The app will need a restart. This cannot be undone.'}
+              : 'Deletes everything and needs a restart. Can’t be undone.'}
           </p>
           <div className="flex gap-2">
             <button

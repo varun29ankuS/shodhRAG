@@ -83,7 +83,7 @@ export default function BackgroundSettings() {
     <div className="flex flex-col gap-5">
       <SwitchRow
         label="Keep running in the tray when the window is closed"
-        description="Task reminders ring only while Shodh runs. With this on, closing the window hides it to the tray; quit from the tray icon's menu."
+        description={'Closing hides to the tray, so reminders still ring.'}
         checked={status.closeToTray}
         disabled={saving}
         onChange={enabled => void save(() => invoke('set_close_to_tray', { enabled }), 'The setting was not saved')}

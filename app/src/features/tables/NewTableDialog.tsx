@@ -86,9 +86,7 @@ export function NewTableDialog({
             <div className="flex-1 min-w-0">
               <Dialog.Title className="text-body-lg font-semibold">New evidence table</Dialog.Title>
               <Dialog.Description id={ids.desc} className="text-small text-shodh-text-muted">
-                One row per paper, one column per question. Every answer carries the quote it rests on, checked word for
-                word against the paper, and its page.
-              </Dialog.Description>
+                One row per paper, one column per question.</Dialog.Description>
             </div>
             <Dialog.Close aria-label="Close" className={cn(CLOSE_BUTTON, FOCUS_RING)}>
               <X className="w-4 h-4" aria-hidden="true" />

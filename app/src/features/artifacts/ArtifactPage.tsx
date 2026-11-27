@@ -398,7 +398,7 @@ export function ArtifactPage({ selection, onBack, onOpenChat, onChange, onDelete
                   icon: Palette,
                   onSelect: () => void design.run(),
                   disabled: design.busy,
-                  title: "Check this artifact's HTML, CSS and components with Shodh's design rules (no model): contrast, text size, labels, alt text, focus, generated-UI tells.",
+                  title: 'Design rules check. No model.',
                 },
                 {
                   label: 'Delete it',

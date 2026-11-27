@@ -169,8 +169,7 @@ export function BackupModels({ picker }: { picker: ModelPickerHandle }) {
         <label htmlFor={askId} className="flex flex-col gap-0.5">
           <span className="text-small text-shodh-text">In Ask, switch to a backup without asking</span>
           <span className="text-caption text-shodh-text-muted">
-            Off: Ask shows what failed and offers the backup as a button. Either way the answer says which model wrote it.
-          </span>
+            Off: offers the backup as a button.</span>
         </label>
       </div>
 
@@ -186,8 +185,7 @@ export function BackupModels({ picker }: { picker: ModelPickerHandle }) {
         <label htmlFor={paidId} className="flex flex-col gap-0.5">
           <span className="text-small text-shodh-text">Allow paid backups</span>
           <span className="text-caption text-shodh-text-muted">
-            Off: a free model falls back only to other free or local models; when today&apos;s free requests run out, Shodh says so and when they reset. On: a paid model or an API key may answer, and that provider bills each request, usually a fraction of a cent to a few cents an answer.
-          </span>
+            On: paid models may answer and bill you.{' '}<InfoPopover label="What it costs" title="What it costs">Off: a free model falls back only to other free or local models; when today&apos;s free requests run out, Shodh says so and when they reset. On: a paid model or an API key may answer, and that provider bills each request, usually a fraction of a cent to a few cents an answer.</InfoPopover></span>
         </label>
       </div>
     </section>
@@ -236,7 +234,7 @@ function ChainList({ chain, nowMs, localOnly }: { chain: ChainPlan | null; nowMs
       {chain.fallbacks.length === 0 && (
         <p className="m-0 text-small text-shodh-text-muted">
           {localOnly
-            ? 'Local-only mode is on, and no other model runs on this computer. Load another model in LM Studio to have a backup.'
+            ? 'No other local model. Load one in LM Studio.'
             : 'No backup is available yet. Connect another provider above, or choose a backup below.'}
         </p>
       )}

@@ -101,7 +101,7 @@ export function ModelPicks({ picker }: { picker: ModelPickerHandle }) {
         <div role="alert" className="flex flex-wrap items-center gap-2 text-small text-shodh-text-secondary">
           <span className="flex-1 min-w-[14rem]">
             {refusal.code === 'environment_set'
-              ? 'The environment sets the model for this computer. Use this pick for this session only? The environment returns when Shodh restarts.'
+              ? 'Set by the environment. Use this pick until restart?'
               : refusal.message}
           </span>
           {refusal.code === 'environment_set' && (

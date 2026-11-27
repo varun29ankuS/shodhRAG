@@ -428,7 +428,7 @@ export function PaperGraphView({
         <p id={`${ids.online}-help`} className="text-caption text-shodh-text-muted basis-full">
           {st && !st.onlineAllowed
             ? `${st.onlineBlockedReason ?? 'Web access is off.'} The graph is built from your PDFs only.`
-            : 'Only reference identifiers (DOI, arXiv id) and reference titles are sent — never your documents’ text or your own papers’ titles. Answers are cached on this computer.'}
+            : 'Sends only DOIs and reference titles, never your text.'}
         </p>
       </div>
 
@@ -620,7 +620,7 @@ export function PaperGraphView({
                 )}
               </div>
               <figcaption className="flex flex-wrap items-center gap-4 text-caption text-shodh-text-muted">
-                <span id={ids.help} className="basis-full">Drag a paper to move it, drag the background to pan, scroll or pinch to zoom. With the drawing focused: + and − zoom, 0 shows actual size, F fits, arrow keys pan.</span>
+                <span id={ids.help} className="basis-full">Drag, pan, zoom. Keys: + − 0 F and arrows.</span>
                 <span className="inline-flex items-center gap-1.5"><svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="5" fill="var(--c-accent)" /></svg>In your library (labelled)</span>
                 <span className="inline-flex items-center gap-1.5"><svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="3" fill="var(--c-text-faint)" fillOpacity={0.55} /></svg>Cited work</span>
                 <span className="inline-flex items-center gap-1.5"><svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="5" fill="var(--c-raised-2)" stroke="var(--c-border-strong)" /></svg>More references (not drawn)</span>

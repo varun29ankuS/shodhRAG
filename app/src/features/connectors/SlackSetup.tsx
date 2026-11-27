@@ -101,8 +101,7 @@ function Permissions({ status }: { status: SlackStatus }) {
       </button>
       <div id={id} hidden={!open} className="px-3.5 pb-3 flex flex-col gap-2">
         <p className="m-0 text-caption text-shodh-text-muted">
-          No public URL: Shodh connects out from this computer (Socket Mode). It never reads a channel it is not added to.
-        </p>
+          Connects out from here. Reads only channels it is in.</p>
         <ul className="m-0 ps-4 list-disc flex flex-col gap-0.5 text-small text-shodh-text-secondary">
           {status.botScopes.map(scope => (
             <li key={scope}>{scopeWords(scope)}</li>

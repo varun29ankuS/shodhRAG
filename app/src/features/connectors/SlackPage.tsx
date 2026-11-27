@@ -262,9 +262,7 @@ export function SlackPage({
               Connected to {status.installation?.teamName} as @{status.installation?.botName}
             </h3>
             <p className="m-0 mt-1 text-small text-shodh-text-secondary max-w-[60ch]">
-              Next, pick the workspace Slack answers from and the channels it answers in. Until then the bot replies that it
-              isn’t set up yet.
-            </p>
+              Next: pick a workspace and channels.</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <button

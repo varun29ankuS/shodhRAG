@@ -170,16 +170,14 @@ export function CompareResults({
   if (allowedPapers !== null && allowedPapers.length === 0) {
     return (
       <p className="text-small text-shodh-text-muted">
-        None of this workspace's papers have extracted results yet. Open one of its papers in Library, choose Results and extract them; then compare them here.
-      </p>
+        No results yet. Extract them from a paper in Library.</p>
     );
   }
   const paperChoices = allowedPapers === null ? f.papers : f.papers.filter(p => allowedPapers.includes(p.filePath));
   if (f.metrics.length === 0) {
     return (
       <p className="text-small text-shodh-text-muted">
-        No results extracted yet. Open a paper in a folder, choose Results and extract them; then compare them across papers here.
-      </p>
+        No results yet. Extract them from a paper.</p>
     );
   }
 

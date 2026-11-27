@@ -514,7 +514,7 @@ function MessageContent({
         <blockquote className="my-4 pl-4 border-l-2 border-shodh-border-strong text-shodh-text-tertiary">{children}</blockquote>
       ),
       table: ({ children }) => (
-        <FocusFrame noun="table" getTarget={tableFromElement} doubleClick={false} className={cn('my-4', wide && WIDE_BLOCK_CLASS)}>
+        <FocusFrame noun="table" getTarget={tableFromElement} doubleClick={false} placement="above" className={cn('my-4', wide && WIDE_BLOCK_CLASS)}>
           <div className="overflow-x-auto rounded-xl border border-shodh-border">
             <table className="w-full text-body border-collapse">{children}</table>
           </div>
@@ -602,7 +602,7 @@ function MessageContent({
       ))}
 
       {tables.map(artifact => (
-        <FocusFrame key={artifact.id} noun="table" getTarget={tableFromElement} doubleClick={false} className={cn(wide && WIDE_BLOCK_CLASS)}>
+        <FocusFrame key={artifact.id} noun="table" getTarget={tableFromElement} doubleClick={false} placement="above" className={cn(wide && WIDE_BLOCK_CLASS)}>
           <div className="rounded-2xl overflow-hidden border border-shodh-border">
             <TableArtifact artifact={artifact} theme={theme} />
           </div>

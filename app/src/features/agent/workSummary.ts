@@ -15,9 +15,15 @@ export interface WorkFold {
   live: boolean;
 }
 
-function seconds(ms: number): string {
+/** A run's wall time in words: "14 s", "2 min 05 s", then "1 h 01 min" and "2 d 3 h". */
+export function seconds(ms: number): string {
   const s = Math.max(1, Math.round(ms / 1000));
-  return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min ${String(s % 60).padStart(2, '0')} s`;
+  if (s < 60) return `${s} s`;
+  const minutes = Math.floor(s / 60);
+  if (minutes < 60) return `${minutes} min ${String(s % 60).padStart(2, '0')} s`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} h ${String(minutes % 60).padStart(2, '0')} min`;
+  return `${Math.floor(hours / 24)} d ${hours % 24} h`;
 }
 
 function plural(n: number, one: string, many: string): string {

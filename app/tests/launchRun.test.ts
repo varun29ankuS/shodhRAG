@@ -13,6 +13,7 @@ import { currentStep, isLive, reduceAll } from '../src/features/agent/reducer.ts
 import type { TranscriptAction, TranscriptState } from '../src/features/agent/reducer.ts';
 import { workFold } from '../src/features/agent/workSummary.ts';
 import { runSummary } from '../src/features/agent/runSummary.ts';
+import { LAST_EVENT_AGO_MS, rebaseRun } from '../src/features/launch/runScene.ts';
 import { appDir, source, withoutComments } from './jsxScan.ts';
 
 interface Fixture {
@@ -64,7 +65,19 @@ test('summary: the run finished, with sources to open, its view opened as a clic
   // The window reduces the slice it is sent with the reducer, sets it on the answer the
   // way the session updates a message, and opens the view by its own button.
   const host = withoutComments(source('features/launch/LaunchProbeHost.tsx'));
-  assert.match(host, /reduceAll\(structuredClone\(run\.seed\) as TranscriptState, run\.actions as TranscriptAction\[\]\)/);
+  assert.match(host, /const timed = rebaseRun\(structuredClone\(run\.seed\), run\.actions, Date\.now\(\)\);\s*const transcript = reduceAll\(timed\.seed as TranscriptState, timed\.actions as TranscriptAction\[\]\);/);
   assert.match(host, /sessionRef\.current\.updateMessage\(run\.answerId, \{ transcript \}\);/);
   assert.match(host, /querySelector<HTMLButtonElement>\(`\[data-testid="\$\{RUN_PANEL_TOGGLE\}"\]\[aria-expanded="false"\]`\)\?\.click\(\);/);
+});
+
+test('the run clock is moved to now, so a live timer reads seconds', () => {
+  const now = 1_900_000_000_000;
+  const { seed, actions } = rebaseRun(fixture.seed, fixture.actions, now);
+  const at = (a: unknown) => (a as { atMs?: number }).atMs;
+  const times = [(seed as TranscriptState).startedAtMs, ...actions.map(at).filter((t): t is number => typeof t === 'number')];
+  assert.equal(Math.max(...times), now - LAST_EVENT_AGO_MS);
+  // Gaps between events are kept.
+  assert.equal(at(actions[4])! - (seed as TranscriptState).startedAtMs, at(fixture.actions[4])! - fixture.seed.startedAtMs);
+  const progress = reduceAll(seed as TranscriptState, actions.slice(0, 8) as TranscriptAction[]);
+  assert.ok(now - progress.startedAtMs < 60_000, 'the progress timer reads under a minute');
 });

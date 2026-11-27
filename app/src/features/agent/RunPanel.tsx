@@ -51,27 +51,45 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-/** Coverage of an information need: found in which passages, or not found. */
-function NeedCoverage({ item }: { item: PlanItem }) {
+/** A passage's number as the answer cites it: a pill that opens the passage. */
+function CitationPill({ n, hits, onOpenCitation }: { n: number; hits: readonly SearchHit[]; onOpenCitation: RunPanelProps['onOpenCitation'] }) {
+  const hit = hits.find(h => h.number === n) ?? null;
+  const pill = 'inline-flex items-center justify-center min-w-6 h-[18px] px-1 rounded-[5px] bg-shodh-pressed text-caption font-bold leading-none tabular-nums text-shodh-text-secondary';
+  if (!hit) return <span className={pill}>{n}</span>;
+  return (
+    <button
+      type="button"
+      onClick={e => onOpenCitation(hit, e.currentTarget)}
+      aria-label={`Source ${n}, ${hit.fileName}`}
+      title={hit.fileName}
+      className={cn('target-24', pill, 'hover:bg-shodh-border-strong hover:text-shodh-text', FOCUS_RING)}
+    >
+      {n}
+    </button>
+  );
+}
+
+/** Coverage of an information need: found in which passages (each a pill), or not found. */
+function NeedCoverage({ item, hits, onOpenCitation }: { item: PlanItem; hits: readonly SearchHit[]; onOpenCitation: RunPanelProps['onOpenCitation'] }) {
   if (!item.need || item.coverage === null) return null;
   if (item.coverage === 'covered') {
-    const sources = item.evidence.map(n => `[${n}]`).join('');
     return (
-      <span className="flex items-center gap-1 mt-0.5 text-caption text-shodh-success">
+      <span className="flex flex-wrap items-center gap-1 text-caption text-shodh-success">
         <CircleCheck className="w-3 h-3 shrink-0" aria-hidden="true" />
-        {sources ? `Found in ${sources}` : 'Found in the sources'}
+        {item.evidence.length > 0 ? 'Found in' : 'Found in the sources'}
+        {item.evidence.map(n => <CitationPill key={n} n={n} hits={hits} onOpenCitation={onOpenCitation} />)}
       </span>
     );
   }
   return (
-    <span className="flex items-center gap-1 mt-0.5 text-caption text-shodh-warning">
+    <span className="flex items-center gap-1 text-caption text-shodh-warning">
       <SearchX className="w-3 h-3 shrink-0" aria-hidden="true" />
       Not found in the sources
     </span>
   );
 }
 
-function PlanRows({ plan }: { plan: readonly PlanItem[] }) {
+function PlanRows({ plan, hits, onOpenCitation }: { plan: readonly PlanItem[]; hits: readonly SearchHit[]; onOpenCitation: RunPanelProps['onOpenCitation'] }) {
   return (
     <ol className="list-none m-0 p-0 flex flex-col gap-1">
       {plan.map(item => (
@@ -79,12 +97,15 @@ function PlanRows({ plan }: { plan: readonly PlanItem[] }) {
           <span aria-hidden="true" className={cn('font-mono leading-[1.45] shrink-0', GLYPH_COLOR[item.status])}>
             {GLYPH[item.status]}
           </span>
-          <span className={cn('min-w-0 break-words leading-[1.45]', TEXT_STYLE[item.status])}>
-            {item.text}
-            <span className="sr-only">{` (${STATUS_TEXT[item.status]})`}</span>
-            <NeedCoverage item={item} />
+          <span className="min-w-0 flex flex-col gap-0.5">
+            {/* Only the item's own words are struck when it is done; what it found is not. */}
+            <span className={cn('break-words leading-[1.45]', TEXT_STYLE[item.status])}>
+              {item.text}
+              <span className="sr-only">{` (${STATUS_TEXT[item.status]})`}</span>
+            </span>
+            <NeedCoverage item={item} hits={hits} onOpenCitation={onOpenCitation} />
             {item.status === 'blocked' && item.reason && (
-              <span className="flex items-start gap-1 mt-0.5 text-caption text-shodh-warning no-underline">
+              <span className="flex items-start gap-1 text-caption text-shodh-warning">
                 <AlertCircle className="w-3 h-3 mt-0.5 shrink-0" aria-hidden="true" />
                 <span className="min-w-0 break-words">{`Blocked: ${item.reason}`}</span>
               </span>
@@ -191,7 +212,7 @@ export function RunPanel({ line, live, plan, steps, summary, hits, onOpenCitatio
           )}
           {plan && plan.length > 0 && (
             <Section title="Plan">
-              <PlanRows plan={plan} />
+              <PlanRows plan={plan} hits={hits} onOpenCitation={onOpenCitation} />
             </Section>
           )}
           {steps && (

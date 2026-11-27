@@ -23,6 +23,7 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { clippedText } from './textFit';
 import { chatRoom } from './chatRoom';
+import { rebaseRun } from './runScene';
 import { navigationFromEvent, publishTarget } from '../agent/navigation';
 import type { NavigatedEvent } from '../agent/events';
 import { normalizeViewTab } from '../../lib/viewTabs';
@@ -100,7 +101,9 @@ export function LaunchProbeHost(): null {
     for (let tries = 0; tries < SCENE_OPEN_TRIES; tries++) {
       const current = sessionRef.current;
       if (current.activeConversationId === conversationId && current.messages.some(m => m.id === run.answerId)) {
-        const transcript = reduceAll(structuredClone(run.seed) as TranscriptState, run.actions as TranscriptAction[]);
+        // The recorded run, its clock moved to now, so a live timer reads seconds.
+        const timed = rebaseRun(structuredClone(run.seed), run.actions, Date.now());
+        const transcript = reduceAll(timed.seed as TranscriptState, timed.actions as TranscriptAction[]);
         sessionRef.current.updateMessage(run.answerId, { transcript });
         if (run.open) {
           await new Promise(resolve => window.setTimeout(resolve, SCENE_OPEN_INTERVAL_MS * 4));

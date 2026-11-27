@@ -1,4 +1,7 @@
-/** Compact durations for step lines: "320ms", "1.2s", "42s", "1m 05s". */
+/**
+ * Compact durations for step lines and the run timer: "320ms", "1.2s", "42s", "1m 05s",
+ * then whole hours ("1h 01m") and days ("2d 3h"), so a long run never reads "120m".
+ */
 export function formatMs(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return '0ms';
   if (ms < 1000) return `${Math.round(ms)}ms`;
@@ -6,7 +9,11 @@ export function formatMs(ms: number): string {
   if (seconds < 10) return `${seconds.toFixed(1)}s`;
   if (seconds < 60) return `${Math.round(seconds)}s`;
   const whole = Math.round(seconds);
-  return `${Math.floor(whole / 60)}m ${String(whole % 60).padStart(2, '0')}s`;
+  const minutes = Math.floor(whole / 60);
+  if (minutes < 60) return `${minutes}m ${String(whole % 60).padStart(2, '0')}s`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ${String(minutes % 60).padStart(2, '0')}m`;
+  return `${Math.floor(hours / 24)}d ${hours % 24}h`;
 }
 
 /** "950", "3.7k", "1.2M". */

@@ -81,3 +81,12 @@ test('the plan panel and the docked plan are gone: the run view holds the plan',
   assert.doesNotMatch(ask, /PlanPanel|inlinePlan|planDocked/);
   assert.doesNotMatch(source('features/ask/wideBlock.ts'), /PLAN_DOCK|planDocks/);
 });
+
+test('a done plan item strikes its own words only; what it found is cited with pills', () => {
+  const panel = withoutComments(source('features/agent/RunPanel.tsx'));
+  // The struck span holds the item's text alone; coverage and the blocked reason follow it.
+  assert.match(panel, /<span className=\{cn\('break-words leading-\[1\.45\]', TEXT_STYLE\[item\.status\]\)\}>\s*\{item\.text\}\s*<span className="sr-only">\{` \(\$\{STATUS_TEXT\[item\.status\]\}\)`\}<\/span>\s*<\/span>\s*<NeedCoverage/);
+  // Each passage it was found in is a pill that opens the passage, not "[1]" as text.
+  assert.match(panel, /\{item\.evidence\.map\(n => <CitationPill key=\{n\} n=\{n\} hits=\{hits\} onOpenCitation=\{onOpenCitation\} \/>\)\}/);
+  assert.doesNotMatch(panel, /`\[\$\{n\}\]`/);
+});

@@ -5,15 +5,19 @@
  * PIN. Five wrong PINs and it waits 30 seconds (the app's Rust side counts,
  * and refuses every call to the computer while it is locked).
  */
-import { useState, type FormEvent } from 'react';
+import { useState, type FormEvent, useRef, useEffect } from 'react';
 import { Fingerprint, LockKeyhole, ScanFace } from 'lucide-react';
 import type { LockStatus } from '../lib/device';
 import { errorText } from '../lib/link';
 import { BIOMETRY } from '../lib/platform';
 import { useDevice } from '../lib/queue';
 
-export function LockScreen({ status, onOpen }: { status: LockStatus; onOpen: () => void }) {
+export function LockScreen({ status, onOpen, onShown }: { status: LockStatus; onOpen: () => void; /** Called once the lock is drawn (CI's screenshot of it). */ onShown?: () => void }) {
   const { lock } = useDevice();
+  const shownRef = useRef(onShown);
+  useEffect(() => {
+    shownRef.current?.();
+  }, []);
   const [pin, setPin] = useState('');
   const [again, setAgain] = useState('');
   const [error, setError] = useState<string | null>(null);

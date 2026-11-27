@@ -70,7 +70,7 @@ export function Settings() {
         <div className="label">Lock</div>
         <LockSettings />
 
-        <div className="label">Calendar</div>
+        <div className="label" id="settings-calendar">Calendar</div>
         <CalendarSettings />
 
         <div className="label">Appearance</div>

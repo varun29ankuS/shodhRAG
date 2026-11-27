@@ -1,0 +1,77 @@
+[
+  {
+    "id": "launch-probe-conversation",
+    "messages": [
+      {
+        "id": "launch-probe-q1",
+        "role": "user",
+        "content": "What does the paper say about recall at small index sizes?",
+        "timestamp": "2026-11-26T09:00:00.000Z"
+      },
+      {
+        "id": "launch-probe-a1",
+        "role": "assistant",
+        "content": "Recall stays above 0.95 up to a million vectors with the default graph settings. Below ten thousand vectors a flat scan is as fast as the graph, so the index switches to it.",
+        "timestamp": "2026-11-26T09:00:08.000Z"
+      },
+      {
+        "id": "launch-probe-q2",
+        "role": "user",
+        "content": "Which setting trades speed for recall?",
+        "timestamp": "2026-11-26T09:01:00.000Z"
+      },
+      {
+        "id": "launch-probe-a2",
+        "role": "assistant",
+        "content": "The search width (`ef_search`). Raising it visits more of the graph on each query: recall goes up and so does the time per query.",
+        "timestamp": "2026-11-26T09:01:06.000Z"
+      },
+      {
+        "id": "launch-probe-q3",
+        "role": "user",
+        "content": "Compare the three index types, and show how to set the search width.",
+        "timestamp": "2026-11-26T09:02:00.000Z"
+      },
+      {
+        "id": "launch-probe-a3",
+        "role": "assistant",
+        "content": "The graph index answers fastest at the same recall; the flat scan needs no build at all.\n\n| Index | Build time | Query time | Recall at 10 | Memory per vector | Best for |\n|---|---|---|---|---|---|\n| Flat | none | 41 ms | 1.00 | 1.5 KB | under 10,000 vectors |\n| IVF | 3 min | 6 ms | 0.93 | 1.6 KB | batch updates |\n| Graph (HNSW) | 9 min | 2 ms | 0.97 | 2.1 KB | interactive search |\n\nSet the search width when you open the index:\n\n```rust\nlet index = Index::open(\"papers.idx\")?;\nindex.set_ef_search(128);\nlet hits = index.search(&query, 10)?;\n```",
+        "timestamp": "2026-11-26T09:02:09.000Z"
+      }
+    ]
+  },
+  {
+    "id": "launch-probe-chat-notes",
+    "messages": [
+      {
+        "id": "launch-probe-notes-q",
+        "role": "user",
+        "content": "Summarise the reading group notes from Tuesday.",
+        "timestamp": "2026-11-25T16:00:00.000Z"
+      },
+      {
+        "id": "launch-probe-notes-a",
+        "role": "assistant",
+        "content": "The group agreed to compare graph and IVF indexes on the same corpus, and to read the quantisation paper next.",
+        "timestamp": "2026-11-25T16:00:07.000Z"
+      }
+    ]
+  },
+  {
+    "id": "launch-probe-chat-papers",
+    "messages": [
+      {
+        "id": "launch-probe-papers-q",
+        "role": "user",
+        "content": "Which papers cite the product quantisation paper?",
+        "timestamp": "2026-11-24T11:00:00.000Z"
+      },
+      {
+        "id": "launch-probe-papers-a",
+        "role": "assistant",
+        "content": "Four papers in your library cite it; two of them extend it to graph indexes.",
+        "timestamp": "2026-11-24T11:00:06.000Z"
+      }
+    ]
+  }
+]

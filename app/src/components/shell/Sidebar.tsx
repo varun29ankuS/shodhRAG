@@ -485,7 +485,7 @@ function NavButton({
       aria-label={collapsed ? label : undefined}
       title={collapsed ? label : undefined}
       className={cn(
-        'flex items-center h-9 short:h-8 rounded-lg text-body transition-colors duration-micro',
+        'flex items-center h-9 short:h-7 rounded-lg text-body transition-colors duration-micro',
         collapsed ? 'w-10 justify-center' : 'w-full gap-2.5 px-3',
         active
           ? 'bg-shodh-raised-2 text-shodh-text font-semibold'

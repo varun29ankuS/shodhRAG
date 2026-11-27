@@ -46,7 +46,7 @@ test('a short window tightens the sidebar so the chats keep room', () => {
   assert.match(config, /short: \{ raw: '\(max-height: 800px\)' \}/);
   const sidebar = source('components/shell/Sidebar.tsx');
   // The views' rows, the New chat row and the footer.
-  assert.match(sidebar, /'flex items-center h-9 short:h-8 rounded-lg text-body/);
+  assert.match(sidebar, /'flex items-center h-9 short:h-7 rounded-lg text-body/);
   assert.match(sidebar, /'flex items-center gap-2 h-9 short:h-8 text-small font-semibold/);
   assert.match(sidebar, /'flex flex-col gap-0\.5 short:gap-0 py-1 shrink-0'/);
   assert.match(sidebar, /'shrink-0 border-t border-shodh-border flex flex-col gap-2 short:gap-1'/);

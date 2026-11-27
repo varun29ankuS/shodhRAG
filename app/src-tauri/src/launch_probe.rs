@@ -435,10 +435,24 @@ pub const TOUR_VIEWS: &[&str] = &[
 pub const TOUR_SCENES: &[&str] = &["conversation"];
 /// Both themes, each view in each.
 pub const TOUR_THEMES: &[&str] = &["dark", "light"];
-/// The sample conversation the tour writes before its first view: three
+/// The sample conversations the tour writes before its first view, so the
+/// sidebar lists a few chats as a user's does. The first is the scene's: three
 /// questions, the last answered with a table and code.
 pub const SAMPLE_CONVERSATION_ID: &str = "launch-probe-conversation";
-const SAMPLE_CONVERSATION: &str = include_str!("../tests/fixtures/launch_probe_conversation.json");
+const SAMPLE_CONVERSATIONS: &str =
+    include_str!("../tests/fixtures/launch_probe_conversations.json");
+
+/// One sample conversation, as the fixture writes it.
+#[derive(Debug, serde::Deserialize)]
+struct SampleConversation {
+    id: String,
+    messages: Vec<ConversationMessage>,
+}
+
+/// The sample conversations, in the fixture's order.
+fn sample_conversations() -> Result<Vec<SampleConversation>, String> {
+    serde_json::from_str(SAMPLE_CONVERSATIONS).map_err(|e| format!("the sample conversations: {e}"))
+}
 /// How long a view is given to load its code and its first data and paint,
 /// before the job is told to take its picture. The picture is for people to
 /// review; nothing is read from it.
@@ -454,16 +468,17 @@ pub fn view_captured_file(view: &str, theme: &str) -> String {
     format!("launch-probe-captured-view-{view}-{theme}")
 }
 
-/// Writes the sample conversation into the profile, as a window saves one, and
-/// tells the windows, which list it.
-fn write_sample_conversation(app: &AppHandle, data_dir: &Path) -> Result<(), String> {
-    let messages: Vec<ConversationMessage> = serde_json::from_str(SAMPLE_CONVERSATION)
-        .map_err(|e| format!("the sample conversation: {e}"))?;
-    let writes = messages.into_iter().map(TurnWrite::Whole).collect();
-    ConversationStore::in_dir(data_dir)
-        .write_turns(SAMPLE_CONVERSATION_ID, writes, &[], true)?
-        .ok_or("the sample conversation was not saved")?;
-    crate::conversation_commands::emit_changed(app, SAMPLE_CONVERSATION_ID);
+/// Writes the sample conversations into the profile, as a window saves one,
+/// and tells the windows, which list them.
+fn write_sample_conversations(app: &AppHandle, data_dir: &Path) -> Result<(), String> {
+    let store = ConversationStore::in_dir(data_dir);
+    for sample in sample_conversations()? {
+        let writes = sample.messages.into_iter().map(TurnWrite::Whole).collect();
+        store
+            .write_turns(&sample.id, writes, &[], true)?
+            .ok_or_else(|| format!("the sample conversation {} was not saved", sample.id))?;
+        crate::conversation_commands::emit_changed(app, &sample.id);
+    }
     Ok(())
 }
 
@@ -475,7 +490,7 @@ async fn views_tour(app: &AppHandle, data_dir: &Path) -> Result<(), String> {
     let to_main = || tauri::EventTarget::Webview {
         label: crate::background::MAIN_WINDOW.to_string(),
     };
-    write_sample_conversation(app, data_dir)?;
+    write_sample_conversations(app, data_dir)?;
     let mut clipped_total: u32 = 0;
     let mut chats_short: u32 = 0;
     for theme in TOUR_THEMES {
@@ -1006,23 +1021,32 @@ mod tests {
     }
 
     #[test]
-    fn the_sample_conversation_asks_three_questions() {
-        let messages: Vec<ConversationMessage> =
-            serde_json::from_str(SAMPLE_CONVERSATION).expect("the sample conversation parses");
-        let questions = messages.iter().filter(|m| m.role == "user").count();
+    fn the_sample_conversations_fill_the_sidebar_and_the_scene() {
+        let samples = sample_conversations().expect("the sample conversations parse");
+        // As many chats as the sidebar must show whole.
+        assert!(samples.len() >= MIN_CHAT_ROWS as usize);
+        // The scene's comes first: three questions, its last answer a table and code.
+        let scene = &samples[0];
+        assert_eq!(scene.id, SAMPLE_CONVERSATION_ID);
+        let questions = scene.messages.iter().filter(|m| m.role == "user").count();
         assert!(questions >= 3, "{questions} questions");
-        let last = messages.last().expect("an answer last");
+        let last = scene.messages.last().expect("an answer last");
         assert_eq!(last.role, "assistant");
-        // Its last answer has the wide blocks the scene shows: a table and code.
-        assert!(last.content.contains(
-            "
-|---|"
-        ));
+        assert!(last.content.contains("\n|---|"));
         assert!(last.content.contains("```rust"));
-        let mut ids: Vec<&str> = messages.iter().map(|m| m.id.as_str()).collect();
+        // Every conversation and message is its own.
+        let mut ids: Vec<&str> = samples.iter().map(|s| s.id.as_str()).collect();
+        let mut message_ids: Vec<&str> = samples
+            .iter()
+            .flat_map(|s| s.messages.iter().map(|m| m.id.as_str()))
+            .collect();
+        let (conversations, messages) = (ids.len(), message_ids.len());
         ids.sort_unstable();
         ids.dedup();
-        assert_eq!(ids.len(), messages.len());
+        message_ids.sort_unstable();
+        message_ids.dedup();
+        assert_eq!(ids.len(), conversations);
+        assert_eq!(message_ids.len(), messages);
     }
 
     #[test]

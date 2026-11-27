@@ -102,11 +102,23 @@ test('the sidebar: collapse, New chat, the views, history, Settings, the model',
 
 // ── Ask and the message box ────────────────────────────────────────
 
-test('Ask: the conversation, then the message box', () => {
+test('Ask: the conversation, the question rail, then the message box', () => {
   const ask = withoutComments(source('features/ask/AskView.tsx'));
-  inOrder(ask, ['<DiagramHostContext.Provider', 'data-testid="ask-composer-dock"', '<ModelNotice', '{composer(true)}'], 'features/ask/AskView.tsx');
+  inOrder(ask, ['<DiagramHostContext.Provider', '<QuestionRail', 'data-testid="ask-composer-dock"', '<ModelNotice', '{composer(true)}'], 'features/ask/AskView.tsx');
   // The message box takes the caret when Ask opens, so typing needs no Tab at all.
   assert.match(ask, /autoFocus/);
+});
+
+test('the question rail is one Tab stop, walked by the menus\' arrows', () => {
+  const rail = withoutComments(source('features/ask/QuestionRail.tsx'));
+  assert.match(rail, /<nav[\s\S]*?aria-label="Questions"/);
+  // One dot takes Tab (the one in view, or the one the arrows moved to); the rest -1.
+  assert.match(rail, /tabIndex=\{at === tabStop \? 0 : -1\}/);
+  assert.match(rail, /const tabStop = focusAt \?\? Math\.max\(0, current\);/);
+  // The arrows, Home and End move as in every menu.
+  assert.match(rail, /const next = nextMenuIndex\(e\.key, at, all\.length\);/);
+  // The dot in view is said, not only drawn.
+  assert.match(rail, /aria-current=\{filled \? 'location' : undefined\}/);
 });
 
 test('the message box: text, image, dictate, mode, model, send', () => {
@@ -209,6 +221,7 @@ const PATH = [
   'features/connection/ConnectionStatusChip.tsx',
   'features/connection/ModelNotice.tsx',
   'features/ask/AskView.tsx',
+  'features/ask/QuestionRail.tsx',
   'features/agent/AgentComposer.tsx',
   'features/agent/ModePicker.tsx',
   'features/modelPicker/ModelTrigger.tsx',

@@ -8,9 +8,13 @@
  *   target handed to its view, then the view opened);
  * - `openDesign`: the user clicks the design check's badge, and its findings open;
  * - `show`: the views tour, after every check: one view opened as a click in the sidebar
- *   opens it, in one theme, with the findings pane closed, for the job's picture of it;
+ *   opens it, in one theme, with the findings pane closed, for the job's picture of it.
+ *   A scene (`conversation`) is Ask with the sample conversation the tour wrote open and
+ *   the sidebar folded, so the reading column and the question rail have the room a wide
+ *   window gives them; the view after it gets back the chat and sidebar it had before;
  * - `measure`: the tour's check of the view now shown: every text on it that does not fit
- *   its box (`textFit.ts`), reported with `launch_probe_text_fit`.
+ *   its box (`textFit.ts`), and how many chat rows the sidebar shows whole (`chatRoom.ts`),
+ *   reported with `launch_probe_text_fit`.
  *
  * Rust then checks, from this window's own reports, that the page stayed shown.
  */
@@ -18,15 +22,21 @@ import { useEffect, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { clippedText } from './textFit';
+import { chatRoom } from './chatRoom';
 import { navigationFromEvent, publishTarget } from '../agent/navigation';
 import type { NavigatedEvent } from '../agent/events';
 import { normalizeViewTab } from '../../lib/viewTabs';
 import { useCodeReview } from '../code/codeReviewHost';
 import { designApi } from '../code/api';
 import { useTheme } from '../../contexts/ThemeContext';
+import { useSidebar } from '../../contexts/SidebarContext';
+import { useChatSession } from '../ask/ChatSessionContext';
 
 /** Rust → main only (`launch_probe::LAUNCH_PROBE_EVENT`). */
 export const LAUNCH_PROBE_EVENT = 'launch-probe';
+
+/** The tour's scene of a conversation (`launch_probe::TOUR_SCENES`). */
+const SCENE_CONVERSATION = 'conversation';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -52,6 +62,14 @@ export function LaunchProbeHost(): null {
   const theme = useTheme();
   const themeRef = useRef(theme);
   themeRef.current = theme;
+  const sidebar = useSidebar();
+  const sidebarRef = useRef(sidebar);
+  sidebarRef.current = sidebar;
+  const session = useChatSession();
+  const sessionRef = useRef(session);
+  sessionRef.current = session;
+  // What a scene changed, given back to the view after it: the chat open and the sidebar.
+  const beforeSceneRef = useRef<{ conversationId: string | null; collapsed: boolean } | null>(null);
 
   useEffect(() => {
     let disposed = false;
@@ -73,12 +91,30 @@ export function LaunchProbeHost(): null {
           .get(payload.checkId)
           .then(found => reviewRef.current?.openDesign(found))
           .catch(error => console.error('Launch probe: the design check could not be opened:', error));
+      } else if (payload.kind === 'show' && payload.view === SCENE_CONVERSATION && typeof payload.conversation === 'string') {
+        reviewRef.current?.close();
+        if ((payload.theme === 'light' || payload.theme === 'dark') && payload.theme !== themeRef.current.theme) {
+          themeRef.current.toggleTheme();
+        }
+        beforeSceneRef.current ??= {
+          conversationId: sessionRef.current.activeConversationId,
+          collapsed: sidebarRef.current.collapsed,
+        };
+        sidebarRef.current.setSidebarCollapsed(true);
+        sessionRef.current.switchConversation(payload.conversation);
+        window.dispatchEvent(new CustomEvent('switchTab', { detail: 'ask' }));
       } else if (payload.kind === 'show' && typeof payload.view === 'string') {
         const tab = normalizeViewTab(payload.view);
         if (!tab) return;
         reviewRef.current?.close();
         if ((payload.theme === 'light' || payload.theme === 'dark') && payload.theme !== themeRef.current.theme) {
           themeRef.current.toggleTheme();
+        }
+        const before = beforeSceneRef.current;
+        if (before) {
+          beforeSceneRef.current = null;
+          sidebarRef.current.setSidebarCollapsed(before.collapsed);
+          if (before.conversationId) sessionRef.current.switchConversation(before.conversationId);
         }
         window.dispatchEvent(new CustomEvent('switchTab', { detail: tab }));
       } else if (payload.kind === 'measure' && typeof payload.view === 'string' && typeof payload.theme === 'string') {
@@ -90,6 +126,7 @@ export function LaunchProbeHost(): null {
           height: window.innerHeight,
           count,
           clipped: lines,
+          chats: chatRoom(document),
         }).catch(error => console.error('Launch probe: the text measure was not delivered:', error));
       }
     })

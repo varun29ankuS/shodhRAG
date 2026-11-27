@@ -80,6 +80,8 @@ function isCitationOnly(line: string): boolean {
 
 /** Fenced languages drawn as visuals, which draw their own frame. */
 const VISUAL_LANGUAGES = new Set(['chart', 'svg', 'plot', 'simulation', 'figure', 'derivation', 'symbols', 'diagram']);
+/** The visuals that are wide blocks in an answer (the others read with the text). */
+const WIDE_VISUAL_LANGUAGES = new Set(['chart', 'svg', 'plot', 'simulation', 'figure', 'diagram']);
 
 /** Target of a rendered table (header row first). */
 function tableFromElement(el: HTMLElement) {
@@ -162,6 +164,12 @@ export interface MessageContentRendererProps {
    * printed Sources list, and numbers without a source stay plain text.
    */
   print?: boolean;
+  /**
+   * The answer's own blocks (code, tables, charts and diagrams, a previewed page) break
+   * out of the text column, up to the wide width (`wideBlock.ts`). Only for an answer in
+   * the conversation; a question, a notice or a side thread keeps them in its own box.
+   */
+  wide?: boolean;
 }
 
 /**
@@ -206,6 +214,7 @@ function MessageContent({
   onCiteInstead,
   flagUnknownCitations = false,
   print = false,
+  wide = false,
   mathEnabled,
 }: MessageContentRendererProps & { mathEnabled: boolean }) {
   const { theme } = useTheme();
@@ -390,9 +399,12 @@ function MessageContent({
       const lang = React.isValidElement<{ className?: string }>(child)
         ? /language-([\w-]+)/.exec(child.props.className || '')?.[1] ?? ''
         : '';
-      if (VISUAL_LANGUAGES.has(lang) || isMermaidLanguage(lang) || lang === 'math') return <>{children}</>;
-      // A previewed page is a wide block: it breaks out of the text column (index.css, .ask-wide).
-      return <div className={cn('my-4 rounded-xl overflow-hidden border border-shodh-border bg-shodh-surface', isHtmlLanguage(lang) && WIDE_BLOCK_CLASS)}>{children}</div>;
+      // Charts and diagrams break out of the text column (index.css, .ask-wide); math,
+      // derivations and symbol tables read with the text.
+      if (WIDE_VISUAL_LANGUAGES.has(lang) || isMermaidLanguage(lang)) return wide ? <div className={WIDE_BLOCK_CLASS}>{children}</div> : <>{children}</>;
+      if (VISUAL_LANGUAGES.has(lang) || lang === 'math') return <>{children}</>;
+      // Code, and a previewed page, are wide blocks too.
+      return <div className={cn('my-4 rounded-xl overflow-hidden border border-shodh-border bg-shodh-surface', wide && WIDE_BLOCK_CLASS)}>{children}</div>;
     },
     code: ({ children, className }) => {
       const match = /language-([\w-]+)/.exec(className || '');
@@ -459,7 +471,7 @@ function MessageContent({
         <code className="px-1.5 py-0.5 rounded-md bg-shodh-raised-2 font-mono text-[0.875em] text-shodh-text">{children}</code>
       );
     },
-  }), [isDark, theme, print]);
+  }), [isDark, theme, print, wide]);
 
   // The renderers below must keep their identity: a new renderer is a new
   // component type to ReactMarkdown, which would remount every block of the
@@ -502,7 +514,7 @@ function MessageContent({
         <blockquote className="my-4 pl-4 border-l-2 border-shodh-border-strong text-shodh-text-tertiary">{children}</blockquote>
       ),
       table: ({ children }) => (
-        <FocusFrame noun="table" getTarget={tableFromElement} doubleClick={false} className="my-4">
+        <FocusFrame noun="table" getTarget={tableFromElement} doubleClick={false} className={cn('my-4', wide && WIDE_BLOCK_CLASS)}>
           <div className="overflow-x-auto rounded-xl border border-shodh-border">
             <table className="w-full text-body border-collapse">{children}</table>
           </div>
@@ -532,7 +544,7 @@ function MessageContent({
       tr: ({ children }) => <tr>{children}</tr>,
       hr: () => <hr className="my-6 border-shodh-border" />,
     };
-  }, [codeComponents, processLatest]);
+  }, [codeComponents, processLatest, wide]);
 
   const citationNumbers = useMemo<ReadonlySet<number> | null>(
     () => (citations ? new Set(hitsByNumber.keys()) : null),
@@ -582,7 +594,7 @@ function MessageContent({
       )}
 
       {charts.map(artifact => (
-        <FocusFrame key={artifact.id} noun="chart" getTarget={() => chartTarget(String(artifact.content ?? ''), artifact.title)}>
+        <FocusFrame key={artifact.id} noun="chart" getTarget={() => chartTarget(String(artifact.content ?? ''), artifact.title)} className={cn(wide && WIDE_BLOCK_CLASS)}>
           <div className="rounded-2xl overflow-hidden border border-shodh-border">
             <ChartArtifact artifact={artifact} theme={theme} />
           </div>
@@ -590,7 +602,7 @@ function MessageContent({
       ))}
 
       {tables.map(artifact => (
-        <FocusFrame key={artifact.id} noun="table" getTarget={tableFromElement} doubleClick={false}>
+        <FocusFrame key={artifact.id} noun="table" getTarget={tableFromElement} doubleClick={false} className={cn(wide && WIDE_BLOCK_CLASS)}>
           <div className="rounded-2xl overflow-hidden border border-shodh-border">
             <TableArtifact artifact={artifact} theme={theme} />
           </div>

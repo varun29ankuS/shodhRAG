@@ -1882,14 +1882,15 @@ jobs:
             $creatorPane = & $colour 'pane'
             $creatorSummary = "Pixels after the Creator finish: preview=$creatorPage pane=$creatorPane"
             # The views tour: the probe says when each view is shown, then waits for its
-            # picture. The names and their order are launch_probe.rs's (TOUR_VIEWS and
-            # TOUR_THEMES; scripts/release/test/release-jobs.test.mjs keeps the two equal).
+            # picture. The names and their order are launch_probe.rs's (TOUR_VIEWS, TOUR_SCENES
+            # and TOUR_THEMES; scripts/release/test/release-jobs.test.mjs keeps them equal).
             # After a failure Wait-Line returns at once and no picture is taken.
             $tourViews = 'ask', 'artifacts', 'library', 'workspaces', 'connectors', 'tasks', 'automations', 'activity', 'settings'
+            $tourScenes = 'conversation'
             $tourThemes = 'dark', 'light'
             $tourShots = 0
             foreach ($theme in $tourThemes) {
-              foreach ($view in $tourViews) {
+              foreach ($view in @($tourViews) + @($tourScenes)) {
                 $shown = "Launch probe: view $view in $theme shown"
                 Wait-Line $shown 60
                 if (Select-String -Path $log -SimpleMatch $shown -Quiet) {
@@ -1921,15 +1922,18 @@ jobs:
             if (-not ($creatorPage -like 'red*' -and $creatorPane -like 'other*')) {
               throw "$creatorSummary (expected: the page shown, the findings beside it)"
             }
-            $tourExpected = $tourViews.Count * $tourThemes.Count
-            if (-not ($lines | Where-Object { $_ -match "Launch probe: views tour done views=$($tourViews.Count) themes=$($tourThemes.Count) clipped=\d+" })) { throw 'The views tour did not finish' }
+            $tourExpected = ($tourViews.Count + $tourScenes.Count) * $tourThemes.Count
+            $tourDone = "Launch probe: views tour done views=$($tourViews.Count) scenes=$($tourScenes.Count) themes=$($tourThemes.Count)"
+            if (-not ($lines | Where-Object { $_ -match "$tourDone clipped=\d+ chats_short=\d+" })) { throw 'The views tour did not finish' }
             # Every view measured its own text, in both themes, and none of it is cut off
-            # or spills out of its box (features/launch/textFit.ts).
+            # or spills out of its box (features/launch/textFit.ts); every view of the app
+            # shows the first chats whole in the sidebar (features/launch/chatRoom.ts).
             $tourMeasured = @($lines | Where-Object { $_ -match 'Launch probe: view \S+ in \S+ text page=\d+x\d+ clipped=\d+' }).Count
             if ($tourMeasured -ne $tourExpected) { throw "The views tour measured the text of $tourMeasured of $tourExpected views" }
-            if (-not ($lines | Where-Object { $_ -match "Launch probe: views tour done views=$($tourViews.Count) themes=$($tourThemes.Count) clipped=0\s*$" })) { throw 'Text is cut off in a view (the "Launch probe: clipped" lines say where)' }
+            if (-not ($lines | Where-Object { $_ -match "$tourDone clipped=0 chats_short=\d+\s*$" })) { throw 'Text is cut off in a view (the "Launch probe: clipped" lines say where)' }
+            if (-not ($lines | Where-Object { $_ -match "$tourDone clipped=\d+ chats_short=0\s*$" })) { throw 'The sidebar cuts off the chats in a view (the "Launch probe: chats cut" lines say where)' }
             if ($tourShots -ne $tourExpected) { throw "The views tour took $tourShots of $tourExpected pictures" }
-            "- $tourShots pictures, every view in dark and light, are in the windows-launch-evidence artifact (view-<name>-<theme>.png)" | Add-Content $env:GITHUB_STEP_SUMMARY
+            "- $tourShots pictures, every view and scene in dark and light, are in the windows-launch-evidence artifact (view-<name>-<theme>.png)" | Add-Content $env:GITHUB_STEP_SUMMARY
           } finally {
             if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force }
             if (Test-Path $log) { Copy-Item $log $evidence }

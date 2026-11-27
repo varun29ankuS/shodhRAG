@@ -8,6 +8,7 @@ import { notify } from '../../lib/notify';
 import type { Conversation } from '../../hooks/useConversations';
 import { connectorName, continueSeed, messageAuthor, readOnlyLine } from './conversations';
 import { ConnectorIcon } from './ConnectorIcon';
+import { TEXT_COLUMN_PX } from '../ask/wideBlock';
 import { FOCUS_RING, OUTLINE_BUTTON, PRIMARY_BUTTON } from './ui';
 
 function time(at: string): string {
@@ -53,7 +54,7 @@ export function ConnectorConversationView({
   return (
     <section aria-label={`${conversation.title}, from ${name}`} className="relative h-full flex flex-col bg-shodh-ground">
       <header className="shrink-0 border-b border-shodh-border bg-shodh-surface/70 px-7 py-4">
-        <div className="max-w-[700px] mx-auto flex flex-wrap items-center gap-x-4 gap-y-3">
+        <div className="mx-auto flex flex-wrap items-center gap-x-4 gap-y-3" style={{ maxWidth: TEXT_COLUMN_PX }}>
           <div className="min-w-0 flex-1 flex items-center gap-3">
             <span className="w-9 h-9 shrink-0 rounded-[10px] bg-white border border-black/10 dark:border-white/10 inline-flex items-center justify-center" aria-hidden="true">
               <ConnectorIcon connector={source.connector} className="w-5 h-5" />
@@ -89,7 +90,7 @@ export function ConnectorConversationView({
       </header>
 
       <div className="flex-1 overflow-y-auto scrollbar-thin">
-        <ol className="max-w-[700px] mx-auto px-7 py-6 m-0 list-none flex flex-col gap-5" aria-label="Messages">
+        <ol className="mx-auto px-7 py-6 m-0 list-none flex flex-col gap-5" style={{ maxWidth: TEXT_COLUMN_PX }} aria-label="Messages">
           {conversation.messages.map(message => {
             const author = messageAuthor(message);
             const when = time(message.timestamp);
@@ -131,7 +132,7 @@ export function ConnectorConversationView({
       </div>
 
       <footer className="shrink-0 border-t border-shodh-border px-7 py-3">
-        <p className="max-w-[700px] mx-auto m-0 text-caption text-shodh-text-muted" role="note">
+        <p className="mx-auto m-0 text-caption text-shodh-text-muted" style={{ maxWidth: TEXT_COLUMN_PX }} role="note">
           {readOnlyLine(source)}
         </p>
       </footer>

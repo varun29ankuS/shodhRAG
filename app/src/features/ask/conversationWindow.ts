@@ -17,8 +17,8 @@ export interface SizedMessage {
   content: string;
 }
 
-/** Characters per line of an answer at the column's width (700px at 16px). */
-const ANSWER_CHARS_PER_LINE = 80;
+/** Characters per line of an answer at the column's width (800px, 744 of text, at 16px). */
+const ANSWER_CHARS_PER_LINE = 92;
 const ANSWER_LINE_PX = 28;
 const USER_CHARS_PER_LINE = 60;
 const USER_LINE_PX = 23;

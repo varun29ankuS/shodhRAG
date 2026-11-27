@@ -41,3 +41,18 @@ test('the main window opens a toured view as the sidebar does, in the theme aske
   assert.match(host, /reviewRef\.current\?\.close\(\);/);
   assert.match(host, /payload\.theme !== themeRef\.current\.theme\) \{\s*themeRef\.current\.toggleTheme\(\);/);
 });
+
+test('after the views, a scene: Ask with the sample conversation, the sidebar folded', () => {
+  assert.deepEqual(list('TOUR_SCENES'), ['conversation']);
+  // The sample conversation is written before the first view, as a window saves one.
+  const tour = probe.slice(probe.indexOf('async fn views_tour'), probe.indexOf('/// The event main'));
+  assert.match(tour, /write_sample_conversation\(app, data_dir\)\?;\s*let mut clipped_total/);
+  assert.match(probe, /\.write_turns\(SAMPLE_CONVERSATION_ID, writes, &\[\], true\)\?/);
+  assert.match(probe, /crate::conversation_commands::emit_changed\(app, SAMPLE_CONVERSATION_ID\);/);
+  assert.match(tour, /"conversation": conversation/);
+  // The window opens it as the sidebar's row does, folds the sidebar, and gives both back
+  // to the next view.
+  assert.match(host, /payload\.view === SCENE_CONVERSATION && typeof payload\.conversation === 'string'/);
+  assert.match(host, /sidebarRef\.current\.setSidebarCollapsed\(true\);\s*sessionRef\.current\.switchConversation\(payload\.conversation\);/);
+  assert.match(host, /sidebarRef\.current\.setSidebarCollapsed\(before\.collapsed\);\s*if \(before\.conversationId\) sessionRef\.current\.switchConversation\(before\.conversationId\);/);
+});

@@ -112,7 +112,7 @@ export const PDFArtifact: React.FC<PDFArtifactProps> = ({ artifact }) => {
     <div className="w-full h-full flex flex-col bg-shodh-surface">
       {/* Citation Highlight Banner */}
       {(pageNumber || snippet) && (
-        <div className="bg-shodh-warning-soft border-s-4 border-shodh-warning p-3 mb-2 mx-2 mt-2 rounded-r">
+        <div className="bg-shodh-warning-soft border-s-4 border-shodh-warning p-3 mb-2 mx-2 mt-2 rounded-e">
           <div className="flex items-start gap-2">
             <div className="flex-shrink-0 mt-0.5">
               <div className="w-5 h-5 rounded-full bg-shodh-accent text-shodh-on-accent flex items-center justify-center text-caption font-bold">

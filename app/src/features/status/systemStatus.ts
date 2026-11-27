@@ -1,3 +1,4 @@
+import { formatNumber } from '../../i18n/format.ts';
 /**
  * The System status (`indexing_control.rs`): what runs search and how fast,
  * the reranker and scan reader, and the indexing in progress, read from the
@@ -254,7 +255,7 @@ export function readModelSwitch(value: unknown): ModelSwitch {
 
 /** "279 MB" (decimal megabytes, as downloads are usually shown). */
 export function megabytesText(bytes: number): string {
-  return `${Math.max(1, Math.round(bytes / 1_000_000)).toLocaleString('en-US')} MB`;
+  return `${formatNumber(Math.max(1, Math.round(bytes / 1_000_000)))} MB`;
 }
 
 /** The faster model's name wherever it is offered. */
@@ -282,7 +283,7 @@ export function discardConfirmText(status: SystemStatus | null): string {
   const s = status?.modelSwitch;
   const work =
     s && s.done > 0
-      ? `the ${s.done.toLocaleString('en-US')} ${s.done === 1 ? 'passage' : 'passages'} already re-indexed`
+      ? `the ${formatNumber(s.done)} ${s.done === 1 ? 'passage' : 'passages'} already re-indexed`
       : 'the re-index';
   return `Discard ${work}? Starting again re-indexes the library from the beginning.`;
 }
@@ -293,8 +294,8 @@ export function modelSwitchView(status: SystemStatus | null): SwitchView | null 
   const toFaster = s.target === 'int8';
   const reindexing = toFaster ? 'Re-indexing for faster search' : 'Re-indexing for standard search';
   const modelName = toFaster ? 'faster search model' : 'standard search model';
-  const passages = (n: number) => `${n.toLocaleString('en-US')} ${n === 1 ? 'passage' : 'passages'}`;
-  const counted = s.total > 0 ? `${s.done.toLocaleString('en-US')} of ${passages(s.total)}` : null;
+  const passages = (n: number) => `${formatNumber(n)} ${n === 1 ? 'passage' : 'passages'}`;
+  const counted = s.total > 0 ? `${formatNumber(s.done)} of ${passages(s.total)}` : null;
   const download = s.modelBytes > 0 ? `It downloads the model first (${megabytesText(s.modelBytes)}).` : null;
   const how =
     'Shodh re-indexes your library’s saved text once, in the background; search keeps working meanwhile, and the switch happens the next time Shodh starts.';
@@ -422,7 +423,7 @@ export function pagesPerMinuteText(pages: number): string {
   if (pages < 1) return 'under 1 page a minute';
   const magnitude = 10 ** Math.max(0, Math.floor(Math.log10(pages)) - 1);
   const rounded = Math.round(pages / magnitude) * magnitude;
-  return `≈${rounded.toLocaleString('en-US')} ${rounded === 1 ? 'page' : 'pages'} a minute`;
+  return `≈${formatNumber(rounded)} ${rounded === 1 ? 'page' : 'pages'} a minute`;
 }
 
 const SPEED_WORD: Record<SpeedClass, string> = { fast: 'fast', ok: 'moderate', slow: 'slow' };

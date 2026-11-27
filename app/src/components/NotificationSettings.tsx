@@ -99,7 +99,7 @@ export default function NotificationSettings() {
         </InfoPopover>
       </div>
       {notificationRows(prefs, saving).map(row => (
-        <div key={row.key} className={cn(row.nested && 'pl-6')}>
+        <div key={row.key} className={cn(row.nested && 'ps-6')}>
           <SwitchRow
             label={row.label}
             description={row.description}

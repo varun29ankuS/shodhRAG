@@ -23,7 +23,7 @@ test('the dock never renders a side panel the page reflows around', () => {
     assert.doesNotMatch(source, /Pin as side panel/);
   }
   // Pill and chat both sit fixed in the bottom-right corner, over the page.
-  assert.match(panel, /const CORNER = 'fixed bottom-4 right-4 z-40';/);
+  assert.match(panel, /const CORNER = 'fixed bottom-4 end-4 z-40';/);
   const corner = panel.match(/fixed \? cn\(CORNER, /g) ?? [];
   assert.equal(corner.length, 2);
   // The in-page chat is the fixed one.

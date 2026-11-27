@@ -235,7 +235,7 @@ function Row({
         selected ? 'border-shodh-accent bg-shodh-accent-soft' : 'border-transparent hover:bg-shodh-raised',
       )}
     >
-      <button type="button" onClick={onSelect} className={cn('flex-1 min-w-0 flex items-center gap-3 text-left h-full rounded-md', FOCUS_RING)}>
+      <button type="button" onClick={onSelect} className={cn('flex-1 min-w-0 flex items-center gap-3 text-start h-full rounded-md', FOCUS_RING)}>
         <span className="flex-[2] min-w-0 truncate text-small font-medium text-shodh-text" title={automation.name}>{automation.name}</span>
         <span className="flex-[2] min-w-0 truncate text-small text-shodh-text-secondary" title={automation.when}>{automation.when}</span>
         <Chip automation={automation} now={now} />
@@ -697,7 +697,7 @@ function Detail({
                 onClick={() => onRun(run.id === runId ? null : run.id)}
                 aria-expanded={run.id === runId}
                 className={cn(
-                  'w-full h-8 flex items-center gap-2 px-2 rounded-md text-left text-small',
+                  'w-full h-8 flex items-center gap-2 px-2 rounded-md text-start text-small',
                   run.id === runId ? 'bg-shodh-raised' : 'hover:bg-shodh-raised',
                   FOCUS_RING,
                 )}

@@ -28,7 +28,7 @@ export function BlockError({ title, message, source, ask }: BlockErrorProps) {
   const figure = (
     <figure className={cn('rounded-xl border border-shodh-border bg-shodh-surface overflow-hidden', ask ? 'm-0' : 'my-4')}>
       {/* With "Expand & ask", the right padding keeps the text clear of its button. */}
-      <figcaption className={cn('flex items-start gap-2 pl-3 py-2 text-small text-shodh-text-secondary border-b border-shodh-border-subtle', ask ? 'pr-32' : 'pr-3')}>
+      <figcaption className={cn('flex items-start gap-2 ps-3 py-2 text-small text-shodh-text-secondary border-b border-shodh-border-subtle', ask ? 'pe-32' : 'pe-3')}>
         <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0 text-shodh-warning" aria-hidden="true" />
         <span>
           {title}: {message}

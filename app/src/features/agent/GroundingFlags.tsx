@@ -82,7 +82,7 @@ export function CorrectionNote({ check }: { check: ClaimCheck }) {
       data-corrected={correctionKey(check.messageId, check.anchor)}
       title={label}
       className={cn(
-        'inline-flex items-center gap-0.5 ml-1 px-1 h-[18px] rounded-[5px] align-[2px] text-caption font-medium leading-none border border-shodh-border-strong text-shodh-text-muted',
+        'inline-flex items-center gap-0.5 ms-1 px-1 h-[18px] rounded-[5px] align-[2px] text-caption font-medium leading-none border border-shodh-border-strong text-shodh-text-muted',
         FOCUS_RING,
       )}
     >
@@ -152,7 +152,7 @@ export function ClaimFlag({ check, closest, onOpenCitation, onCiteInstead }: Cla
         check={check}
         onCiteInstead={onCiteInstead}
         className={cn(
-          'inline-flex items-center ml-1 px-1.5 h-[18px] rounded-[5px] align-[2px] text-caption font-semibold leading-none border border-shodh-border-strong text-shodh-text-secondary hover:bg-shodh-raised-2 hover:text-shodh-text transition-colors duration-micro',
+          'inline-flex items-center ms-1 px-1.5 h-[18px] rounded-[5px] align-[2px] text-caption font-semibold leading-none border border-shodh-border-strong text-shodh-text-secondary hover:bg-shodh-raised-2 hover:text-shodh-text transition-colors duration-micro',
           FOCUS_RING,
         )}
       />
@@ -164,7 +164,7 @@ function ClaimFlagBody({ check, closest, onOpenCitation }: Omit<ClaimFlagProps, 
   const label = flagLabel(check);
   const description = flagDescription(check, closest ? hitLabel(closest) : null);
   const className = cn(
-    'inline-flex items-center gap-0.5 ml-1 px-1 h-[18px] rounded-[5px] align-[2px] text-caption font-medium leading-none border border-dashed',
+    'inline-flex items-center gap-0.5 ms-1 px-1 h-[18px] rounded-[5px] align-[2px] text-caption font-medium leading-none border border-dashed',
     check.outcome === 'uncited_factual'
       ? 'border-shodh-warning/60 text-shodh-warning'
       : 'border-shodh-error/60 text-shodh-error',
@@ -204,7 +204,7 @@ export function InvalidCitation({ number }: { number: number }) {
       role="note"
       title={description}
       data-answer-ui=""
-      className="inline-flex items-center justify-center min-w-6 h-[18px] px-1 ml-0.5 rounded-[5px] align-[3px] text-caption font-bold leading-none tabular-nums border border-dashed border-shodh-error/60 text-shodh-error line-through decoration-shodh-error/70"
+      className="inline-flex items-center justify-center min-w-6 h-[18px] px-1 ms-0.5 rounded-[5px] align-[3px] text-caption font-bold leading-none tabular-nums border border-dashed border-shodh-error/60 text-shodh-error line-through decoration-shodh-error/70"
     >
       <span aria-hidden="true">{number}</span>
       <span className="sr-only">{description}</span>

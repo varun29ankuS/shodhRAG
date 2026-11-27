@@ -530,7 +530,7 @@ function RecallSearch({ onOpenReceipt }: { onOpenReceipt: (receipt: string) => v
                       <button
                         type="button"
                         onClick={() => onOpenReceipt(r.id)}
-                        className={cn('w-full text-left rounded-md px-2 py-1 hover:bg-shodh-raised flex flex-col', FOCUS_RING)}
+                        className={cn('w-full text-start rounded-md px-2 py-1 hover:bg-shodh-raised flex flex-col', FOCUS_RING)}
                       >
                         <span className="text-caption font-medium text-shodh-text-secondary">{r.heading}</span>
                         {r.snippet && <span className="text-caption text-shodh-text-muted line-clamp-2 break-words">{r.snippet}</span>}
@@ -553,7 +553,7 @@ function RecallSearch({ onOpenReceipt }: { onOpenReceipt: (receipt: string) => v
                   type="button"
                   disabled={!s.first}
                   onClick={() => s.first && onOpenReceipt(s.first)}
-                  className={cn('w-full text-left rounded-md px-2 py-1 hover:bg-shodh-raised flex flex-col disabled:opacity-60', FOCUS_RING)}
+                  className={cn('w-full text-start rounded-md px-2 py-1 hover:bg-shodh-raised flex flex-col disabled:opacity-60', FOCUS_RING)}
                 >
                   <span className="text-small text-shodh-text truncate">{s.title}</span>
                   <span className="text-caption text-shodh-text-muted">

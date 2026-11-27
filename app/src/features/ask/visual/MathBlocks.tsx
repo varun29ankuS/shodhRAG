@@ -80,7 +80,7 @@ function Step({
   return (
     <li className="list-none">
       <FocusFrame noun={`step ${index + 1}`} getTarget={getTarget} doubleClick={false}>
-        <div className="flex items-start gap-3 py-2 pr-28">
+        <div className="flex items-start gap-3 py-2 pe-28">
           <span
             className="shrink-0 mt-1 inline-flex items-center justify-center w-6 h-6 rounded-full bg-shodh-raised-2 text-caption font-semibold tabular-nums text-shodh-text-secondary"
             aria-hidden="true"
@@ -97,7 +97,7 @@ function Step({
               aria-expanded={open}
               aria-controls={reasonId}
               className={cn(
-                'mt-1 h-6 px-1.5 -ml-1.5 inline-flex items-center gap-1 rounded-md text-caption text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
+                'mt-1 h-6 px-1.5 -ms-1.5 inline-flex items-center gap-1 rounded-md text-caption text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
                 FOCUS_RING,
               )}
             >
@@ -105,7 +105,7 @@ function Step({
               {`Why step ${index + 1}`}
               {step.support === 'unsupported' && <AlertTriangle className="w-3 h-3 text-shodh-warning" aria-label="no source or algebra given" />}
             </button>
-            <div id={reasonId} hidden={!open} className="mt-1 pl-2 border-l-2 border-shodh-border-subtle text-body leading-relaxed text-shodh-text-secondary">
+            <div id={reasonId} hidden={!open} className="mt-1 ps-2 border-s-2 border-shodh-border-subtle text-body leading-relaxed text-shodh-text-secondary">
               {text ? renderInline(text) : <span className="italic text-shodh-text-muted">No justification was given.</span>}
               {step.support === 'unsupported' && (
                 <span className="block mt-0.5 text-caption text-shodh-warning">This step cites no source and is not marked as algebra.</span>

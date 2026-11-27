@@ -113,7 +113,7 @@ export function CreateWorkspaceDialog({
                         aria-checked={selected}
                         onClick={() => setTemplate(t.id)}
                         className={cn(
-                          'flex items-start gap-2.5 p-3 rounded-xl border text-left transition-colors duration-micro',
+                          'flex items-start gap-2.5 p-3 rounded-xl border text-start transition-colors duration-micro',
                           selected ? 'border-shodh-accent bg-shodh-accent-soft' : 'border-shodh-border hover:bg-shodh-raised',
                           FOCUS_RING,
                         )}

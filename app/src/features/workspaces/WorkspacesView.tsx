@@ -44,7 +44,7 @@ function WorkspaceCard({
         type="button"
         onClick={onOpen}
         className={cn(
-          'w-full h-full flex flex-col gap-2 p-4 rounded-xl border border-shodh-border bg-shodh-surface text-left hover:bg-shodh-raised hover:border-shodh-border-strong transition-colors duration-micro',
+          'w-full h-full flex flex-col gap-2 p-4 rounded-xl border border-shodh-border bg-shodh-surface text-start hover:bg-shodh-raised hover:border-shodh-border-strong transition-colors duration-micro',
           FOCUS_RING,
         )}
       >
@@ -52,8 +52,8 @@ function WorkspaceCard({
           <WorkspaceIcon icon={workspace.icon} color={workspace.color} className="w-4 h-4" />
           <span className="text-body font-semibold text-shodh-text truncate">{workspace.name}</span>
           <SlackAnswersBadge source={slack} workspaceId={workspace.id} />
-          {workspace.pinned && <Pin className="w-3 h-3 ml-auto shrink-0 text-shodh-text-faint" aria-label="Pinned" />}
-          {workspace.archived && <Archive className="w-3 h-3 ml-auto shrink-0 text-shodh-text-faint" aria-label="Archived" />}
+          {workspace.pinned && <Pin className="w-3 h-3 ms-auto shrink-0 text-shodh-text-faint" aria-label="Pinned" />}
+          {workspace.archived && <Archive className="w-3 h-3 ms-auto shrink-0 text-shodh-text-faint" aria-label="Archived" />}
         </span>
         <span className="text-small text-shodh-text-secondary line-clamp-2 min-h-[2.6em]">
           {workspace.description || 'No description'}
@@ -190,7 +190,7 @@ export default function WorkspacesView({
                       <button
                         type="button"
                         onClick={() => startCreate(t.id)}
-                        className={cn('w-full flex items-start gap-2.5 p-3 rounded-xl border border-shodh-border bg-shodh-surface text-left hover:bg-shodh-raised transition-colors duration-micro', FOCUS_RING)}
+                        className={cn('w-full flex items-start gap-2.5 p-3 rounded-xl border border-shodh-border bg-shodh-surface text-start hover:bg-shodh-raised transition-colors duration-micro', FOCUS_RING)}
                       >
                         <WorkspaceIcon icon={t.icon} color={t.color} className="w-4 h-4 mt-0.5" />
                         <span className="min-w-0">

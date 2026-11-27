@@ -344,7 +344,7 @@ export default function TasksCalendar() {
     <div className="h-full flex gap-5 px-8 pb-page-end min-h-0">
       <section aria-labelledby="tasks-calendar-month" className="flex-1 min-w-0 flex flex-col min-h-0">
         <div className="flex items-center gap-1 mb-3 shrink-0">
-          <h2 id="tasks-calendar-month" className="text-body-lg font-semibold mr-auto" aria-live="polite">
+          <h2 id="tasks-calendar-month" className="text-body-lg font-semibold me-auto" aria-live="polite">
             {monthLabel}
           </h2>
           <button
@@ -422,7 +422,7 @@ export default function TasksCalendar() {
                     <button
                       type="button"
                       onClick={() => openEvent(ev.id)}
-                      className={cn('w-full flex items-start gap-2 px-3 py-2 rounded-lg bg-shodh-surface border border-shodh-border text-left hover:bg-shodh-raised transition-colors duration-micro', FOCUS_RING)}
+                      className={cn('w-full flex items-start gap-2 px-3 py-2 rounded-lg bg-shodh-surface border border-shodh-border text-start hover:bg-shodh-raised transition-colors duration-micro', FOCUS_RING)}
                     >
                       <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-shodh-info shrink-0" aria-hidden="true" />
                       <span className="flex-1 min-w-0 flex flex-col">
@@ -465,7 +465,7 @@ export default function TasksCalendar() {
                       onClick={() => { if (!suppressClick.current) openTask(task.id); }}
                       onPointerDown={e => startDrag(e, task)}
                       aria-label={`${task.title}, ${task.priority} priority. Open details`}
-                      className={cn('flex-1 min-w-0 flex flex-col text-left rounded-sm cursor-grab active:cursor-grabbing select-none', FOCUS_RING)}
+                      className={cn('flex-1 min-w-0 flex flex-col text-start rounded-sm cursor-grab active:cursor-grabbing select-none', FOCUS_RING)}
                     >
                       <span className={cn('text-small truncate', isDone(task) ? 'line-through text-shodh-text-faint' : 'text-shodh-text')}>
                         {task.title}
@@ -538,7 +538,7 @@ function DayCell({
   ].filter(Boolean).join(', ');
 
   return (
-    <div role="gridcell" aria-selected={isSelected} className="min-w-0 min-h-0 border-r border-shodh-border-subtle last:border-r-0">
+    <div role="gridcell" aria-selected={isSelected} className="min-w-0 min-h-0 border-e border-shodh-border-subtle last:border-e-0">
       <button
         type="button"
         data-day={day.key}
@@ -548,7 +548,7 @@ function DayCell({
         aria-label={`${dateLabel}${isToday ? ', today' : ''}${summary ? `, ${summary}` : ''}`}
         aria-current={isToday ? 'date' : undefined}
         className={cn(
-          'w-full h-full flex flex-col items-stretch gap-0.5 p-1.5 text-left transition-colors duration-micro focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
+          'w-full h-full flex flex-col items-stretch gap-0.5 p-1.5 text-start transition-colors duration-micro focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
           isSelected ? 'bg-shodh-accent-soft' : 'hover:bg-shodh-raised/60',
           !day.inMonth && 'opacity-60',
           isDropTarget && 'ring-2 ring-inset ring-shodh-accent-text bg-shodh-accent-soft',

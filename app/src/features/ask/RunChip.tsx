@@ -62,7 +62,7 @@ export function RunChip({ run, metadata, passageCount }: RunChipProps) {
     <>
       {running ? (
         <>
-          <span className="ml-1 w-2 h-2 rounded-full bg-shodh-accent-text ask-breathe shrink-0" aria-hidden="true" />
+          <span className="ms-1 w-2 h-2 rounded-full bg-shodh-accent-text ask-breathe shrink-0" aria-hidden="true" />
           <span className="font-medium text-shodh-text ask-breathe-soft" aria-live="polite">
             {run.activity ?? 'Working'}…
           </span>
@@ -79,7 +79,7 @@ export function RunChip({ run, metadata, passageCount }: RunChipProps) {
                     className={cn(
                       'w-5 h-5 rounded-full inline-flex items-center justify-center border-2 border-shodh-surface',
                       KIND_BADGE[kind],
-                      i > 0 && '-ml-1.5',
+                      i > 0 && '-ms-1.5',
                     )}
                   >
                     <Icon className="w-2.5 h-2.5" strokeWidth={3} />
@@ -98,7 +98,7 @@ export function RunChip({ run, metadata, passageCount }: RunChipProps) {
   );
 
   const chipClass =
-    'self-start inline-flex items-center gap-2.5 min-h-[32px] py-1.5 pl-2 pr-3 rounded-full border border-shodh-border bg-shodh-surface text-small text-shodh-text-secondary max-w-full';
+    'self-start inline-flex items-center gap-2.5 min-h-[32px] py-1.5 ps-2 pe-3 rounded-full border border-shodh-border bg-shodh-surface text-small text-shodh-text-secondary max-w-full';
 
   return (
     <div className="flex flex-col gap-3">
@@ -125,14 +125,14 @@ export function RunChip({ run, metadata, passageCount }: RunChipProps) {
         <ol
           id={timelineId}
           aria-label="Run steps"
-          className="ask-rise list-none -mt-1 ml-0 py-1 pl-4.5 border-l border-shodh-border flex flex-col gap-3"
+          className="ask-rise list-none -mt-1 ms-0 py-1 ps-4.5 border-s border-shodh-border flex flex-col gap-3"
         >
           {run.steps.map(step => {
             const meta = stepMeta(step);
             return (
               <li key={step.id} className="ask-rise flex items-baseline gap-2.5 text-small min-w-0">
                 <span
-                  className={cn('w-[7px] h-[7px] rounded-full shrink-0 -mr-2 -translate-x-[22px] -translate-y-px', stepDotClass(step))}
+                  className={cn('w-[7px] h-[7px] rounded-full shrink-0 -me-2 -translate-x-[22px] -translate-y-px', stepDotClass(step))}
                   aria-hidden="true"
                 />
                 <span className="font-semibold text-shodh-text whitespace-nowrap">{step.title}</span>
@@ -140,7 +140,7 @@ export function RunChip({ run, metadata, passageCount }: RunChipProps) {
                   <span className="text-shodh-text-muted min-w-0 truncate" title={step.detail}>{step.detail}</span>
                 )}
                 {meta && (
-                  <span className="ml-auto pl-2 font-mono text-caption text-shodh-text-faint whitespace-nowrap">{meta}</span>
+                  <span className="ms-auto ps-2 font-mono text-caption text-shodh-text-faint whitespace-nowrap">{meta}</span>
                 )}
                 {step.status === 'running' && <span className="sr-only">(in progress)</span>}
               </li>

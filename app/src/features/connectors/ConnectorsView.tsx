@@ -63,7 +63,7 @@ function ConnectorTile({
         onClick={onOpen}
         aria-label={`${info.name}: ${state}. ${action}`}
         className={cn(
-          'group w-full h-full flex flex-col gap-4 p-5 rounded-xl border border-shodh-border bg-shodh-surface text-left hover:border-shodh-border-strong hover:bg-shodh-raised transition-colors duration-micro',
+          'group w-full h-full flex flex-col gap-4 p-5 rounded-xl border border-shodh-border bg-shodh-surface text-start hover:border-shodh-border-strong hover:bg-shodh-raised transition-colors duration-micro',
           FOCUS_RING,
         )}
       >

@@ -109,7 +109,7 @@ test('a citation pill is at least as wide as its 24px target, so its target neve
   const renderer = source('features/ask/MessageContentRenderer.tsx');
   assert.match(renderer, /'target-24 inline-flex items-center justify-center min-w-6 h-\[18px\] px-1 /);
   // The pill a wrong number gets keeps the same size.
-  assert.match(source('features/agent/GroundingFlags.tsx'), /inline-flex items-center justify-center min-w-6 h-\[18px\] px-1 ml-0\.5 rounded-\[5px\]/);
+  assert.match(source('features/agent/GroundingFlags.tsx'), /inline-flex items-center justify-center min-w-6 h-\[18px\] px-1 ms-0\.5 rounded-\[5px\]/);
 });
 
 test('text that spills is measured on its own lines, not on what else its box holds', () => {

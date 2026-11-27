@@ -174,7 +174,7 @@ function DiagramView({ spec, files, openCitation, allowance }: DiagramViewProps)
     <FocusFrame noun="diagram" getTarget={getTarget} className="my-4">
       <figure className="m-0 rounded-xl border border-shodh-border bg-shodh-surface overflow-hidden">
         {spec.title && (
-          <figcaption className="px-4 pt-3 pr-32 text-small font-semibold text-shodh-text">{spec.title}</figcaption>
+          <figcaption className="px-4 pt-3 pe-32 text-small font-semibold text-shodh-text">{spec.title}</figcaption>
         )}
         <div
           ref={canvasRef}
@@ -203,7 +203,7 @@ function DiagramView({ spec, files, openCitation, allowance }: DiagramViewProps)
             <>
               <div className="min-w-0 text-small text-shodh-text-secondary">
                 <span className="font-semibold text-shodh-text">{node.label}</span>
-                {node.kind && <span className="ml-2 font-mono text-caption text-shodh-text-muted">{node.kind}</span>}
+                {node.kind && <span className="ms-2 font-mono text-caption text-shodh-text-muted">{node.kind}</span>}
                 {node.detail && <p className="mt-0.5 mb-0 text-shodh-text-tertiary">{node.detail}</p>}
               </div>
               <div className="flex flex-wrap items-center gap-2">

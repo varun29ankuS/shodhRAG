@@ -7,6 +7,7 @@
 import type { ActiveModel, CatalogModel, LocalServer, ModelRef, ModelPrefs, PickId, PickerView, PrivacyNote, ProviderId } from './modelTypes.ts';
 import { PROVIDER_LABELS, sameModel } from './modelTypes.ts';
 import { modelDisplayName } from '../connection/connectionStatus.ts';
+import { formatNumber } from '../../i18n/format.ts';
 
 /** USD per million tokens as shown: "$0.18", "$3", "$15", "<$0.01"; null is unknown. */
 export function formatUsd(perMillion: number | null): string | null {
@@ -37,7 +38,7 @@ export function formatContext(tokens: number | null): string | null {
     return `${Number.isInteger(m) ? m : m.toFixed(1)}M`;
   }
   if (tokens >= 10_000) return `${Math.round(tokens / 1_000)}K`;
-  return tokens.toLocaleString('en-US');
+  return formatNumber(tokens);
 }
 
 /** One sentence on what happens to prompts sent to the model. */

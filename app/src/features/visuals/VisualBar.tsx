@@ -149,7 +149,7 @@ export function VisualBar({
     <div className="shrink-0 border-b border-shodh-border-subtle bg-shodh-surface-2 px-3 py-2 flex flex-col gap-2">
       <div className="flex flex-wrap items-center gap-1.5">
         {detail && detail.versions.length > 1 ? (
-          <div role="radiogroup" aria-label="Version" className="flex items-center gap-0.5 mr-1">
+          <div role="radiogroup" aria-label="Version" className="flex items-center gap-0.5 me-1">
             {detail.versions.map(v => (
               <button
                 key={v.id}
@@ -169,7 +169,7 @@ export function VisualBar({
             ))}
           </div>
         ) : (
-          <span className="mr-1 text-caption text-shodh-text-muted">{detail ? 'v1 · from the answer' : loadError ? '' : 'Loading…'}</span>
+          <span className="me-1 text-caption text-shodh-text-muted">{detail ? 'v1 · from the answer' : loadError ? '' : 'Loading…'}</span>
         )}
         {loadError && <span role="alert" className="text-caption text-shodh-error">{loadError}</span>}
         <span className="flex-1" />
@@ -213,7 +213,7 @@ export function VisualBar({
               aria-label="Export as"
               data-esc-local=""
               onKeyDown={onExportKeyDown}
-              className="absolute right-0 top-8 z-30 min-w-[190px] rounded-xl border border-shodh-border-strong bg-shodh-surface p-1 shadow-[0_12px_36px_rgba(0,0,0,0.32)] shell-pop"
+              className="absolute end-0 top-8 z-30 min-w-[190px] rounded-xl border border-shodh-border-strong bg-shodh-surface p-1 shadow-[0_12px_36px_rgba(0,0,0,0.32)] shell-pop"
             >
               {exportFormats(record.kind).map(format => (
                 <button
@@ -225,7 +225,7 @@ export function VisualBar({
                     setExportOpen(false);
                     void runExport(record, format, stage.current, dark);
                   }}
-                  className="w-full h-8 px-2.5 rounded-lg inline-flex items-center gap-2 text-left text-small text-shodh-text hover:bg-shodh-raised focus:bg-shodh-raised focus:outline-none"
+                  className="w-full h-8 px-2.5 rounded-lg inline-flex items-center gap-2 text-start text-small text-shodh-text hover:bg-shodh-raised focus:bg-shodh-raised focus:outline-none"
                 >
                   {FORMAT_LABEL[format]}
                 </button>

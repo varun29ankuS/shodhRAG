@@ -358,7 +358,7 @@ function MessageContent({
             className={cn(
               // Every badge has a 1px border (transparent where none shows), so a web
               // source's outline never resizes the badge as it is opened.
-              'target-24 inline-flex items-center justify-center min-w-6 h-[18px] px-1 ml-0.5 rounded-[5px] border align-[3px] text-caption font-bold leading-none tabular-nums transition-colors duration-micro',
+              'target-24 inline-flex items-center justify-center min-w-6 h-[18px] px-1 ms-0.5 rounded-[5px] border align-[3px] text-caption font-bold leading-none tabular-nums transition-colors duration-micro',
               isActive
                 ? 'border-shodh-accent bg-shodh-accent text-shodh-on-accent'
                 : isWeb
@@ -367,7 +367,7 @@ function MessageContent({
               FOCUS_RING,
             )}
           >
-            {isWeb && <Globe className="w-2.5 h-2.5 mr-0.5" aria-hidden="true" />}
+            {isWeb && <Globe className="w-2.5 h-2.5 me-0.5" aria-hidden="true" />}
             {number}
           </button>,
         );
@@ -421,7 +421,7 @@ function MessageContent({
         if (match[1] === 'diagram') return <DiagramBlock source={codeString} />;
         const block = (reviewButton: React.ReactNode, codeRef?: React.Ref<HTMLDivElement>) => (
           <>
-            <div className="flex items-center justify-between pl-3 pr-1.5 h-8 border-b border-shodh-border-subtle bg-shodh-raised">
+            <div className="flex items-center justify-between ps-3 pe-1.5 h-8 border-b border-shodh-border-subtle bg-shodh-raised">
               <span className="font-mono text-caption uppercase tracking-wider text-shodh-text-muted" data-answer-ui="">{match[1]}</span>
               <span className="inline-flex items-center gap-1" data-answer-ui="">
                 {reviewButton}
@@ -494,9 +494,9 @@ function MessageContent({
       h5: ({ children }) => <h6 className="text-body font-semibold text-shodh-text-secondary mt-3 mb-1 first:mt-0">{processChildren(children)}</h6>,
       h6: ({ children }) => <h6 className="text-body font-semibold text-shodh-text-muted mt-3 mb-1 first:mt-0">{processChildren(children)}</h6>,
       p: ({ children }) => <p className="my-3 first:mt-0 last:mb-0">{processChildren(children)}</p>,
-      ul: ({ children }) => <ul className="my-3 pl-6 list-disc space-y-1 marker:text-shodh-text-faint">{children}</ul>,
-      ol: ({ children }) => <ol className="my-3 pl-6 list-decimal space-y-1 marker:text-shodh-text-faint">{children}</ol>,
-      li: ({ children }) => <li className="pl-1">{processChildren(children)}</li>,
+      ul: ({ children }) => <ul className="my-3 ps-6 list-disc space-y-1 marker:text-shodh-text-faint">{children}</ul>,
+      ol: ({ children }) => <ol className="my-3 ps-6 list-decimal space-y-1 marker:text-shodh-text-faint">{children}</ol>,
+      li: ({ children }) => <li className="ps-1">{processChildren(children)}</li>,
       strong: ({ children }) => <strong className="font-semibold text-shodh-text">{processChildren(children)}</strong>,
       em: ({ children }) => <em className="italic">{processChildren(children)}</em>,
       a: ({ href, children }) => (
@@ -511,7 +511,7 @@ function MessageContent({
       ),
       ...codeComponents,
       blockquote: ({ children }) => (
-        <blockquote className="my-4 pl-4 border-l-2 border-shodh-border-strong text-shodh-text-tertiary">{children}</blockquote>
+        <blockquote className="my-4 ps-4 border-s-2 border-shodh-border-strong text-shodh-text-tertiary">{children}</blockquote>
       ),
       table: ({ children }) => (
         <FocusFrame noun="table" getTarget={tableFromElement} doubleClick={false} placement="above" className={cn('my-4', wide && WIDE_BLOCK_CLASS)}>
@@ -536,7 +536,7 @@ function MessageContent({
       },
       thead: ({ children }) => <thead className="bg-shodh-raised">{children}</thead>,
       th: ({ children }) => (
-        <th className="px-3 py-2 text-left font-semibold text-shodh-text border-b border-shodh-border">{processChildren(children)}</th>
+        <th className="px-3 py-2 text-start font-semibold text-shodh-text border-b border-shodh-border">{processChildren(children)}</th>
       ),
       td: ({ children }) => (
         <td className="px-3 py-2 align-top text-shodh-text-secondary border-b border-shodh-border-subtle">{processChildren(children)}</td>

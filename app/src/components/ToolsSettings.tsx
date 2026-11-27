@@ -67,7 +67,7 @@ function Toggle({ label, checked, onChange, disabled }: { label: string; checked
     >
       <span
         aria-hidden="true"
-        className={cn('absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-[left] duration-micro', checked ? 'left-[18px]' : 'left-0.5')}
+        className={cn('absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-[left] duration-micro', checked ? 'start-[18px]' : 'start-0.5')}
       />
     </button>
   );
@@ -175,7 +175,7 @@ function ServerCard({ server, workspaceId, onChanged, onTested }: ServerCardProp
             ? 'Tools appear once it connects'
             : `${server.tools.filter(t => t.enabled).length} of ${countOf(server.tools.length, 'tool')} on`}
         </button>
-        <span className="ml-auto" />
+        <span className="ms-auto" />
         <button type="button" onClick={() => void test()} disabled={testing} className={BUTTON}>
           <RefreshCw className={cn('w-3.5 h-3.5', testing && 'animate-spin motion-reduce:animate-none')} aria-hidden="true" />
           {testing ? 'Testing…' : 'Test connection'}
@@ -203,7 +203,7 @@ function ServerCard({ server, workspaceId, onChanged, onTested }: ServerCardProp
               <div className="min-w-0 flex-1">
                 <p className="m-0 text-small font-medium text-shodh-text break-words">
                   {tool.title ?? tool.name}
-                  {tool.readOnly && <span className="ml-1.5 text-caption font-normal text-shodh-text-faint">read-only</span>}
+                  {tool.readOnly && <span className="ms-1.5 text-caption font-normal text-shodh-text-faint">read-only</span>}
                 </p>
                 {tool.description && (
                   <p className="m-0 text-caption text-shodh-text-muted line-clamp-2" title={tool.description}>
@@ -596,7 +596,7 @@ function SkillsSection({ overview, workspaceId, onChanged }: { overview: ToolsOv
             {staged.skills.length === 1 ? 'This skill' : `These ${staged.skills.length} skills`} will be installed from{' '}
             <span className="font-mono break-all">{staged.source}</span>:
           </p>
-          <ul className="m-0 pl-4 flex flex-col gap-1 text-small">
+          <ul className="m-0 ps-4 flex flex-col gap-1 text-small">
             {staged.skills.map(s => (
               <li key={s.name}>
                 <span className="font-semibold text-shodh-text">{s.name}</span>

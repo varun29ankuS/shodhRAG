@@ -33,7 +33,7 @@ export function SnippetShelf({ filePath = null, emptyText }: { filePath?: string
   return (
     <div className="flex flex-col gap-3 min-h-0">
       <div className="relative max-w-[360px]">
-        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-shodh-text-faint" aria-hidden="true" />
+        <Search className="absolute start-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-shodh-text-faint" aria-hidden="true" />
         <label htmlFor={searchId} className="sr-only">Search snippets</label>
         <input
           id={searchId}
@@ -41,7 +41,7 @@ export function SnippetShelf({ filePath = null, emptyText }: { filePath?: string
           value={query}
           onChange={e => setQuery(e.target.value)}
           placeholder="Search snippets by meaning or words"
-          className="w-full h-8 pl-8 pr-2.5 rounded-lg border border-shodh-border bg-shodh-surface-2 text-small text-shodh-text placeholder:text-shodh-text-faint focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="w-full h-8 ps-8 pe-2.5 rounded-lg border border-shodh-border bg-shodh-surface-2 text-small text-shodh-text placeholder:text-shodh-text-faint focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         />
       </div>
       <p className="sr-only" role="status" aria-live="polite">

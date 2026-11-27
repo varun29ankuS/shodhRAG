@@ -261,7 +261,7 @@ export function CellPanel({
 
       {segments.length > 0 && (
         <figure className="m-0 flex flex-col gap-1">
-          <blockquote className="m-0 pl-3 border-l-2 border-shodh-border-strong text-small leading-[1.55] text-shodh-text-secondary">
+          <blockquote className="m-0 ps-3 border-s-2 border-shodh-border-strong text-small leading-[1.55] text-shodh-text-secondary">
             “{segments.map((s, i) => (s.marked ? <mark key={i} className="bg-shodh-accent-soft text-shodh-text rounded-sm px-0.5">{s.text}</mark> : <React.Fragment key={i}>{s.text}</React.Fragment>))}”
           </blockquote>
           <figcaption className="text-caption text-shodh-text-muted flex flex-wrap items-center gap-x-3 gap-y-1">

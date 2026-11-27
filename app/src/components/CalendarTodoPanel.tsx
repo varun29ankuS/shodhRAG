@@ -131,7 +131,7 @@ function QuickAdd({ defaultDay, workspace }: { defaultDay: string | null; worksp
   const control = 'h-8 rounded-lg border border-shodh-border bg-shodh-surface px-2 text-small text-shodh-text hover:border-shodh-border-strong focus:outline-none focus-visible:ring-2 focus-visible:ring-ring';
 
   return (
-    <form onSubmit={submit} aria-label="Add a task" className="shrink-0 flex flex-wrap items-center gap-2 p-1.5 pl-3 rounded-xl border border-shodh-border bg-shodh-raised">
+    <form onSubmit={submit} aria-label="Add a task" className="shrink-0 flex flex-wrap items-center gap-2 p-1.5 ps-3 rounded-xl border border-shodh-border bg-shodh-raised">
       <Plus className="w-4 h-4 shrink-0 text-shodh-text-faint" aria-hidden="true" />
       <label htmlFor={titleId} className="sr-only">{workspace ? `New task in ${workspace.name}` : 'New task'}</label>
       <input
@@ -242,7 +242,7 @@ function TaskRow({
   ].filter(Boolean).join(', ');
 
   return (
-    <li ref={measure} data-index={index} className="list-none absolute left-0 right-0" style={{ top }}>
+    <li ref={measure} data-index={index} className="list-none absolute start-0 end-0" style={{ top }}>
       <div
         ref={rowRef}
         data-task-row={task.id}
@@ -322,7 +322,7 @@ function TaskRow({
           </div>
 
           {(task.reminder || task.snoozedUntil || task.project || task.subtasks.length > 0 || task.tags.length > 0) && (
-          <div className="flex items-center gap-1 flex-wrap -ml-1.5">
+          <div className="flex items-center gap-1 flex-wrap -ms-1.5">
             <ReminderBadge task={task} />
             {task.project && (
               <span className="h-6 px-1.5 inline-flex items-center gap-1 rounded-md text-caption text-shodh-text-muted">
@@ -353,8 +353,8 @@ function TaskRow({
         {/* Due date, priority and workspace: on a wide window each in its column under the
             list's headings (the wrapper is `display: contents`), on a narrow one a line
             under the title. */}
-        <div className="col-start-2 row-start-2 flex flex-wrap items-center gap-1 -ml-1.5 min-w-0 xl:contents">
-        <div className="min-w-0 xl:-ml-1.5">
+        <div className="col-start-2 row-start-2 flex flex-wrap items-center gap-1 -ms-1.5 min-w-0 xl:contents">
+        <div className="min-w-0 xl:-ms-1.5">
           <DueMenu
             dueDate={task.dueDate}
             done={done}
@@ -363,7 +363,7 @@ function TaskRow({
             onChange={dueDate => void updateTask(task.id, { dueDate })}
           />
         </div>
-        <div className="min-w-0 xl:-ml-1.5">
+        <div className="min-w-0 xl:-ms-1.5">
           <PriorityMenu
             priority={task.priority}
             taskTitle={task.title}
@@ -371,7 +371,7 @@ function TaskRow({
             onChange={priority => void updateTask(task.id, { priority })}
           />
         </div>
-        <div className="min-w-0 xl:-ml-1.5">
+        <div className="min-w-0 xl:-ms-1.5">
           {(workspaceOptions.length > 0 || task.workspaceId) && (
             <WorkspaceMenu
               workspaceId={task.workspaceId}
@@ -689,10 +689,10 @@ export default function CalendarTodoPanel() {
                 )}
               >
                 {tab.label}
-                <span className="ml-1 tabular-nums opacity-70">{tab.count}</span>
+                <span className="ms-1 tabular-nums opacity-70">{tab.count}</span>
               </button>
             ))}
-            <div className="ml-auto flex items-center gap-1">
+            <div className="ms-auto flex items-center gap-1">
               {workspaceFilter.kind !== 'all' && (
                 <button
                   type="button"
@@ -808,7 +808,7 @@ export default function CalendarTodoPanel() {
                     aria-pressed={isActive}
                     onClick={() => chooseWorkspaceFilter(option.filter)}
                     className={cn(
-                      'h-8 px-2.5 rounded-lg flex items-center gap-2 text-left text-small transition-colors duration-micro',
+                      'h-8 px-2.5 rounded-lg flex items-center gap-2 text-start text-small transition-colors duration-micro',
                       isActive ? 'bg-shodh-accent-soft text-shodh-accent-text' : 'text-shodh-text-secondary hover:bg-shodh-raised',
                       FOCUS_RING,
                     )}
@@ -835,7 +835,7 @@ export default function CalendarTodoPanel() {
                     aria-pressed={isActive}
                     onClick={() => setProjectFilter(isActive ? null : proj)}
                     className={cn(
-                      'h-8 px-2.5 rounded-lg flex items-center gap-2 text-left text-small transition-colors duration-micro',
+                      'h-8 px-2.5 rounded-lg flex items-center gap-2 text-start text-small transition-colors duration-micro',
                       isActive ? 'bg-shodh-accent-soft text-shodh-accent-text' : 'text-shodh-text-secondary hover:bg-shodh-raised',
                       FOCUS_RING,
                     )}
@@ -860,7 +860,7 @@ export default function CalendarTodoPanel() {
                     <button
                       type="button"
                       onClick={() => openEvent(ev.id)}
-                      className={cn('w-full flex items-start gap-2 px-3 py-2 rounded-lg border border-shodh-border bg-shodh-surface text-left hover:bg-shodh-raised transition-colors duration-micro', FOCUS_RING)}
+                      className={cn('w-full flex items-start gap-2 px-3 py-2 rounded-lg border border-shodh-border bg-shodh-surface text-start hover:bg-shodh-raised transition-colors duration-micro', FOCUS_RING)}
                     >
                       <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-shodh-info shrink-0" aria-hidden="true" />
                       <span className="flex-1 min-w-0 flex flex-col">
@@ -878,11 +878,11 @@ export default function CalendarTodoPanel() {
           </div>
 
           <dl className="p-3 rounded-xl border border-shodh-border bg-shodh-surface grid grid-cols-[1fr_auto] gap-y-1.5 text-caption">
-            <dt className="text-shodh-text-muted">Total tasks</dt><dd className="tabular-nums font-semibold text-shodh-text text-right">{scopedTasks.length}</dd>
-            <dt className="text-shodh-text-muted">To do</dt><dd className="tabular-nums font-semibold text-shodh-warning text-right">{pendingCount}</dd>
-            <dt className="text-shodh-text-muted">Overdue</dt><dd className="tabular-nums font-semibold text-shodh-error text-right">{overdueCount}</dd>
-            <dt className="text-shodh-text-muted">Done</dt><dd className="tabular-nums font-semibold text-shodh-success text-right">{completedCount}</dd>
-            <dt className="text-shodh-text-muted">Events</dt><dd className="tabular-nums font-semibold text-shodh-info text-right">{events.length}</dd>
+            <dt className="text-shodh-text-muted">Total tasks</dt><dd className="tabular-nums font-semibold text-shodh-text text-end">{scopedTasks.length}</dd>
+            <dt className="text-shodh-text-muted">To do</dt><dd className="tabular-nums font-semibold text-shodh-warning text-end">{pendingCount}</dd>
+            <dt className="text-shodh-text-muted">Overdue</dt><dd className="tabular-nums font-semibold text-shodh-error text-end">{overdueCount}</dd>
+            <dt className="text-shodh-text-muted">Done</dt><dd className="tabular-nums font-semibold text-shodh-success text-end">{completedCount}</dd>
+            <dt className="text-shodh-text-muted">Events</dt><dd className="tabular-nums font-semibold text-shodh-info text-end">{events.length}</dd>
           </dl>
         </aside>
       </div>

@@ -504,7 +504,7 @@ export function ReviewPane() {
             else pane.close();
           }
         }}
-        className="fixed top-0 right-0 bottom-0 z-40 flex flex-col w-[min(560px,45vw)] min-w-[320px] border-l border-shodh-border bg-shodh-ground"
+        className="fixed top-0 end-0 bottom-0 z-40 flex flex-col w-[min(560px,45vw)] min-w-[320px] border-s border-shodh-border bg-shodh-ground"
       >
         <header className="flex items-center gap-2 px-4 h-12 shrink-0 border-b border-shodh-border-subtle">
           <Palette className="w-4 h-4 text-shodh-text-secondary" aria-hidden="true" />
@@ -514,7 +514,7 @@ export function ReviewPane() {
             type="button"
             onClick={() => void runDesign(again, subject)}
             disabled={designBusy}
-            className={cn('ml-auto', QUIET_BUTTON)}
+            className={cn('ms-auto', QUIET_BUTTON)}
           >
             {designBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />}
             Check again
@@ -653,7 +653,7 @@ export function ReviewPane() {
           else pane.close();
         }
       }}
-      className="fixed top-0 right-0 bottom-0 z-40 flex flex-col w-[min(560px,45vw)] min-w-[320px] border-l border-shodh-border bg-shodh-ground"
+      className="fixed top-0 end-0 bottom-0 z-40 flex flex-col w-[min(560px,45vw)] min-w-[320px] border-s border-shodh-border bg-shodh-ground"
     >
       <header className="flex items-center gap-2 px-4 h-12 shrink-0 border-b border-shodh-border-subtle">
         <ScanEye className="w-4 h-4 text-shodh-text-secondary" aria-hidden="true" />
@@ -665,13 +665,13 @@ export function ReviewPane() {
             onClick={() => void runDesign(designRequest, subject)}
             disabled={designBusy}
             title="Checks the UI files here with Shodh's design rules (no model): contrast, text size, labels, alt text, focus, generated-UI tells."
-            className={cn('ml-auto', QUIET_BUTTON)}
+            className={cn('ms-auto', QUIET_BUTTON)}
           >
             {designBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <Palette className="w-3.5 h-3.5" aria-hidden="true" />}
             Design check
           </button>
         )}
-        <button ref={closeRef} type="button" onClick={pane.close} className={cn(!designRequest && 'ml-auto', QUIET_BUTTON)}>
+        <button ref={closeRef} type="button" onClick={pane.close} className={cn(!designRequest && 'ms-auto', QUIET_BUTTON)}>
           <X className="w-3.5 h-3.5" aria-hidden="true" />
           Close
         </button>

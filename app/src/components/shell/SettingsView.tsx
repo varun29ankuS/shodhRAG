@@ -165,7 +165,7 @@ export default function SettingsView({
                   onClick={() => setSection(s.id)}
                   aria-current={isActive ? 'page' : undefined}
                   className={cn(
-                    'w-full h-9 px-3 rounded-lg text-left text-body transition-colors duration-micro',
+                    'w-full h-9 px-3 rounded-lg text-start text-body transition-colors duration-micro',
                     isActive
                       ? 'bg-shodh-raised-2 text-shodh-text font-semibold'
                       : 'text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text',

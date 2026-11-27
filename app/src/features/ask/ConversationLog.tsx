@@ -154,7 +154,7 @@ export const ConversationLog = forwardRef<ConversationLogHandle, ConversationLog
             key={item.key}
             {...{ [MESSAGE_INDEX_ATTR]: index }}
             ref={virtualizer.measureElement}
-            className="absolute left-0 right-0 top-0 px-7"
+            className="absolute start-0 end-0 top-0 px-7"
             style={{
               transform: `translateY(${item.start - CONVERSATION_TOP_PX}px)`,
               paddingBottom: index === messages.length - 1 ? 0 : MESSAGE_GAP_PX,

@@ -86,11 +86,11 @@ function Checklist<T>({
       {onFilter && (
         <div className="relative">
           <label htmlFor={filterId} className="sr-only">{filterPlaceholder}</label>
-          <Search aria-hidden="true" className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-shodh-text-muted" />
+          <Search aria-hidden="true" className="absolute start-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-shodh-text-muted" />
           <input
             id={filterId}
             type="search"
-            className={cn(INPUT, 'pl-8 h-8')}
+            className={cn(INPUT, 'ps-8 h-8')}
             value={filter ?? ''}
             onChange={e => onFilter(e.target.value)}
             placeholder={filterPlaceholder}
@@ -406,7 +406,7 @@ export function SourcesTab({
       <section aria-labelledby="ws-health" className="flex flex-col gap-1.5">
         <div className="flex items-center gap-2">
           <h3 id="ws-health" className={SECTION_TITLE}>What answers search</h3>
-          <button type="button" className={cn(QUIET_BUTTON, 'h-7 ml-auto')} onClick={() => void check()} disabled={checking} aria-label="Check the index again">
+          <button type="button" className={cn(QUIET_BUTTON, 'h-7 ms-auto')} onClick={() => void check()} disabled={checking} aria-label="Check the index again">
             <RefreshCw className={cn('w-3.5 h-3.5', checking && 'animate-spin motion-reduce:animate-none')} aria-hidden="true" /> Check again
           </button>
         </div>

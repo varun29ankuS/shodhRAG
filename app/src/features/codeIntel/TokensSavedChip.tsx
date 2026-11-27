@@ -130,7 +130,7 @@ export function TokensSavedChip({ conversationId, answerRunning, onOpenActivity 
           id={popoverId}
           role="dialog"
           aria-labelledby={headingId}
-          className="absolute bottom-full left-0 mb-2 z-40 w-[340px] max-w-[calc(100vw-32px)] rounded-[14px] border border-shodh-border bg-shodh-raised p-3.5 shadow-[0_12px_40px_rgba(0,0,0,0.35)] flex flex-col gap-3"
+          className="absolute bottom-full start-0 mb-2 z-40 w-[340px] max-w-[calc(100vw-32px)] rounded-[14px] border border-shodh-border bg-shodh-raised p-3.5 shadow-[0_12px_40px_rgba(0,0,0,0.35)] flex flex-col gap-3"
         >
           <h2 id={headingId} className="m-0 text-small font-semibold text-shodh-text tabular-nums">
             {sessionSentence(view)}

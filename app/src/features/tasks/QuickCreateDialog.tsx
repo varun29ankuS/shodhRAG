@@ -124,7 +124,7 @@ function QuickDialogFrame({
             {children}
             <div className="flex items-center justify-end gap-2 pt-1">
               {/* Always in the DOM so the live region announces each new reason. */}
-              <p id={problemId} aria-live="polite" className="m-0 mr-auto text-caption text-shodh-text-muted">{shown ?? ''}</p>
+              <p id={problemId} aria-live="polite" className="m-0 me-auto text-caption text-shodh-text-muted">{shown ?? ''}</p>
               <Dialog.Close className={QUIET_BUTTON} type="button">Cancel</Dialog.Close>
               <button
                 type="submit"

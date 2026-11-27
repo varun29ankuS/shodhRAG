@@ -148,7 +148,7 @@ function PartRow({
       <div className="flex items-center gap-2">
         <Icon className="w-4 h-4 shrink-0 text-shodh-text-muted" aria-hidden="true" />
         <span className="text-small font-semibold text-shodh-text">{name}</span>
-        <ToneDot tone={tone} className="ml-auto" />
+        <ToneDot tone={tone} className="ms-auto" />
       </div>
       <p className="m-0 text-small text-shodh-text-secondary break-words">{state}</p>
       {children}
@@ -479,7 +479,7 @@ function SystemStatusPanel({
             >
               {paused ? <Play className="w-3.5 h-3.5" aria-hidden="true" /> : <Pause className="w-3.5 h-3.5" aria-hidden="true" />}
               {paused ? 'Resume indexing' : 'Pause indexing'}
-              <Kbd shortcut="toggleIndexingPause" className="ml-1" />
+              <Kbd shortcut="toggleIndexingPause" className="ms-1" />
             </button>
             <button type="button" className={SMALL_BUTTON} onClick={onOpenLibrary}>
               <ListOrdered className="w-3.5 h-3.5" aria-hidden="true" />
@@ -669,7 +669,7 @@ export function SystemStatusStrip({
         className={cn(
           collapsed
             ? 'relative w-10 h-10 rounded-[10px] inline-flex items-center justify-center hover:bg-shodh-raised transition-colors duration-micro'
-            : 'flex flex-wrap items-center gap-x-2 gap-y-0.5 min-h-8 w-full px-3 py-1.5 rounded-[10px] border border-shodh-border text-left hover:bg-shodh-raised transition-colors duration-micro min-w-0',
+            : 'flex flex-wrap items-center gap-x-2 gap-y-0.5 min-h-8 w-full px-3 py-1.5 rounded-[10px] border border-shodh-border text-start hover:bg-shodh-raised transition-colors duration-micro min-w-0',
           FOCUS_RING,
         )}
       >
@@ -678,7 +678,7 @@ export function SystemStatusStrip({
           <span className="flex-1 min-w-0 whitespace-normal break-words text-caption font-medium text-shodh-text-secondary">Search · {search.short}</span>
         )}
         {!collapsed && <Kbd shortcut="openSystemStatus" className="ms-auto" />}
-        <ToneDot tone={search.tone} className={collapsed ? 'absolute top-1.5 right-1.5' : undefined} />
+        <ToneDot tone={search.tone} className={collapsed ? 'absolute top-1.5 end-1.5' : undefined} />
       </button>
 
       {/* A pause is shown even with nothing waiting: it is kept across restarts. */}
@@ -718,7 +718,7 @@ export function SystemStatusStrip({
               type="button"
               onClick={onOpenLibrary}
               aria-label={`Indexing ${job.name}: ${jobDetail(job, jobProgress)}. Open Library`}
-              className={cn('min-w-0 flex-1 flex flex-col text-left rounded-sm', FOCUS_RING)}
+              className={cn('min-w-0 flex-1 flex flex-col text-start rounded-sm', FOCUS_RING)}
             >
               <span className="text-caption font-semibold text-shodh-text truncate">
                 {paused ? 'Paused: ' : 'Indexing '}
@@ -771,7 +771,7 @@ export function SystemStatusStrip({
               type="button"
               onClick={() => setOpen(true)}
               aria-label={`${paused ? 'Paused: code map of' : 'Building the code map of'} ${codeMap.name}: ${codeMapRunText(codeMap)}. Open System status`}
-              className={cn('min-w-0 flex-1 flex flex-col text-left rounded-sm', FOCUS_RING)}
+              className={cn('min-w-0 flex-1 flex flex-col text-start rounded-sm', FOCUS_RING)}
             >
               <span className="text-caption font-semibold text-shodh-text truncate flex items-center gap-1.5">
                 <Network className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
@@ -824,7 +824,7 @@ export function SystemStatusStrip({
               type="button"
               onClick={() => setOpen(true)}
               aria-label={`${paused ? 'Paused: coding sessions' : 'Indexing coding sessions'}: ${recallRunText(recallRun)}. Open System status`}
-              className={cn('min-w-0 flex-1 flex flex-col text-left rounded-sm', FOCUS_RING)}
+              className={cn('min-w-0 flex-1 flex flex-col text-start rounded-sm', FOCUS_RING)}
             >
               <span className="text-caption font-semibold text-shodh-text truncate flex items-center gap-1.5">
                 <History className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
@@ -875,7 +875,7 @@ export function SystemStatusStrip({
             type="button"
             onClick={() => setOpen(true)}
             aria-label={`${switchView.title}. ${switchView.detail ?? ''} Open System status`}
-            className={cn('min-w-0 flex-1 flex flex-col text-left rounded-sm', FOCUS_RING)}
+            className={cn('min-w-0 flex-1 flex flex-col text-start rounded-sm', FOCUS_RING)}
           >
             <span className="text-caption font-semibold text-shodh-text truncate">{switchView.title}</span>
             {switchView.detail && (

@@ -109,7 +109,7 @@ function FillStatusLine({
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
         {line && (
           <p className={cn('m-0 flex-1 min-w-[240px] text-small', TONE_CLASSES[line.tone])}>
-            {spinning && <Loader2 className="inline w-3.5 h-3.5 mr-1.5 -mt-0.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />}
+            {spinning && <Loader2 className="inline w-3.5 h-3.5 me-1.5 -mt-0.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />}
             {line.text}
             {line.progress && <span className="text-shodh-text-muted"> {line.progress}</span>}
           </p>
@@ -283,7 +283,7 @@ function TableEditor({
   if (loadError && !view) {
     return (
       <div className="flex flex-col gap-3">
-        <button type="button" className={cn(QUIET_BUTTON, 'self-start -ml-2')} onClick={onBack}>
+        <button type="button" className={cn(QUIET_BUTTON, 'self-start -ms-2')} onClick={onBack}>
           <ArrowLeft className="w-3.5 h-3.5" aria-hidden="true" /> All tables
         </button>
         <p role="alert" className="m-0 text-small text-shodh-error">This table could not be opened: {loadError}</p>
@@ -403,12 +403,12 @@ function TableEditor({
     }
   };
 
-  const menuItem = 'w-full flex items-center gap-2 px-3 py-1.5 text-small text-left hover:bg-shodh-raised-2 focus-visible:bg-shodh-raised-2 focus-visible:outline-none';
+  const menuItem = 'w-full flex items-center gap-2 px-3 py-1.5 text-small text-start hover:bg-shodh-raised-2 focus-visible:bg-shodh-raised-2 focus-visible:outline-none';
   const canFill = view.rows.length > 0 && sortedColumns.length > 0;
 
   return (
     <div className="flex flex-col gap-4">
-      <button type="button" className={cn(QUIET_BUTTON, 'self-start -ml-2')} onClick={onBack}>
+      <button type="button" className={cn(QUIET_BUTTON, 'self-start -ms-2')} onClick={onBack}>
         <ArrowLeft className="w-3.5 h-3.5" aria-hidden="true" /> All tables
       </button>
 
@@ -487,7 +487,7 @@ function TableEditor({
             <div
               role="menu"
               aria-label="Table options"
-              className="shell-pop absolute right-0 top-9 z-50 min-w-[200px] py-1 rounded-lg border border-shodh-border-strong bg-shodh-raised shadow-lg"
+              className="shell-pop absolute end-0 top-9 z-50 min-w-[200px] py-1 rounded-lg border border-shodh-border-strong bg-shodh-raised shadow-lg"
               onKeyDown={e => {
                 const items = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'));
                 const index = items.indexOf(document.activeElement as HTMLButtonElement);
@@ -708,7 +708,7 @@ export function TablesTab({ workspace }: { workspace: WorkspaceDetail }) {
         <h3 className={SECTION_TITLE}>
           Evidence tables {tables && <span className="font-normal text-shodh-text-muted">({tables.length})</span>}
         </h3>
-        <button type="button" className={cn(PRIMARY_BUTTON, 'ml-auto h-8')} onClick={() => setCreating(true)}>
+        <button type="button" className={cn(PRIMARY_BUTTON, 'ms-auto h-8')} onClick={() => setCreating(true)}>
           <Plus className="w-4 h-4" aria-hidden="true" /> New table
         </button>
       </div>
@@ -727,7 +727,7 @@ export function TablesTab({ workspace }: { workspace: WorkspaceDetail }) {
               <button
                 type="button"
                 onClick={() => setOpenId(t.id)}
-                className={cn('w-full flex items-center gap-3 py-2 px-1 text-left rounded-md hover:bg-shodh-raised/60', FOCUS_RING)}
+                className={cn('w-full flex items-center gap-3 py-2 px-1 text-start rounded-md hover:bg-shodh-raised/60', FOCUS_RING)}
               >
                 <Table2 className="w-4 h-4 text-shodh-text-faint shrink-0" aria-hidden="true" />
                 <span className="flex-1 min-w-0 text-small text-shodh-text truncate">{t.name}</span>

@@ -35,8 +35,8 @@ export function PaperPane({ paper, onClose }: { paper: PaperRef; onClose: () => 
   const doc = useSourceDocument(hit);
   const name = doc.info?.fileName ?? paper.fileName ?? paper.sourceFile;
   return (
-    <section aria-label={`Source document: ${name}`} className="flex-1 min-w-0 min-h-0 flex flex-col border-l border-shodh-border-subtle bg-shodh-surface">
-      <header className="shrink-0 flex items-center gap-2 pl-3 pr-1.5 h-9 border-b border-shodh-border-subtle text-small text-shodh-text-secondary">
+    <section aria-label={`Source document: ${name}`} className="flex-1 min-w-0 min-h-0 flex flex-col border-s border-shodh-border-subtle bg-shodh-surface">
+      <header className="shrink-0 flex items-center gap-2 ps-3 pe-1.5 h-9 border-b border-shodh-border-subtle text-small text-shodh-text-secondary">
         <FileText className="w-3.5 h-3.5 shrink-0 text-shodh-text-muted" aria-hidden="true" />
         <span className="truncate" title={name}>{name}</span>
         {paper.page !== null && <span className="shrink-0 text-shodh-text-muted">{`page ${paper.page}`}</span>}
@@ -45,7 +45,7 @@ export function PaperPane({ paper, onClose }: { paper: PaperRef; onClose: () => 
           onClick={onClose}
           aria-label="Hide the source document"
           title="Hide the source document"
-          className={cn('ml-auto w-7 h-7 shrink-0 inline-flex items-center justify-center rounded-lg text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro', FOCUS_RING)}
+          className={cn('ms-auto w-7 h-7 shrink-0 inline-flex items-center justify-center rounded-lg text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro', FOCUS_RING)}
         >
           <X className="w-3.5 h-3.5" aria-hidden="true" />
         </button>

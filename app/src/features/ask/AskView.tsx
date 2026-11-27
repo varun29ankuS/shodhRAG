@@ -225,7 +225,7 @@ function SourceChips({
               aria-pressed={isActive}
               title={group.primary.url ? `${sourceLabel(group.primary)} — ${group.primary.url} (opens in your browser)` : appRecordKind(group.sourceFile) ? sourceLabel(group.primary) : shownPath(group.primary)}
               className={cn(
-                'inline-flex items-center gap-2 h-8 max-w-full pl-2 pr-3 rounded-[10px] border text-shodh-text transition-colors duration-micro',
+                'inline-flex items-center gap-2 h-8 max-w-full ps-2 pe-3 rounded-[10px] border text-shodh-text transition-colors duration-micro',
                 isActive
                   ? 'bg-shodh-accent-soft border-shodh-accent/60'
                   : 'bg-shodh-surface border-shodh-border hover:bg-shodh-raised',
@@ -660,7 +660,7 @@ const SideSummaryCard = React.memo(function SideSummaryCard({
             disabled={!canOpen}
             title={canOpen ? 'Reopen the side discussion' : 'This side discussion is no longer available'}
             className={cn(
-              'ml-auto shrink-0 inline-flex items-center gap-1 h-6 px-2 rounded-full border border-shodh-border text-caption text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text disabled:opacity-45 disabled:cursor-not-allowed transition-colors duration-micro',
+              'ms-auto shrink-0 inline-flex items-center gap-1 h-6 px-2 rounded-full border border-shodh-border text-caption text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text disabled:opacity-45 disabled:cursor-not-allowed transition-colors duration-micro',
               FOCUS_RING,
             )}
           >
@@ -1601,7 +1601,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
                   type="button"
                   onClick={() => applyStarter(prompt)}
                   className={cn(
-                    'w-full h-full text-left px-4 py-3 rounded-[14px] border border-shodh-border bg-shodh-surface text-body leading-snug text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
+                    'w-full h-full text-start px-4 py-3 rounded-[14px] border border-shodh-border bg-shodh-surface text-body leading-snug text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
                     FOCUS_RING,
                   )}
                 >
@@ -1659,7 +1659,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
       )}
 
       {findOpen && (
-        <div className="absolute top-3 right-6 z-20">
+        <div className="absolute top-3 end-6 z-20">
           <Suspense fallback={null}>
             <ConversationFind
               messages={messages}
@@ -1672,7 +1672,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
         </div>
       )}
 
-      <div ref={setComposerArea} className="absolute left-0 right-0 bottom-0 px-7 pt-10 pb-6 bg-gradient-to-b from-transparent via-shodh-ground via-[38%] to-shodh-ground pointer-events-none">
+      <div ref={setComposerArea} className="absolute start-0 end-0 bottom-0 px-7 pt-10 pb-6 bg-gradient-to-b from-transparent via-shodh-ground via-[38%] to-shodh-ground pointer-events-none">
         <div className="mx-auto pointer-events-auto flex flex-col gap-2" style={{ maxWidth: TEXT_COLUMN_PX }} data-testid="ask-composer-dock">
           {/* A new chat shows the setup card whole, above; here it is the compact one. */}
           {!empty && <SetupCard compact waiting={queued.waiting} onCancelWaiting={queued.cancel} />}
@@ -1706,7 +1706,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
             onClick={() => setOpenArtifactId(null)}
             aria-hidden="true"
           />
-          <div className="ask-slide-in absolute right-0 top-0 bottom-0 w-[55%] min-w-[360px] z-40 shadow-[-8px_0_30px_rgba(0,0,0,0.18)]">
+          <div className="ask-slide-in absolute end-0 top-0 bottom-0 w-[55%] min-w-[360px] z-40 shadow-[-8px_0_30px_rgba(0,0,0,0.18)]">
             <Suspense fallback={<div className="h-full bg-shodh-surface" aria-busy="true" />}>
               <EnhancedArtifactPanel
                 artifacts={allArtifacts}

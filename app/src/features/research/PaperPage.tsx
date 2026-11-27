@@ -62,7 +62,7 @@ function CitationList({
         <ul className="flex flex-col divide-y divide-shodh-border-subtle rounded-xl border border-shodh-border">
           {shown.map(item => (
             <li key={item.paper.id} className="flex items-start gap-2 px-3 py-2">
-              <button type="button" onClick={() => onOpenPaper(item.paper.id)} className={cn('flex-1 min-w-0 text-left rounded', FOCUS_RING)}>
+              <button type="button" onClick={() => onOpenPaper(item.paper.id)} className={cn('flex-1 min-w-0 text-start rounded', FOCUS_RING)}>
                 <span className={cn('block text-small truncate', item.paper.inLibrary ? 'text-shodh-text font-medium' : 'text-shodh-text-secondary')}>{paperTitle(item.paper)}</span>
                 <Meta paper={item.paper} />
               </button>
@@ -102,7 +102,7 @@ function Concepts({ title, items, kind, onOpenConcept }: { title: string; items:
   if (items.length === 0) return null;
   return (
     <div className="flex flex-wrap items-center gap-1.5">
-      <span className="text-caption font-medium text-shodh-text-secondary mr-1">{title}</span>
+      <span className="text-caption font-medium text-shodh-text-secondary me-1">{title}</span>
       {items.map(c => (
         <button key={c.id} type="button" onClick={() => onOpenConcept(kind, c.id)} className={cn('h-7 px-2.5 rounded-full text-caption border border-shodh-border text-shodh-text-secondary hover:bg-shodh-raised', FOCUS_RING)}>
           {c.label}
@@ -267,14 +267,14 @@ export function PaperPage({
                     <thead className="bg-shodh-raised">
                       <tr>
                         {['Method', 'Dataset', 'Metric', 'Value'].map(h => (
-                          <th key={h} scope="col" className="px-3 py-1.5 text-left font-semibold text-shodh-text border-b border-shodh-border">{h}</th>
+                          <th key={h} scope="col" className="px-3 py-1.5 text-start font-semibold text-shodh-text border-b border-shodh-border">{h}</th>
                         ))}
                       </tr>
                     </thead>
                     <tbody>
                       {d.results.map(r => (
                         <tr key={r.id}>
-                          <th scope="row" className="px-3 py-1.5 text-left font-medium text-shodh-text border-b border-shodh-border-subtle">{r.method}</th>
+                          <th scope="row" className="px-3 py-1.5 text-start font-medium text-shodh-text border-b border-shodh-border-subtle">{r.method}</th>
                           <td className="px-3 py-1.5 border-b border-shodh-border-subtle text-shodh-text-secondary">{r.dataset}</td>
                           <td className="px-3 py-1.5 border-b border-shodh-border-subtle text-shodh-text-secondary">{r.metric}</td>
                           <td className="px-3 py-1.5 border-b border-shodh-border-subtle">
@@ -286,7 +286,7 @@ export function PaperPage({
                             >
                               {valueLabel(r)}
                             </button>
-                            {r.setting && <span className="ml-1.5 text-caption text-shodh-text-muted">{r.setting}</span>}
+                            {r.setting && <span className="ms-1.5 text-caption text-shodh-text-muted">{r.setting}</span>}
                           </td>
                         </tr>
                       ))}
@@ -316,7 +316,7 @@ export function PaperPage({
               <ul className="flex flex-col divide-y divide-shodh-border-subtle rounded-xl border border-shodh-border">
                 {d.related.map(r => (
                   <li key={r.paper.id}>
-                    <button type="button" onClick={() => onOpenPaper(r.paper.id)} className={cn('w-full text-left px-3 py-2 hover:bg-shodh-raised', FOCUS_RING)}>
+                    <button type="button" onClick={() => onOpenPaper(r.paper.id)} className={cn('w-full text-start px-3 py-2 hover:bg-shodh-raised', FOCUS_RING)}>
                       <span className="block text-small text-shodh-text truncate">{paperTitle(r.paper)}</span>
                       <span className="block text-caption text-shodh-text-muted">{`${r.count} shared ${r.count === 1 ? 'reference' : 'references'}`}</span>
                     </button>

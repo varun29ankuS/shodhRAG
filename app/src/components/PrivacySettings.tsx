@@ -53,7 +53,7 @@ export function SwitchRow({ label, description, checked, disabled = false, onCha
           aria-hidden="true"
           className={cn(
             'absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-[left] duration-micro',
-            checked ? 'left-[18px]' : 'left-0.5',
+            checked ? 'start-[18px]' : 'start-0.5',
           )}
         />
       </button>

@@ -111,7 +111,7 @@ function RawEvent({ row }: { row: AuditRow }) {
     <details className="group/raw">
       <summary
         className={cn(
-          'list-none [&::-webkit-details-marker]:hidden inline-flex items-center gap-1 h-7 px-1.5 -ml-1.5 rounded-md cursor-pointer text-caption text-shodh-text-muted hover:text-shodh-text hover:bg-shodh-raised',
+          'list-none [&::-webkit-details-marker]:hidden inline-flex items-center gap-1 h-7 px-1.5 -ms-1.5 rounded-md cursor-pointer text-caption text-shodh-text-muted hover:text-shodh-text hover:bg-shodh-raised',
           FOCUS_RING,
         )}
       >
@@ -307,7 +307,7 @@ export function AuditTable({ rows, total, loading, onLoadMore, onSelectConversat
                   data-agent-item={agentItemKey('audit', String(row.id))}
                   role="row"
                   aria-rowindex={index + 2}
-                  className="absolute left-0 right-0"
+                  className="absolute start-0 end-0"
                   style={{ top: offsetOf(index) }}
                 >
                   {/* The whole row opens the entry; the chevron is its keyboard control. */}

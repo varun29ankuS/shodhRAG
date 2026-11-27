@@ -346,7 +346,7 @@ export function EmbeddedPreview({ creationId, version, network, reloadSeq, focus
             Blocked
           </span>
         )}
-        <div className="ml-auto flex items-center gap-1 shrink-0">
+        <div className="ms-auto flex items-center gap-1 shrink-0">
           {networkControl}
           <button type="button" onClick={() => void reload()} title={status === 'stopped' || end ? 'Open again' : 'Reload'} className={QUIET_BUTTON}>
             <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />

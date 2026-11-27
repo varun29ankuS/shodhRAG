@@ -457,11 +457,11 @@ function FeedRow({
         </span>
       </div>
       {row.kind === 'file_group' && expanded && (
-        <ul className="flex flex-col pb-1 pl-8">
+        <ul className="flex flex-col pb-1 ps-8">
           {row.items.map(item => {
             const itemPath = pathOf(item);
             return (
-              <li key={item.id} data-agent-item={agentItemKey('whats-new', item.id)} className="flex h-8 items-center gap-3 pr-3">
+              <li key={item.id} data-agent-item={agentItemKey('whats-new', item.id)} className="flex h-8 items-center gap-3 pe-3">
                 <span className="min-w-0 flex-1 truncate text-small text-shodh-text-secondary" title={item.title}>{item.title}</span>
                 <button
                   type="button"
@@ -561,7 +561,7 @@ function PaperRow({
         </span>
       </div>
       {choosing && (
-        <ul className="flex flex-col pb-1 pl-8" aria-label="Save into">
+        <ul className="flex flex-col pb-1 ps-8" aria-label="Save into">
           {folders.map(folder => (
             <li key={folder.sourceId} className="flex h-8 items-center">
               <button type="button" className={ROW_ACTION} disabled={adding} onClick={() => add(folder)}>

@@ -131,7 +131,7 @@ function SummaryRows({ summary, hits, onOpenCitation }: { summary: RunSummary; h
                 key={source.n}
                 type="button"
                 onClick={e => onOpenCitation(hit, e.currentTarget)}
-                className={cn('min-h-6 px-2 py-0.5 inline-flex items-center rounded-md bg-shodh-raised-2 text-caption text-left text-shodh-text-secondary hover:text-shodh-text break-all', FOCUS_RING)}
+                className={cn('min-h-6 px-2 py-0.5 inline-flex items-center rounded-md bg-shodh-raised-2 text-caption text-start text-shodh-text-secondary hover:text-shodh-text break-all', FOCUS_RING)}
               >
                 {source.label}
               </button>
@@ -190,7 +190,7 @@ export function RunPanel({ line, live, plan, steps, summary, hits, onOpenCitatio
         aria-controls={bodyId}
         onClick={() => setOpen(o => !o)}
         className={cn(
-          'max-w-full w-fit inline-flex items-start gap-1.5 rounded-md text-left text-shodh-text-muted hover:text-shodh-text transition-colors duration-micro',
+          'max-w-full w-fit inline-flex items-start gap-1.5 rounded-md text-start text-shodh-text-muted hover:text-shodh-text transition-colors duration-micro',
           FOCUS_RING,
         )}
       >
@@ -204,7 +204,7 @@ export function RunPanel({ line, live, plan, steps, summary, hits, onOpenCitatio
         </span>
       </button>
       {open && (
-        <div id={bodyId} className={cn('mt-2 pl-3 border-l border-shodh-border-subtle flex flex-col', compact ? 'gap-2.5' : 'gap-3.5')}>
+        <div id={bodyId} className={cn('mt-2 ps-3 border-s border-shodh-border-subtle flex flex-col', compact ? 'gap-2.5' : 'gap-3.5')}>
           {summary && (
             <Section title="Summary">
               <SummaryRows summary={summary} hits={hits} onOpenCitation={onOpenCitation} />

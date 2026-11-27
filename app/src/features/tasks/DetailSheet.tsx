@@ -52,14 +52,14 @@ export default function DetailSheet({
             if (target?.closest(EDITABLE)) e.preventDefault();
           }}
           className={cn(
-            'fixed z-50 top-2 right-2 bottom-2 w-[min(460px,calc(100vw-16px))] flex flex-col overflow-hidden',
+            'fixed z-50 top-2 end-2 bottom-2 w-[min(460px,calc(100vw-16px))] flex flex-col overflow-hidden',
             'rounded-[18px] border border-shodh-border-strong bg-shodh-surface text-shodh-text shadow-[-20px_0_60px_rgba(0,0,0,0.35)] focus:outline-none',
             'data-[state=open]:animate-in data-[state=open]:slide-in-from-right-8 data-[state=open]:fade-in-0 data-[state=open]:duration-screen data-[state=open]:ease-enter',
             'data-[state=closed]:animate-out data-[state=closed]:slide-out-to-right-8 data-[state=closed]:fade-out-0 data-[state=closed]:duration-exit data-[state=closed]:ease-exit',
           )}
         >
-          <header className="flex items-center gap-2 pl-5 pr-3 pt-3 pb-2 shrink-0">
-            <span className="text-caption font-semibold uppercase tracking-[0.08em] text-shodh-text-faint mr-auto" aria-hidden="true">
+          <header className="flex items-center gap-2 ps-5 pe-3 pt-3 pb-2 shrink-0">
+            <span className="text-caption font-semibold uppercase tracking-[0.08em] text-shodh-text-faint me-auto" aria-hidden="true">
               {kindLabel}
             </span>
             <Dialog.Title className="sr-only">{title}</Dialog.Title>

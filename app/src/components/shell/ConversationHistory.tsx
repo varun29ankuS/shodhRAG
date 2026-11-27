@@ -180,7 +180,7 @@ export function ConversationHistory({
             const listId = `${headingId}-ws-${id}`;
             return (
               <div key={id} role="group" aria-label={`Workspace ${group.workspace.name}`} className="pt-2 first:pt-0">
-                <div className="group/ws flex items-center gap-0.5 pr-1">
+                <div className="group/ws flex items-center gap-0.5 pe-1">
                   <button
                     type="button"
                     onClick={() => toggle(id)}
@@ -188,7 +188,7 @@ export function ConversationHistory({
                     aria-controls={listId}
                     aria-label={`${group.workspace.name}, ${group.items.length} ${group.items.length === 1 ? 'chat' : 'chats'}`}
                     className={cn(
-                      'flex-1 min-w-0 flex items-center gap-1.5 h-7 pl-1.5 pr-2 rounded-md text-left text-caption font-medium text-shodh-text-secondary hover:bg-shodh-raised-2/60 hover:text-shodh-text transition-colors duration-micro',
+                      'flex-1 min-w-0 flex items-center gap-1.5 h-7 ps-1.5 pe-2 rounded-md text-start text-caption font-medium text-shodh-text-secondary hover:bg-shodh-raised-2/60 hover:text-shodh-text transition-colors duration-micro',
                       FOCUS_RING,
                     )}
                   >
@@ -198,7 +198,7 @@ export function ConversationHistory({
                     />
                     <WorkspaceIcon icon={group.workspace.icon} color={group.workspace.color} className="w-3.5 h-3.5" />
                     <span className="truncate">{group.workspace.name}</span>
-                    <span className="ml-auto text-caption font-normal text-shodh-text-faint" aria-hidden="true">{group.items.length}</span>
+                    <span className="ms-auto text-caption font-normal text-shodh-text-faint" aria-hidden="true">{group.items.length}</span>
                   </button>
                   <button
                     type="button"
@@ -226,7 +226,7 @@ export function ConversationHistory({
                   </button>
                 </div>
                 {open && (
-                  <ul id={listId} className="flex flex-col gap-px pl-2">
+                  <ul id={listId} className="flex flex-col gap-px ps-2">
                     {group.items.map(conv => (
                       <ConversationRow key={conv.id} conversation={conv} {...rowProps} />
                     ))}
@@ -249,7 +249,7 @@ export function ConversationHistory({
                   aria-controls={listId}
                   aria-label={`${group.label}, from ${name}, ${group.items.length} ${group.items.length === 1 ? 'conversation' : 'conversations'}`}
                   className={cn(
-                    'w-full min-w-0 flex items-center gap-1.5 h-7 pl-1.5 pr-2 rounded-md text-left text-caption font-medium text-shodh-text-secondary hover:bg-shodh-raised-2/60 hover:text-shodh-text transition-colors duration-micro',
+                    'w-full min-w-0 flex items-center gap-1.5 h-7 ps-1.5 pe-2 rounded-md text-start text-caption font-medium text-shodh-text-secondary hover:bg-shodh-raised-2/60 hover:text-shodh-text transition-colors duration-micro',
                     FOCUS_RING,
                   )}
                 >
@@ -259,10 +259,10 @@ export function ConversationHistory({
                   />
                   <ConnectorIcon connector={group.connector} className="w-3.5 h-3.5 shrink-0" />
                   <span className="truncate">{group.label}</span>
-                  <span className="ml-auto text-caption font-normal text-shodh-text-faint" aria-hidden="true">{group.items.length}</span>
+                  <span className="ms-auto text-caption font-normal text-shodh-text-faint" aria-hidden="true">{group.items.length}</span>
                 </button>
                 {open && (
-                  <ul id={listId} className="flex flex-col gap-px pl-2">
+                  <ul id={listId} className="flex flex-col gap-px ps-2">
                     {group.items.map(conv => (
                       <ConversationRow key={conv.id} conversation={conv} {...rowProps} />
                     ))}
@@ -280,7 +280,7 @@ export function ConversationHistory({
                 aria-controls={`${headingId}-automations`}
                 aria-label={`Automations, ${automationRuns.length} ${automationRuns.length === 1 ? 'run' : 'runs'}`}
                 className={cn(
-                  'w-full min-w-0 flex items-center gap-1.5 h-7 pl-1.5 pr-2 rounded-md text-left text-caption font-medium text-shodh-text-secondary hover:bg-shodh-raised-2/60 hover:text-shodh-text transition-colors duration-micro',
+                  'w-full min-w-0 flex items-center gap-1.5 h-7 ps-1.5 pe-2 rounded-md text-start text-caption font-medium text-shodh-text-secondary hover:bg-shodh-raised-2/60 hover:text-shodh-text transition-colors duration-micro',
                   FOCUS_RING,
                 )}
               >
@@ -289,10 +289,10 @@ export function ConversationHistory({
                   aria-hidden="true"
                 />
                 <span className="truncate">Automations</span>
-                <span className="ml-auto text-caption font-normal text-shodh-text-faint" aria-hidden="true">{automationRuns.length}</span>
+                <span className="ms-auto text-caption font-normal text-shodh-text-faint" aria-hidden="true">{automationRuns.length}</span>
               </button>
               {showRuns && (
-                <ul id={`${headingId}-automations`} className="flex flex-col gap-px pl-2">
+                <ul id={`${headingId}-automations`} className="flex flex-col gap-px ps-2">
                   {automationRuns.map(conv => (
                     <ConversationRow key={conv.id} conversation={conv} {...rowProps} />
                   ))}
@@ -486,7 +486,7 @@ function ConversationRow({
           aria-current={isCurrentPage ? 'page' : undefined}
           aria-label={meta ? `${conversation.title}, ${meta}` : conversation.title}
           className={cn(
-            'w-full flex flex-col gap-0.5 py-1.5 pl-3 pr-9 rounded-lg text-left transition-colors duration-micro',
+            'w-full flex flex-col gap-0.5 py-1.5 ps-3 pe-9 rounded-lg text-start transition-colors duration-micro',
             isActive ? 'bg-shodh-raised-2 text-shodh-text' : 'text-shodh-text-secondary hover:bg-shodh-raised-2/60 hover:text-shodh-text',
             FOCUS_RING
           )}
@@ -509,7 +509,7 @@ function ConversationRow({
           aria-expanded={menuOpen}
           aria-controls={menuOpen ? menuId : undefined}
           className={cn(
-            'absolute right-1.5 top-1 w-7 h-7 rounded-md inline-flex items-center justify-center text-shodh-text-muted hover:bg-shodh-raised-2 hover:text-shodh-text transition-opacity duration-micro',
+            'absolute end-1.5 top-1 w-7 h-7 rounded-md inline-flex items-center justify-center text-shodh-text-muted hover:bg-shodh-raised-2 hover:text-shodh-text transition-opacity duration-micro',
             menuOpen ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100',
             FOCUS_RING
           )}
@@ -529,7 +529,7 @@ function ConversationRow({
           role="menu"
           aria-label={`Options for ${conversation.title}`}
           onKeyDown={handleMenuKeyDown}
-          className="shell-pop absolute right-1.5 top-8 z-50 min-w-[152px] py-1 rounded-lg border border-shodh-border-strong bg-shodh-raised shadow-lg"
+          className="shell-pop absolute end-1.5 top-8 z-50 min-w-[152px] py-1 rounded-lg border border-shodh-border-strong bg-shodh-raised shadow-lg"
         >
           {moving ? (
             <>
@@ -614,7 +614,7 @@ function MenuItem({
       role="menuitem"
       onClick={onSelect}
       className={cn(
-        'w-full flex items-center gap-2 px-3 py-1.5 text-small text-left hover:bg-shodh-raised-2 focus-visible:bg-shodh-raised-2 focus-visible:outline-none',
+        'w-full flex items-center gap-2 px-3 py-1.5 text-small text-start hover:bg-shodh-raised-2 focus-visible:bg-shodh-raised-2 focus-visible:outline-none',
         destructive ? 'text-shodh-error' : 'text-shodh-text-secondary'
       )}
     >

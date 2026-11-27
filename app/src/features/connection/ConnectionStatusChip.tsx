@@ -89,7 +89,7 @@ function ProviderRow({
           </span>
         )}
         {status.keyHint && (
-          <span className="ml-auto font-mono text-caption text-shodh-text-muted" title="The last characters of the key in use">
+          <span className="ms-auto font-mono text-caption text-shodh-text-muted" title="The last characters of the key in use">
             {status.keyHint}
           </span>
         )}
@@ -203,7 +203,7 @@ export function ConnectionStatusChip({ collapsed }: { collapsed: boolean }) {
         className={cn(
           collapsed
             ? 'w-10 h-10 rounded-[10px] inline-flex items-center justify-center hover:bg-shodh-raised transition-colors duration-micro'
-            : 'flex items-center gap-2 h-8 max-w-full px-3 rounded-full border border-shodh-border text-left hover:bg-shodh-raised transition-colors duration-micro min-w-0',
+            : 'flex items-center gap-2 h-8 max-w-full px-3 rounded-full border border-shodh-border text-start hover:bg-shodh-raised transition-colors duration-micro min-w-0',
           CHIP_FOCUS_RING,
         )}
       >

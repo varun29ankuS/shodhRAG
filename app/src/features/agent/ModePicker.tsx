@@ -46,7 +46,7 @@ export const WORK_ICONS: Record<WorkKind, LucideIcon> = {
 type Confirming = { kind: 'work'; work: 'creator' } | { kind: 'permission'; mode: 'auto' };
 
 const ITEM =
-  'w-full flex items-center gap-2 h-8 px-3 text-left text-small text-shodh-text hover:bg-shodh-raised-2 focus-visible:bg-shodh-raised-2 focus-visible:outline-none aria-disabled:opacity-45 aria-disabled:cursor-not-allowed aria-disabled:hover:bg-transparent';
+  'w-full flex items-center gap-2 h-8 px-3 text-start text-small text-shodh-text hover:bg-shodh-raised-2 focus-visible:bg-shodh-raised-2 focus-visible:outline-none aria-disabled:opacity-45 aria-disabled:cursor-not-allowed aria-disabled:hover:bg-transparent';
 
 interface ModePickerProps {
   /** What the answer works on: Research, Code or Creator. */
@@ -207,7 +207,7 @@ export function ModePicker({ work, permission, codeAvailable, onPickWork, onPick
         data-work={work}
         data-agent-mode={work === 'creator' ? 'creator' : permission ?? undefined}
         className={cn(
-          'inline-flex items-center gap-1.5 max-w-full min-w-0 pl-2.5 pr-2 rounded-full bg-shodh-raised-2 text-small text-shodh-text-secondary hover:bg-shodh-pressed hover:text-shodh-text transition-colors duration-micro disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:bg-shodh-raised-2',
+          'inline-flex items-center gap-1.5 max-w-full min-w-0 ps-2.5 pe-2 rounded-full bg-shodh-raised-2 text-small text-shodh-text-secondary hover:bg-shodh-pressed hover:text-shodh-text transition-colors duration-micro disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:bg-shodh-raised-2',
           COMPOSER_CONTROL_HEIGHT,
           FOCUS_RING,
         )}

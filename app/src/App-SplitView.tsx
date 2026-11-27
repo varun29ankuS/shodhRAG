@@ -1561,7 +1561,7 @@ function AppSplitView() {
     >
       <a
         href="#main-content"
-        className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-[10000] focus:px-3 focus:py-2 focus:rounded-lg focus:bg-shodh-raised focus:text-shodh-text focus:ring-2 focus:ring-ring"
+        className="sr-only focus:not-sr-only focus:fixed focus:start-3 focus:top-3 focus:z-[10000] focus:px-3 focus:py-2 focus:rounded-lg focus:bg-shodh-raised focus:text-shodh-text focus:ring-2 focus:ring-ring"
       >
         Skip to content
       </a>
@@ -1670,7 +1670,7 @@ function AppSplitView() {
                       ref={instructionsPopoverRef}
                       role="dialog"
                       aria-label="Instructions for this chat"
-                      className="absolute right-0 top-8 z-50 w-96 rounded-lg border shadow-xl"
+                      className="absolute end-0 top-8 z-50 w-96 rounded-lg border shadow-xl"
                       style={{ backgroundColor: colors.bgSecondary, borderColor: colors.border }}
                     >
                       <div className="px-3 py-2 border-b flex items-center justify-between gap-2" style={{ borderColor: colors.border }}>

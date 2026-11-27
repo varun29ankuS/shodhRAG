@@ -290,7 +290,7 @@ function MemoryItem({
           </div>
         </form>
       ) : (
-        <div className="flex flex-wrap gap-1 -ml-2">
+        <div className="flex flex-wrap gap-1 -ms-2">
           {memory.current && (
             <button type="button" className={ICON_BUTTON} onClick={() => { setDraft({}); setEditing(true); }} disabled={busy}>
               <Pencil aria-hidden="true" className="w-3.5 h-3.5" /> Edit
@@ -524,7 +524,7 @@ export default function MemorySettings(props: MemorySettingsProps) {
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative flex-1 min-w-[200px]">
           <label htmlFor={searchId} className="sr-only">Search memories</label>
-          <Search aria-hidden="true" className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-shodh-text-muted" />
+          <Search aria-hidden="true" className="absolute start-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-shodh-text-muted" />
           <input
             id={searchId}
             type="search"
@@ -532,7 +532,7 @@ export default function MemorySettings(props: MemorySettingsProps) {
             onChange={e => setFilter(e.target.value)}
             placeholder="Search memories"
             className={cn(
-              'w-full h-8 pl-8 pr-2.5 rounded-lg border border-shodh-border bg-shodh-surface text-small text-shodh-text placeholder:text-shodh-text-faint',
+              'w-full h-8 ps-8 pe-2.5 rounded-lg border border-shodh-border bg-shodh-surface text-small text-shodh-text placeholder:text-shodh-text-faint',
               FOCUS_RING,
             )}
           />

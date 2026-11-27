@@ -46,7 +46,7 @@ function DetailView({ step }: { step: TranscriptStep }) {
   const webSources = webSourcesFromDetail(step.detail);
   const passages = passagesFromDetail(step.detail).filter(p => !p.web);
   return (
-    <div className="mt-1 ml-4.5 rounded-lg border border-shodh-border-subtle bg-shodh-surface px-3 py-2 font-mono text-caption leading-[1.55] text-shodh-text-secondary overflow-x-auto scrollbar-thin">
+    <div className="mt-1 ms-4.5 rounded-lg border border-shodh-border-subtle bg-shodh-surface px-3 py-2 font-mono text-caption leading-[1.55] text-shodh-text-secondary overflow-x-auto scrollbar-thin">
       {hasContent(step.args) && (
         <>
           <p className="text-shodh-text-faint">{step.tool}</p>
@@ -158,7 +158,7 @@ export function StepLine({ step, steps, onDecide, compact = false, depth = 0, li
   );
 
   return (
-    <div className={cn('ask-rise flex flex-col min-w-0', depth > 0 && 'ml-4.5 pl-2.5 border-l border-shodh-border-subtle')}>
+    <div className={cn('ask-rise flex flex-col min-w-0', depth > 0 && 'ms-4.5 ps-2.5 border-s border-shodh-border-subtle')}>
       <div className={cn('flex items-start gap-2 min-w-0', compact ? 'text-small' : 'text-body')}>
         {marker}
         {expandable ? (
@@ -167,7 +167,7 @@ export function StepLine({ step, steps, onDecide, compact = false, depth = 0, li
             onClick={() => setOpen(o => !o)}
             aria-expanded={open}
             aria-controls={detailId}
-            className={cn('flex items-start gap-1.5 min-w-0 text-left rounded-sm hover:text-shodh-text', FOCUS_RING)}
+            className={cn('flex items-start gap-1.5 min-w-0 text-start rounded-sm hover:text-shodh-text', FOCUS_RING)}
           >
             {labelBody}
           </button>
@@ -180,7 +180,7 @@ export function StepLine({ step, steps, onDecide, compact = false, depth = 0, li
       {result && (!step.command || failed) && (
         <p
           className={cn(
-            'ml-0.5 flex gap-1.5 min-w-0 font-mono',
+            'ms-0.5 flex gap-1.5 min-w-0 font-mono',
             compact ? 'text-caption' : 'text-small',
             failed ? 'text-shodh-error' : 'text-shodh-text-muted',
           )}
@@ -192,7 +192,7 @@ export function StepLine({ step, steps, onDecide, compact = false, depth = 0, li
       {open && <div id={detailId}><DetailView step={step} /></div>}
       {attribution && <AttributionFrame html={attribution} />}
       {step.approval && onDecide && (pendingApprovals || step.approval.decision !== 'pending') && (
-        <div className="mt-2 ml-4.5">
+        <div className="mt-2 ms-4.5">
           <ApprovalPrompt approval={step.approval} onDecide={(approved, forConversation, reviewToken) => onDecide(step.id, approved, forConversation, reviewToken)} compact={compact} />
         </div>
       )}

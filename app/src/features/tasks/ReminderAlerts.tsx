@@ -181,13 +181,13 @@ function MissedToast({ reminders }: { reminders: DueReminder[] }) {
           Missed while Shodh was closed
         </span>
       </div>
-      <ul className="flex flex-col gap-0.5 pl-6">
+      <ul className="flex flex-col gap-0.5 ps-6">
         {shown.map(r => (
           <li key={`${r.taskId}-${r.reminder}`}>
             <button
               type="button"
               onClick={() => { dismiss(); openTask(r.taskId); }}
-              className={cn('w-full text-left rounded px-1 py-0.5 hover:bg-shodh-raised', FOCUS_RING)}
+              className={cn('w-full text-start rounded px-1 py-0.5 hover:bg-shodh-raised', FOCUS_RING)}
             >
               <span className="block text-small truncate">{r.title}</span>
               <span className="block text-caption text-shodh-text-muted">{reminderLabel(r.reminder)}</span>

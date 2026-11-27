@@ -524,7 +524,7 @@ export function FileBrowser({ source, onExit, onAskAboutFile, onFileCount }: Fil
       <div className={cn('shrink-0 px-6 pb-3 flex items-center gap-2', !showList && 'hidden')}>
         <label className="relative flex-1 max-w-sm">
           <span className="sr-only">Filter files by name</span>
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-shodh-text-faint pointer-events-none" aria-hidden="true" />
+          <Search className="absolute start-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-shodh-text-faint pointer-events-none" aria-hidden="true" />
           <input
             ref={filterRef}
             type="search"
@@ -538,7 +538,7 @@ export function FileBrowser({ source, onExit, onAskAboutFile, onFileCount }: Fil
             }}
             placeholder={segments.length > 0 ? `Filter in ${segments[segments.length - 1]}` : `Filter in ${source.name}`}
             className={cn(
-              'w-full h-8 pl-8 pr-2.5 rounded-lg border border-shodh-border bg-shodh-surface text-small text-shodh-text placeholder:text-shodh-text-faint',
+              'w-full h-8 ps-8 pe-2.5 rounded-lg border border-shodh-border bg-shodh-surface text-small text-shodh-text placeholder:text-shodh-text-faint',
               FOCUS_RING,
             )}
           />
@@ -725,10 +725,10 @@ function ResizeHandle({ width, min, max, controls, onResize, onCommit, onReset }
       className="group relative z-10 w-px shrink-0 bg-shodh-border-subtle cursor-col-resize touch-none focus-visible:outline-none"
     >
       {/* Wider hit area than the 1px line. */}
-      <span className="absolute inset-y-0 -left-1 -right-1" aria-hidden="true" />
+      <span className="absolute inset-y-0 -start-1 -end-1" aria-hidden="true" />
       <span
         className={cn(
-          'absolute inset-y-0 -left-px w-[3px] transition-colors duration-micro',
+          'absolute inset-y-0 -start-px w-[3px] transition-colors duration-micro',
           dragging ? 'bg-shodh-accent' : 'bg-transparent group-hover:bg-shodh-accent/50 group-focus-visible:bg-ring',
         )}
         aria-hidden="true"
@@ -807,7 +807,7 @@ function EntryRow({ index, top, measure, entry, rowKey, tabbable, selected, show
   const secondary = !isDir ? [title ? entry.name : null, showFolder && entry.dir.length > 0 ? entry.dir.join(' › ') : null].filter(Boolean).join(' · ') : '';
 
   return (
-    <li ref={measure} data-index={index} className="absolute left-0 right-0 group px-2" style={{ top }}>
+    <li ref={measure} data-index={index} className="absolute start-0 end-0 group px-2" style={{ top }}>
       <button
         type="button"
         data-row={rowKey}
@@ -822,7 +822,7 @@ function EntryRow({ index, top, measure, entry, rowKey, tabbable, selected, show
         aria-current={selected ? 'true' : undefined}
         title={title ? `${title}\n${entry.name}` : undefined}
         className={cn(
-          'w-full h-10 pl-3 pr-10 flex items-center gap-3 rounded-lg text-left transition-colors duration-micro',
+          'w-full h-10 ps-3 pe-10 flex items-center gap-3 rounded-lg text-start transition-colors duration-micro',
           selected ? 'bg-shodh-raised-2' : 'hover:bg-shodh-raised',
           ROW_FOCUS,
         )}
@@ -926,7 +926,7 @@ function RowMenu({ name, items, tabbable }: { name: string; items: MenuItemSpec[
   };
 
   return (
-    <div ref={rootRef} className="absolute right-3.5 top-1.5">
+    <div ref={rootRef} className="absolute end-3.5 top-1.5">
       <button
         ref={buttonRef}
         type="button"
@@ -951,7 +951,7 @@ function RowMenu({ name, items, tabbable }: { name: string; items: MenuItemSpec[
           role="menu"
           aria-label={`Actions for ${name}`}
           onKeyDown={onMenuKeyDown}
-          className="shell-pop absolute right-0 top-8 z-50 min-w-[196px] py-1 rounded-lg border border-shodh-border-strong bg-shodh-raised shadow-lg"
+          className="shell-pop absolute end-0 top-8 z-50 min-w-[196px] py-1 rounded-lg border border-shodh-border-strong bg-shodh-raised shadow-lg"
         >
           {items.map(item => {
             const Icon = item.icon;
@@ -961,7 +961,7 @@ function RowMenu({ name, items, tabbable }: { name: string; items: MenuItemSpec[
                 type="button"
                 role="menuitem"
                 onClick={() => { close(false); item.run(); }}
-                className="w-full flex items-center gap-2 px-3 py-1.5 text-small text-left text-shodh-text-secondary hover:bg-shodh-raised-2 focus-visible:bg-shodh-raised-2 focus-visible:outline-none"
+                className="w-full flex items-center gap-2 px-3 py-1.5 text-small text-start text-shodh-text-secondary hover:bg-shodh-raised-2 focus-visible:bg-shodh-raised-2 focus-visible:outline-none"
               >
                 <Icon className="w-3.5 h-3.5" aria-hidden="true" />
                 {item.label}

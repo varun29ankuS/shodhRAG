@@ -19,7 +19,7 @@ const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-shodh-surface';
 
 /** In the page, pill and panel sit in the window's bottom-right corner, over the page. */
-const CORNER = 'fixed bottom-4 right-4 z-40';
+const CORNER = 'fixed bottom-4 end-4 z-40';
 
 /** The open panel's size in the page (the floating chat's webview is sized to the same). */
 export const PANEL_WIDTH = 380;
@@ -104,7 +104,7 @@ export function DockPanel({ model, onExpandAsk, fixed, maxHeight, pillRef, panel
         title={withShortcut('Open the conversation', 'toggleDock', IS_MAC)}
         data-dock-box=""
         className={cn(
-          'dock-pop inline-flex items-center gap-2 h-10 max-w-[320px] pl-3 pr-3.5 rounded-full border border-shodh-border-strong bg-shodh-surface text-small text-shodh-text hover:bg-shodh-raised transition-colors duration-micro',
+          'dock-pop inline-flex items-center gap-2 h-10 max-w-[320px] ps-3 pe-3.5 rounded-full border border-shodh-border-strong bg-shodh-surface text-small text-shodh-text hover:bg-shodh-raised transition-colors duration-micro',
           fixed ? cn(CORNER, 'shadow-[0_8px_28px_rgba(0,0,0,0.3)]') : 'whitespace-nowrap',
           FOCUS_RING,
         )}
@@ -124,7 +124,7 @@ export function DockPanel({ model, onExpandAsk, fixed, maxHeight, pillRef, panel
             {unread > 99 ? '99+' : unread}
           </span>
         )}
-        <Kbd shortcut="toggleDock" className="ml-0.5" />
+        <Kbd shortcut="toggleDock" className="ms-0.5" />
       </button>
     );
   }
@@ -217,14 +217,14 @@ export function DockPanel({ model, onExpandAsk, fixed, maxHeight, pillRef, panel
         ? { width: `min(${PANEL_WIDTH}px, calc(100vw - ${PANEL_EDGE * 2}px))`, height: PANEL_HEIGHT, maxHeight }
         : undefined}
     >
-      <header className="shrink-0 flex items-center gap-2 h-11 pl-3.5 pr-1.5 border-b border-shodh-border bg-shodh-surface">
+      <header className="shrink-0 flex items-center gap-2 h-11 ps-3.5 pe-1.5 border-b border-shodh-border bg-shodh-surface">
         <span
           className={cn('w-2 h-2 rounded-full shrink-0', live ? 'bg-shodh-accent-text ask-breathe' : 'bg-shodh-success')}
           aria-hidden="true"
         />
         <span className="text-small font-semibold text-shodh-text shrink-0">Assistant</span>
         <span className="min-w-0 truncate text-caption text-shodh-text-muted">{snapshot.title}</span>
-        <div className="ml-auto flex items-center">
+        <div className="ms-auto flex items-center">
           {controls.map(({ label, icon: Icon, onClick }) => (
             <button
               key={label}
@@ -255,7 +255,7 @@ export function DockPanel({ model, onExpandAsk, fixed, maxHeight, pillRef, panel
             )}
           >
             <History className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-            <span className="min-w-0 text-left">Earlier steps · Show in Ask</span>
+            <span className="min-w-0 text-start">Earlier steps · Show in Ask</span>
           </button>
         )}
         {snapshot.lastUser && (

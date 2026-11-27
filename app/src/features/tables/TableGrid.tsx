@@ -66,7 +66,7 @@ function ColumnMenu({
     ref.current?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')?.focus({ preventScroll: true });
   }, []);
 
-  const item = 'w-full flex items-center gap-2 px-3 py-1.5 text-small text-left hover:bg-shodh-raised-2 focus-visible:bg-shodh-raised-2 focus-visible:outline-none disabled:opacity-50';
+  const item = 'w-full flex items-center gap-2 px-3 py-1.5 text-small text-start hover:bg-shodh-raised-2 focus-visible:bg-shodh-raised-2 focus-visible:outline-none disabled:opacity-50';
   const run = (action: () => void) => {
     onClose();
     action();
@@ -270,11 +270,11 @@ export function TableGrid({
 
   const cellClass = (body: GridPos) =>
     cn(
-      'align-top px-3 py-2 border-b border-r border-shodh-border-subtle text-small cursor-pointer',
+      'align-top px-3 py-2 border-b border-e border-shodh-border-subtle text-small cursor-pointer',
       selected && selected.row === body.row && selected.col === body.col ? 'bg-shodh-accent-soft' : 'hover:bg-shodh-raised/60',
       CELL_FOCUS,
     );
-  const headClass = 'align-top px-3 py-2 border-b border-r border-shodh-border text-caption font-semibold text-shodh-text-secondary';
+  const headClass = 'align-top px-3 py-2 border-b border-e border-shodh-border text-caption font-semibold text-shodh-text-secondary';
 
   return (
     <div className="overflow-x-auto scrollbar-thin rounded-xl border border-shodh-border">
@@ -282,7 +282,7 @@ export function TableGrid({
         Arrow keys move between the column headers and the cells. On a column header, Enter sorts by it and Shift+F10
         or the menu key opens its options. On a cell, Enter opens it beside the table.
       </p>
-      <table ref={tableRef} role="grid" aria-describedby={helpId} className="w-max min-w-full border-collapse text-left">
+      <table ref={tableRef} role="grid" aria-describedby={helpId} className="w-max min-w-full border-collapse text-start">
         <caption className="sr-only">{caption}</caption>
         <thead className="bg-shodh-raised">
           <tr>
@@ -293,7 +293,7 @@ export function TableGrid({
               tabIndex={tabIndexAt({ row: 0, col: 0 })}
               onFocus={() => onActivate({ row: 0, col: 0 })}
               onKeyDown={e => onHeaderKey(e, { row: 0, col: 0 }, null, -1)}
-              className={cn(headClass, 'sticky left-0 z-10 bg-shodh-raised min-w-[200px] max-w-[260px]', CELL_FOCUS)}
+              className={cn(headClass, 'sticky start-0 z-10 bg-shodh-raised min-w-[200px] max-w-[260px]', CELL_FOCUS)}
             >
               <button type="button" tabIndex={-1} onClick={() => onSort(null)} className={cn('inline-flex items-center gap-1 rounded', FOCUS_RING)}>
                 Paper {sortIcon(null)}
@@ -318,7 +318,7 @@ export function TableGrid({
                       tabIndex={-1}
                       onClick={() => onSort(column.id)}
                       title={`${column.question} (${KIND_LABELS[column.kind]}). Sort by this column.`}
-                      className={cn('flex-1 min-w-0 inline-flex items-start gap-1 text-left rounded', FOCUS_RING)}
+                      className={cn('flex-1 min-w-0 inline-flex items-start gap-1 text-start rounded', FOCUS_RING)}
                     >
                       <span className="line-clamp-2 break-words">{column.question}</span>
                       <span className="mt-0.5 shrink-0">{sortIcon(column.id)}</span>
@@ -355,7 +355,7 @@ export function TableGrid({
                   onFocus={() => onActivate(head)}
                   onClick={() => onSelect(headBody)}
                   onKeyDown={e => onBodyKey(e, head)}
-                  className={cn('sticky left-0 z-[1] bg-shodh-surface font-medium text-shodh-text min-w-[200px] max-w-[260px]', cellClass(headBody))}
+                  className={cn('sticky start-0 z-[1] bg-shodh-surface font-medium text-shodh-text min-w-[200px] max-w-[260px]', cellClass(headBody))}
                 >
                   <span className="line-clamp-3 break-words" title={row.documentId}>{row.title}</span>
                 </th>

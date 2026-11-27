@@ -41,12 +41,12 @@ function TableBlock({ table }: { table: SnippetTable }) {
   return (
     <div className="overflow-x-auto rounded-xl border border-shodh-border">
       <table className="min-w-full border-collapse text-small">
-        {table.caption && <caption className="caption-top px-3 py-2 text-left text-shodh-text-muted">{table.caption}</caption>}
+        {table.caption && <caption className="caption-top px-3 py-2 text-start text-shodh-text-muted">{table.caption}</caption>}
         {table.header.length > 0 && (
           <thead className="bg-shodh-raised">
             <tr>
               {table.header.map((cell, i) => (
-                <th key={i} scope="col" className="px-3 py-1.5 text-left font-semibold text-shodh-text border-b border-shodh-border">{cell}</th>
+                <th key={i} scope="col" className="px-3 py-1.5 text-start font-semibold text-shodh-text border-b border-shodh-border">{cell}</th>
               ))}
             </tr>
           </thead>

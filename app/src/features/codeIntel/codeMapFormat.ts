@@ -4,9 +4,10 @@
  * Pure functions (tested in tests/codeMap.test.ts); types only from the API.
  */
 import type { CodeMapView, SymbolHit } from './api';
+import { formatNumber, formatDate } from '../../i18n/format.ts';
 
 function grouped(n: number): string {
-  return Math.max(0, Math.round(n)).toLocaleString('en-US');
+  return formatNumber(Math.max(0, Math.round(n)));
 }
 
 function plural(n: number, word: string): string {
@@ -79,7 +80,7 @@ export function sinceText(iso: string | null | undefined, now: Date): string | n
   if (minutes < 60) return `${minutes} min ago`;
   const hours = Math.round(minutes / 60);
   if (hours < 24) return hours === 1 ? '1 hour ago' : `${hours} hours ago`;
-  return `on ${at.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`;
+  return `on ${formatDate(at, { day: 'numeric', month: 'short' })}`;
 }
 
 /** The popover's lines: what is indexed, when, and what the last refresh did. */

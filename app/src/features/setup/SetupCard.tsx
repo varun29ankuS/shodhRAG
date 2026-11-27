@@ -226,7 +226,7 @@ function PartRow({ part }: { part: PartView }) {
           {icon}
           {part.label}
         </span>
-        <span className="text-caption text-shodh-text-muted tabular-nums text-right">{part.detail}</span>
+        <span className="text-caption text-shodh-text-muted tabular-nums text-end">{part.detail}</span>
       </div>
       {part.state === 'installing' && (
         <div

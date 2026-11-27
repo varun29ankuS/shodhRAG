@@ -289,7 +289,7 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
             {modelControl}
           </div>
         )}
-        <div className="ml-auto shrink-0 flex flex-nowrap items-center gap-1.5">
+        <div className="ms-auto shrink-0 flex flex-nowrap items-center gap-1.5">
           {running && hasText && (
             <button
               type="button"

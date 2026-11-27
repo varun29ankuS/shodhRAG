@@ -353,7 +353,7 @@ export default function AuditView({ frame }: AuditViewProps) {
 
       <section aria-labelledby={`${ids}-integrity`} className="flex flex-col gap-2">
         <div className="flex flex-wrap items-center gap-2">
-          <h3 id={`${ids}-integrity`} className="m-0 mr-auto text-body font-semibold">
+          <h3 id={`${ids}-integrity`} className="m-0 me-auto text-body font-semibold">
             Event log
           </h3>
           <button type="button" className={BUTTON} onClick={runVerify} disabled={verifying}>
@@ -405,7 +405,7 @@ export default function AuditView({ frame }: AuditViewProps) {
                 )}
               >
                 {t.label}
-                {count !== undefined && <span className="ml-1 tabular-nums text-shodh-text-faint">{count}</span>}
+                {count !== undefined && <span className="ms-1 tabular-nums text-shodh-text-faint">{count}</span>}
               </button>
             );
           })}
@@ -480,7 +480,7 @@ export default function AuditView({ frame }: AuditViewProps) {
       />
 
       <form onSubmit={saveRetention} className="flex flex-wrap items-end gap-2" aria-labelledby={`${ids}-retention`}>
-        <div className="flex flex-col gap-1 mr-auto">
+        <div className="flex flex-col gap-1 me-auto">
           <h3 id={`${ids}-retention`} className="m-0 text-body font-semibold">
             Retention
           </h3>

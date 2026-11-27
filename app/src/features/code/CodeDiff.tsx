@@ -133,7 +133,7 @@ function CodeColumn({ path, lines, numbers, language, dark, selection, onLine }:
               aria-selected={onLine ? selected : undefined}
               data-selected={selected ? 'true' : undefined}
               className={cn(
-                'flex gap-1 pl-1.5 pr-1 tabular-nums',
+                'flex gap-1 ps-1.5 pe-1 tabular-nums',
                 rowClass(line.kind, selected),
                 onLine && 'cursor-pointer hover:text-shodh-text',
                 focused && cursor === i && 'outline outline-2 -outline-offset-2 outline-shodh-accent',
@@ -142,8 +142,8 @@ function CodeColumn({ path, lines, numbers, language, dark, selection, onLine }:
               onClick={onLine ? e => { setCursor(i); onLine(line, e.shiftKey); } : undefined}
             >
               <span className="sr-only">{spoken(line)}</span>
-              {numbers !== 'new' && <span aria-hidden="true" className="w-9 text-right">{line.old ?? ''}</span>}
-              {numbers !== 'old' && <span aria-hidden="true" className="w-9 text-right">{line.new ?? ''}</span>}
+              {numbers !== 'new' && <span aria-hidden="true" className="w-9 text-end">{line.old ?? ''}</span>}
+              {numbers !== 'old' && <span aria-hidden="true" className="w-9 text-end">{line.new ?? ''}</span>}
               <span aria-hidden="true" className={cn('w-3 text-center', line.kind !== 'same' && 'text-shodh-text-secondary font-semibold')}>
                 {mark(line.kind)}
               </span>
@@ -157,7 +157,7 @@ function CodeColumn({ path, lines, numbers, language, dark, selection, onLine }:
             <div key={i} className={rowClass(line?.kind ?? null, line !== null && isSelected(selection, path, line))} style={{ height: ROW }} />
           ))}
         </div>
-        <div className="relative pr-3">
+        <div className="relative pe-3">
           <CodeHighlight code={code} language={language} dark={dark} preTag="div" customStyle={CODE_STYLE} codeStyle={CODE_LINE_STYLE} />
         </div>
       </div>
@@ -226,12 +226,12 @@ function FileDiff({ change, sideways, dark, startOpen, selection, onSelect, lang
           type="button"
           onClick={() => setOpen(o => !o)}
           aria-expanded={open}
-          className={cn('w-full flex items-center gap-2 px-3 py-1.5 text-left text-caption text-shodh-text-secondary hover:bg-shodh-raised-2', FOCUS_RING)}
+          className={cn('w-full flex items-center gap-2 px-3 py-1.5 text-start text-caption text-shodh-text-secondary hover:bg-shodh-raised-2', FOCUS_RING)}
         >
           {open ? <ChevronDown className="w-3.5 h-3.5 shrink-0" aria-hidden="true" /> : <ChevronRight className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />}
           <span className="font-semibold">{STATUS_WORDS[change.status]}</span>
           <span className="font-mono truncate min-w-0 text-shodh-text">{path}</span>
-          <span className="ml-auto shrink-0 font-mono" aria-hidden="true">
+          <span className="ms-auto shrink-0 font-mono" aria-hidden="true">
             +{counts.added} −{counts.removed}
           </span>
         </button>
@@ -262,7 +262,7 @@ function FileDiff({ change, sideways, dark, startOpen, selection, onSelect, lang
               <button
                 type="button"
                 onClick={() => setShowAll(true)}
-                className={cn('w-full px-3 py-1.5 text-left text-caption text-shodh-accent-text hover:bg-shodh-raised-2', FOCUS_RING)}
+                className={cn('w-full px-3 py-1.5 text-start text-caption text-shodh-accent-text hover:bg-shodh-raised-2', FOCUS_RING)}
               >
                 {`Show ${hidden} more ${hidden === 1 ? 'line' : 'lines'}`}
               </button>
@@ -322,7 +322,7 @@ export function CodeDiff({ changes, label, selection = null, onSelect, language,
         <p className="m-0 text-caption text-shodh-text-muted">
           {`${changes.length} ${changes.length === 1 ? 'file' : 'files'}, ${totals.added} added, ${totals.removed} removed`}
         </p>
-        <div className="ml-auto flex items-center gap-1">
+        <div className="ms-auto flex items-center gap-1">
           {actions}
           <button
             type="button"
@@ -395,7 +395,7 @@ export function CodeFileView({ path, text, language, firstLine = 1, label, selec
         {all.length > lines.length && (
           <p className="m-0 shrink-0 text-caption text-shodh-text-muted">{`Lines ${firstLine + start}–${lastShown} of ${all.length}`}</p>
         )}
-        <div className="ml-auto flex items-center gap-1">{actions}</div>
+        <div className="ms-auto flex items-center gap-1">{actions}</div>
       </div>
       <div ref={scroller} className="overflow-y-auto scrollbar-thin" style={{ maxHeight }}>
         <CodeColumn path={path} lines={lines} numbers="new" language={language ?? languageOf(path)} dark={dark} selection={selection} onLine={onLine} />

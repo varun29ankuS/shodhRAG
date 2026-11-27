@@ -10,6 +10,7 @@
  */
 
 import type { ModelRef, ProviderId } from '../modelPicker/modelTypes.ts';
+import { isoDate } from '../../i18n/format.ts';
 
 export type WeekDay = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun';
 export const WEEK_DAYS: readonly WeekDay[] = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
@@ -251,7 +252,7 @@ export function shortTime(iso: string, now: number, options: { locale?: string; 
   const at = new Date(iso);
   if (Number.isNaN(at.getTime())) return '';
   const time = new Intl.DateTimeFormat(options.locale, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: options.timeZone }).format(at);
-  const day = (ms: number) => new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone: options.timeZone }).format(new Date(ms));
+  const day = (ms: number) => isoDate(ms, options.timeZone);
   if (day(at.getTime()) === day(now)) return time;
   if (day(at.getTime()) === day(now + 86_400_000)) return `${time} tomorrow`;
   const date = new Intl.DateTimeFormat(options.locale, { weekday: 'short', day: 'numeric', month: 'short', timeZone: options.timeZone }).format(at);

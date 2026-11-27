@@ -231,7 +231,7 @@ function SubscriptionsRow({
       <RowHeading icon={LogIn} title="Sign in with a subscription">
         Use a plan you already pay for. Shodh opens the provider&apos;s page in your browser.
       </RowHeading>
-      <ul className="flex flex-col gap-2 pl-7">
+      <ul className="flex flex-col gap-2 ps-7">
         {subscriptions.map(s => {
           const status = statusText(s);
           const busy = starting === s.provider || signIn?.provider === s.provider;
@@ -248,7 +248,7 @@ function SubscriptionsRow({
                 {s.state !== 'connected' && (
                   <button
                     type="button"
-                    className={cn(BUTTON, 'ml-auto')}
+                    className={cn(BUTTON, 'ms-auto')}
                     disabled={localOnly || busy || (signIn !== null && signIn.provider !== s.provider) || starting !== null}
                     onClick={() => onSignIn(s.provider)}
                     aria-label={`Sign in with ${s.label}`}
@@ -268,9 +268,9 @@ function SubscriptionsRow({
           );
         })}
       </ul>
-      {localOnly && <p className="m-0 pl-7 text-caption text-shodh-text-muted">Local-only mode is on, so cloud sign-ins are off.</p>}
+      {localOnly && <p className="m-0 ps-7 text-caption text-shodh-text-muted">Local-only mode is on, so cloud sign-ins are off.</p>}
       {signIn && (
-        <div role="status" className="ml-7 p-3 rounded-lg bg-shodh-raised flex flex-col gap-2 text-small text-shodh-text-secondary">
+        <div role="status" className="ms-7 p-3 rounded-lg bg-shodh-raised flex flex-col gap-2 text-small text-shodh-text-secondary">
           <p className="m-0 flex items-center gap-2">
             <Loader2 className="w-3.5 h-3.5 shrink-0 animate-spin motion-reduce:animate-none" aria-hidden="true" />
             Finish signing in to {PROVIDER_LABELS[signIn.provider]} in your browser.
@@ -306,7 +306,7 @@ function SubscriptionsRow({
       )}
       {/* A provider no longer listed (the list changed while it failed) keeps its message here. */}
       {error && !subscriptions.some(s => s.provider === error.provider) && (
-        <p role="alert" className="m-0 pl-7 text-small text-shodh-error">
+        <p role="alert" className="m-0 ps-7 text-small text-shodh-error">
           {`${PROVIDER_LABELS[error.provider]}: ${error.message}`}
         </p>
       )}
@@ -359,7 +359,7 @@ function ApiKeyRow({ picker, fixFor, onSaved }: { picker: ModelPickerHandle; fix
         The provider is recognised from the key. It is checked once with that provider and kept in the system credential store.
       </RowHeading>
       <form
-        className="pl-7 flex flex-col gap-2"
+        className="ps-7 flex flex-col gap-2"
         onSubmit={e => {
           e.preventDefault();
           void save();
@@ -548,7 +548,7 @@ function LocalRow({ picker }: { picker: ModelPickerHandle }) {
       <RowHeading icon={Monitor} title="Run locally">
         Models on this computer answer without anything leaving it.
       </RowHeading>
-      <div className="pl-7 flex flex-col gap-3 text-small">
+      <div className="ps-7 flex flex-col gap-3 text-small">
         <LmStudioRow picker={picker} />
         <div className="flex flex-col gap-1">
           <span className="font-medium text-shodh-text">Ollama</span>

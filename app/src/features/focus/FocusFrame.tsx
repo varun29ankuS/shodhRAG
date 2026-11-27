@@ -100,7 +100,7 @@ export function FocusFrame({ noun, getTarget, doubleClick = true, inline = false
         data-answer-ui=""
         className={cn(
           'items-center gap-1.5',
-          placement === 'over' ? 'absolute top-2 right-2 z-10 inline-flex' : 'flex justify-end mb-1.5',
+          placement === 'over' ? 'absolute top-2 end-2 z-10 inline-flex' : 'flex justify-end mb-1.5',
         )}
       >
         {actions}

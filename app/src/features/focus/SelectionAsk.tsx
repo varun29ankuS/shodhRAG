@@ -232,7 +232,7 @@ export function SelectionAsk() {
     >
       <MessageSquareText className="w-3.5 h-3.5 text-shodh-accent-text" aria-hidden="true" />
       Ask about this
-      <Kbd shortcut="selectionAsk" className="ml-0.5 font-sans" />
+      <Kbd shortcut="selectionAsk" className="ms-0.5 font-sans" />
     </button>,
     pending.container,
   );

@@ -149,7 +149,7 @@ export function SymbolJump({ workspaceId, path }: SymbolJumpProps) {
       >
         <ListTree className="w-3.5 h-3.5" aria-hidden="true" />
         Go to symbol
-        <Kbd shortcut="goToSymbol" className="ml-1" />
+        <Kbd shortcut="goToSymbol" className="ms-1" />
       </button>
     );
   }
@@ -197,7 +197,7 @@ export function SymbolJump({ workspaceId, path }: SymbolJumpProps) {
               )}
             >
               <span className="min-w-0 truncate font-mono text-caption">{row.title}</span>
-              <span className="ml-auto shrink-0 font-mono text-caption text-shodh-text-muted">{row.where}</span>
+              <span className="ms-auto shrink-0 font-mono text-caption text-shodh-text-muted">{row.where}</span>
             </li>
           );
         })}

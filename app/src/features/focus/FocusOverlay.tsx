@@ -409,7 +409,7 @@ export function FocusOverlay({ session, onClose }: FocusOverlayProps) {
           style={maximized ? undefined : { width: box.width, height: box.height }}
         >
           <div className="relative shrink-0 border-b border-shodh-border-subtle">
-            <header className="flex items-center gap-2.5 pl-3 pr-3 py-2.5">
+            <header className="flex items-center gap-2.5 ps-3 pe-3 py-2.5">
               {multiLevel && (
                 <div className="flex items-center" role="group" aria-label="Levels">
                   <button type="button" onClick={goBack} disabled={depth === 0} aria-label="Up a level" title="Up a level (Alt+←)" className={iconButton}>
@@ -427,7 +427,7 @@ export function FocusOverlay({ session, onClose }: FocusOverlayProps) {
                   </button>
                 </div>
               )}
-              <span className={cn('text-caption font-semibold uppercase tracking-[0.08em] text-shodh-text-faint', !multiLevel && 'pl-2')} aria-hidden="true">
+              <span className={cn('text-caption font-semibold uppercase tracking-[0.08em] text-shodh-text-faint', !multiLevel && 'ps-2')} aria-hidden="true">
                 {KIND_LABEL[target.kind]}
               </span>
               <Dialog.Title className="flex-1 min-w-0 text-body font-semibold text-shodh-text truncate" title={target.label}>
@@ -472,7 +472,7 @@ export function FocusOverlay({ session, onClose }: FocusOverlayProps) {
                 <MessageSquareText className="w-4 h-4" aria-hidden="true" />
                 Ask about this
                 {thread && thread.turns.length > 0 && (
-                  <span className="ml-0.5 px-1.5 rounded-full bg-shodh-raised-2 text-caption tabular-nums text-shodh-text-muted">
+                  <span className="ms-0.5 px-1.5 rounded-full bg-shodh-raised-2 text-caption tabular-nums text-shodh-text-muted">
                     {thread.turns.filter(t => t.role === 'assistant').length}
                   </span>
                 )}
@@ -616,8 +616,8 @@ export function FocusOverlay({ session, onClose }: FocusOverlayProps) {
               onPointerCancel={onResizePointerUp}
               onKeyDown={onResizeKeyDown}
               className={cn(
-                'target-24 absolute right-0 bottom-0 z-20 w-4 h-4 cursor-nwse-resize touch-none rounded-tl-md text-shodh-text-faint',
-                "after:absolute after:right-1 after:bottom-1 after:w-2 after:h-2 after:border-r-2 after:border-b-2 after:border-current after:content-['']",
+                'target-24 absolute end-0 bottom-0 z-20 w-4 h-4 cursor-nwse-resize touch-none rounded-ss-md text-shodh-text-faint',
+                "after:absolute after:end-1 after:bottom-1 after:w-2 after:h-2 after:border-e-2 after:border-b-2 after:border-current after:content-['']",
                 FOCUS_RING,
               )}
             />

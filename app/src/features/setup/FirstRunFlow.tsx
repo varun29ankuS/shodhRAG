@@ -197,11 +197,11 @@ function FlowDialog({ step, onStepChange, onFinish, onSkip, llmStatus, sources, 
             </button>
           )}
           {step !== 'done' && (
-            <button type="button" onClick={onSkip} className={cn(QUIET, 'mr-auto')}>
+            <button type="button" onClick={onSkip} className={cn(QUIET, 'me-auto')}>
               Finish later
             </button>
           )}
-          {step === 'done' && <span className="mr-auto" />}
+          {step === 'done' && <span className="me-auto" />}
           <button type="button" onClick={advance} className={PRIMARY}>
             {primaryLabel(step, llmStatus.connected, hasFolder)}
           </button>

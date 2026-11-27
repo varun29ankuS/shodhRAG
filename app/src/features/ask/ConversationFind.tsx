@@ -199,7 +199,7 @@ export function ConversationFind({ messages, firstVisibleIndex, reveal, onTarget
       role="search"
       aria-label="Find in this conversation"
       data-esc-local
-      className="ask-fade-in flex items-center gap-1 h-10 pl-3 pr-1 rounded-xl border border-shodh-border-strong bg-shodh-surface shadow-[0_6px_20px_rgba(0,0,0,0.14)]"
+      className="ask-fade-in flex items-center gap-1 h-10 ps-3 pe-1 rounded-xl border border-shodh-border-strong bg-shodh-surface shadow-[0_6px_20px_rgba(0,0,0,0.14)]"
     >
       <input
         ref={inputRef}
@@ -212,7 +212,7 @@ export function ConversationFind({ messages, firstVisibleIndex, reveal, onTarget
         spellCheck={false}
         className={cn('w-48 min-w-0 bg-transparent text-small text-shodh-text placeholder:text-shodh-text-faint outline-none', FOCUS_UNDERLINE)}
       />
-      <span className="min-w-[72px] text-right text-caption tabular-nums text-shodh-text-muted" role="status" aria-live="polite">
+      <span className="min-w-[72px] text-end text-caption tabular-nums text-shodh-text-muted" role="status" aria-live="polite">
         {status}
       </span>
       <button

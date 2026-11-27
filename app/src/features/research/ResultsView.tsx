@@ -59,7 +59,7 @@ function ReportSummary({ report }: { report: ExtractionReport }) {
           <summary className={cn('cursor-pointer w-fit rounded text-shodh-text', FOCUS_RING)}>
             {`${report.skipped.length} ${report.skipped.length === 1 ? 'table' : 'tables'} gave no results`}
           </summary>
-          <ul className="mt-2 flex flex-col gap-1 pl-4 list-disc">
+          <ul className="mt-2 flex flex-col gap-1 ps-4 list-disc">
             {report.skipped.map((t, i) => (
               <li key={i}>
                 <span className="text-shodh-text">{`Page ${t.page}${t.caption ? ` — ${t.caption.slice(0, 120)}` : ''}`}</span>
@@ -80,15 +80,15 @@ function ResultTable({ results, review, onReview, busyId }: { results: ResultRec
         <thead className="bg-shodh-raised">
           <tr>
             {['Method', 'Dataset', 'Metric', 'Value', 'Setting', 'Source'].map(h => (
-              <th key={h} scope="col" className="px-3 py-1.5 text-left font-semibold text-shodh-text border-b border-shodh-border whitespace-nowrap">{h}</th>
+              <th key={h} scope="col" className="px-3 py-1.5 text-start font-semibold text-shodh-text border-b border-shodh-border whitespace-nowrap">{h}</th>
             ))}
-            {review && <th scope="col" className="px-3 py-1.5 text-left font-semibold text-shodh-text border-b border-shodh-border">Decision</th>}
+            {review && <th scope="col" className="px-3 py-1.5 text-start font-semibold text-shodh-text border-b border-shodh-border">Decision</th>}
           </tr>
         </thead>
         <tbody>
           {results.map(r => (
             <tr key={r.id} className="align-top">
-              <th scope="row" className="px-3 py-1.5 text-left font-medium text-shodh-text border-b border-shodh-border-subtle">{r.method}</th>
+              <th scope="row" className="px-3 py-1.5 text-start font-medium text-shodh-text border-b border-shodh-border-subtle">{r.method}</th>
               <td className="px-3 py-1.5 text-shodh-text-secondary border-b border-shodh-border-subtle">{r.dataset}</td>
               <td className="px-3 py-1.5 text-shodh-text-secondary border-b border-shodh-border-subtle">{r.metric}</td>
               <td className="px-3 py-1.5 text-shodh-text border-b border-shodh-border-subtle whitespace-nowrap">

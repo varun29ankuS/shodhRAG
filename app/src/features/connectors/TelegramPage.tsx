@@ -132,7 +132,7 @@ function OverviewTab({ status, now, onTab }: TabProps & { onTab: (tab: TelegramT
             {status.groups.filter(g => g.allowed).length === 1 ? 'group' : 'groups'}
             {waitingGroups(status).length > 0 && `, ${waitingGroups(status).length} waiting`}
           </p>
-          <button type="button" className={cn(QUIET_BUTTON, 'self-start -ml-2.5')} onClick={() => onTab('people')}>
+          <button type="button" className={cn(QUIET_BUTTON, 'self-start -ms-2.5')} onClick={() => onTab('people')}>
             Open People & groups
           </button>
         </Panel>
@@ -185,7 +185,7 @@ function OwnerSection(props: TabProps) {
           <CheckCircle2 className="w-4 h-4 text-shodh-success shrink-0" aria-hidden="true" />
           <span className="text-small font-medium text-shodh-text">{ownerLine(status)}</span>
           {confirm ? (
-            <span role="alertdialog" aria-label="Unlink your account" className="ml-auto flex items-center gap-2">
+            <span role="alertdialog" aria-label="Unlink your account" className="ms-auto flex items-center gap-2">
               <span className="text-small text-shodh-text-secondary">The bot will refuse this account.</span>
               <button
                 type="button"
@@ -202,7 +202,7 @@ function OwnerSection(props: TabProps) {
               <button type="button" className={QUIET_BUTTON} onClick={() => setConfirm(false)}>Cancel</button>
             </span>
           ) : (
-            <button type="button" className={cn(QUIET_BUTTON, 'ml-auto')} disabled={busy} onClick={() => setConfirm(true)}>
+            <button type="button" className={cn(QUIET_BUTTON, 'ms-auto')} disabled={busy} onClick={() => setConfirm(true)}>
               Unlink
             </button>
           )}
@@ -519,7 +519,7 @@ function HeaderMenu({ onDisconnect, link }: { onDisconnect: () => void; link: st
     document.addEventListener('mousedown', onDown);
     return () => document.removeEventListener('mousedown', onDown);
   }, [open]);
-  const item = 'w-full flex items-center gap-2 px-3 py-1.5 text-small text-left hover:bg-shodh-raised-2 focus-visible:bg-shodh-raised-2 focus-visible:outline-none';
+  const item = 'w-full flex items-center gap-2 px-3 py-1.5 text-small text-start hover:bg-shodh-raised-2 focus-visible:bg-shodh-raised-2 focus-visible:outline-none';
   return (
     <div ref={menuRef} className="relative shrink-0">
       <button ref={buttonRef} type="button" className={cn(QUIET_BUTTON, 'w-9 h-9 justify-center px-0')} aria-label="Telegram options" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(o => !o)}>
@@ -529,7 +529,7 @@ function HeaderMenu({ onDisconnect, link }: { onDisconnect: () => void; link: st
         <div
           role="menu"
           aria-label="Telegram options"
-          className="shell-pop absolute right-0 top-10 z-50 min-w-[200px] py-1 rounded-lg border border-shodh-border-strong bg-shodh-raised shadow-lg"
+          className="shell-pop absolute end-0 top-10 z-50 min-w-[200px] py-1 rounded-lg border border-shodh-border-strong bg-shodh-raised shadow-lg"
           onKeyDown={e => {
             if (e.key === 'Escape') {
               e.preventDefault();
@@ -575,7 +575,7 @@ function HeaderMenu({ onDisconnect, link }: { onDisconnect: () => void; link: st
 function Breadcrumb({ onBack }: { onBack: () => void }) {
   return (
     <nav aria-label="Breadcrumb" className="flex items-center gap-1 text-small">
-      <button type="button" className={cn(QUIET_BUTTON, '-ml-2.5')} onClick={onBack} aria-label="Back to all connectors">
+      <button type="button" className={cn(QUIET_BUTTON, '-ms-2.5')} onClick={onBack} aria-label="Back to all connectors">
         <ArrowLeft className="w-3.5 h-3.5" aria-hidden="true" />
         Connectors
       </button>

@@ -27,7 +27,7 @@ function CellValue({ cell, method, column }: { cell: ComparisonCell; method: str
           label: `${method} · ${column}`,
         })
       }
-      className={cn('text-left rounded hover:text-shodh-accent-text', FOCUS_RING)}
+      className={cn('text-start rounded hover:text-shodh-accent-text', FOCUS_RING)}
       title={`Show the cell in ${cell.fileName}, page ${cell.page}`}
     >
       <span className="tabular-nums text-shodh-text underline decoration-dotted underline-offset-2">{valueLabel(cell)}</span>
@@ -265,16 +265,16 @@ export function CompareResults({
                 <caption className="sr-only">Results by method and dataset/metric; each value opens its cell in the paper.</caption>
                 <thead className="bg-shodh-raised">
                   <tr>
-                    <th scope="col" className="px-3 py-1.5 text-left font-semibold text-shodh-text border-b border-shodh-border">Method</th>
+                    <th scope="col" className="px-3 py-1.5 text-start font-semibold text-shodh-text border-b border-shodh-border">Method</th>
                     {comparison.columns.map(c => (
-                      <th key={c.key} scope="col" className="px-3 py-1.5 text-left font-semibold text-shodh-text border-b border-shodh-border whitespace-nowrap">{columnLabel(c)}</th>
+                      <th key={c.key} scope="col" className="px-3 py-1.5 text-start font-semibold text-shodh-text border-b border-shodh-border whitespace-nowrap">{columnLabel(c)}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
                   {rows.map(row => (
                     <tr key={row.methodId} className="align-top">
-                      <th scope="row" className="px-3 py-1.5 text-left font-medium text-shodh-text border-b border-shodh-border-subtle">{row.method}</th>
+                      <th scope="row" className="px-3 py-1.5 text-start font-medium text-shodh-text border-b border-shodh-border-subtle">{row.method}</th>
                       {row.cells.map((cell, i) => (
                         <td key={cell.key} className="px-3 py-1.5 border-b border-shodh-border-subtle">
                           {cell.values.length === 0 ? (

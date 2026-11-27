@@ -10,7 +10,7 @@ const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-shodh-surface';
 
 const ITEM =
-  'w-full flex items-center gap-2 px-3 py-1.5 text-small text-left text-shodh-text-secondary hover:bg-shodh-raised-2 focus-visible:bg-shodh-raised-2 focus-visible:outline-none';
+  'w-full flex items-center gap-2 px-3 py-1.5 text-small text-start text-shodh-text-secondary hover:bg-shodh-raised-2 focus-visible:bg-shodh-raised-2 focus-visible:outline-none';
 
 interface ChatActionsMenuProps {
   conversationId: string;
@@ -91,7 +91,7 @@ export function ChatActionsMenu({ conversationId, conversationTitle, messages, o
         <MoreHorizontal className="w-3.5 h-3.5" aria-hidden="true" />
       </button>
       {open && (
-        <div className="shell-pop absolute right-0 top-7 z-50 min-w-[220px] rounded-lg border border-shodh-border-strong bg-shodh-raised shadow-lg overflow-hidden">
+        <div className="shell-pop absolute end-0 top-7 z-50 min-w-[220px] rounded-lg border border-shodh-border-strong bg-shodh-raised shadow-lg overflow-hidden">
           <div id={menuId} ref={menuRef} role="menu" aria-label="More chat actions" onKeyDown={onMenuKeyDown} className="py-1">
             {onExport && (
               <button type="button" role="menuitem" onClick={() => { close(true); onExport(); }} className={ITEM}>

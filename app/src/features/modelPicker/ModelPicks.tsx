@@ -62,7 +62,7 @@ export function ModelPicks({ picker }: { picker: ModelPickerHandle }) {
               disabled={!available || busy !== null}
               onClick={() => void run(option.pick, false)}
               className={cn(
-                'flex items-start gap-2.5 p-3 rounded-xl border text-left transition-colors duration-micro active:scale-[0.99]',
+                'flex items-start gap-2.5 p-3 rounded-xl border text-start transition-colors duration-micro active:scale-[0.99]',
                 selected ? 'border-shodh-accent bg-shodh-accent-soft' : 'border-shodh-border bg-shodh-ground hover:bg-shodh-raised',
                 !available && 'opacity-60 cursor-not-allowed hover:bg-shodh-ground',
                 FOCUS_RING,

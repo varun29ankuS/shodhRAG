@@ -22,7 +22,7 @@ export function MarkText({ shown, question, context }: { shown: string; question
       title={question}
       aria-label={`${shown}. Go deeper: ${question}`}
       className={cn(
-        'inline p-0 m-0 bg-transparent border-0 font-[inherit] text-[inherit] text-left cursor-pointer',
+        'inline p-0 m-0 bg-transparent border-0 font-[inherit] text-[inherit] text-start cursor-pointer',
         'underline decoration-dotted decoration-shodh-accent underline-offset-[3px] hover:decoration-solid',
         FOCUS_RING,
       )}

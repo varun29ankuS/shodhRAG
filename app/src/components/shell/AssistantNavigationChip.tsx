@@ -27,7 +27,7 @@ export function AssistantNavigationChip({
   if (!held) return null;
   const where = held.nav.view === null ? null : VIEW_TAB_LABELS[held.nav.view];
   return (
-    <span className="ml-2 inline-flex items-center gap-1 rounded-full border border-shodh-border bg-shodh-surface pl-2.5 pr-1 py-0.5 text-caption text-shodh-text-secondary">
+    <span className="ms-2 inline-flex items-center gap-1 rounded-full border border-shodh-border bg-shodh-surface ps-2.5 pe-1 py-0.5 text-caption text-shodh-text-secondary">
       <span>{heldNavigationText(where, held.nav.label, held.count)}</span>
       <button
         type="button"

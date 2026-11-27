@@ -82,7 +82,7 @@ export function EditVisualDialog({
             <Dialog.Title className="text-body-lg font-semibold">Rename and note</Dialog.Title>
             <Dialog.Close
               aria-label="Close"
-              className={cn('w-7 h-7 -mt-1 -mr-1 inline-flex items-center justify-center rounded-lg text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text', FOCUS_RING)}
+              className={cn('w-7 h-7 -mt-1 -me-1 inline-flex items-center justify-center rounded-lg text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text', FOCUS_RING)}
             >
               <X className="w-4 h-4" aria-hidden="true" />
             </Dialog.Close>

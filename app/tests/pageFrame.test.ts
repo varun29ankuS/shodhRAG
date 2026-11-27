@@ -92,7 +92,7 @@ test("the frame's classes say its measures", () => {
 test("the gutter is the pill's own height and distance from the window's edge", () => {
   const dock = source('components/shell/DockPanel.tsx');
   // The pill: fixed, 16px above the bottom edge (bottom-4), 40px tall (h-10).
-  assert.match(dock, /const CORNER = 'fixed bottom-4 right-4 z-40';/);
+  assert.match(dock, /const CORNER = 'fixed bottom-4 end-4 z-40';/);
   assert.match(dock, /'dock-pop inline-flex items-center gap-2 h-10 /);
   assert.equal(step(4) + step(10), DOCK_GUTTER_PX);
 });
@@ -185,7 +185,7 @@ test("Ask's message box is one element at the bottom, before and after the first
   // One composer, in one dock, measured once: there is no second layout for a new chat.
   assert.equal(ask.match(/\{composer\(true\)\}/g)?.length, 1);
   assert.equal(ask.match(/ref=\{setComposerArea\}/g)?.length, 1);
-  assert.match(ask, /<div ref=\{setComposerArea\} className="absolute left-0 right-0 bottom-0 /);
+  assert.match(ask, /<div ref=\{setComposerArea\} className="absolute start-0 end-0 bottom-0 /);
   // A new chat changes what is above the box, not the box.
   assert.match(ask, /\{empty \? emptyChat : \(/);
   assert.doesNotMatch(ask, /if \(messages\.length === 0\) \{\s*return \(/);

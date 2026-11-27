@@ -62,7 +62,7 @@ test('the controls come in one order and Send is last, at the far right', () => 
   ];
   assert.deepEqual([...positions].sort((a, b) => a - b), positions);
   // Send and Interrupt share the last place, pushed right.
-  assert.match(row, /<div className="ml-auto shrink-0 flex flex-nowrap items-center gap-1\.5">/);
+  assert.match(row, /<div className="ms-auto shrink-0 flex flex-nowrap items-center gap-1\.5">/);
   assert.ok(at(/COMPOSER_TEST_IDS\.stop/) > at(/\{modelControl\}/));
   for (const id of Object.values(COMPOSER_TEST_IDS)) assert.match(id, /^composer-[a-z]+$/);
 });

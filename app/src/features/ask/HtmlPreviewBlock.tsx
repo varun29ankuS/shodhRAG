@@ -54,7 +54,7 @@ export function HtmlPreviewBlock({ code, language, actions, raw, codeRef }: Html
 
   return (
     <div data-testid="html-preview">
-      <div className="flex items-center justify-between gap-2 pl-3 pr-1.5 h-8 border-b border-shodh-border-subtle bg-shodh-raised">
+      <div className="flex items-center justify-between gap-2 ps-3 pe-1.5 h-8 border-b border-shodh-border-subtle bg-shodh-raised">
         <span className="font-mono text-caption uppercase tracking-wider text-shodh-text-muted" data-answer-ui="">{language}</span>
         <span className="inline-flex items-center gap-1" data-answer-ui="">
           <span

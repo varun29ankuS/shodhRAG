@@ -99,7 +99,7 @@ function ZoomToolbar({
     <div
       role="toolbar"
       aria-label="Zoom"
-      className="absolute right-3 bottom-3 z-10 flex items-center gap-0.5 rounded-xl border border-shodh-border bg-shodh-surface/95 p-1 shadow-[0_6px_24px_rgba(0,0,0,0.25)]"
+      className="absolute end-3 bottom-3 z-10 flex items-center gap-0.5 rounded-xl border border-shodh-border bg-shodh-surface/95 p-1 shadow-[0_6px_24px_rgba(0,0,0,0.25)]"
       onPointerDown={e => e.stopPropagation()}
     >
       <button type="button" className={button} onClick={onZoomOut} disabled={scale <= MIN_ZOOM + 1e-6} aria-label="Zoom out" title="Zoom out (−)">
@@ -383,7 +383,7 @@ function StageError({ message, detail }: { message: string; detail?: string }) {
         {message}
       </p>
       {detail && (
-        <pre className="max-w-full max-h-60 overflow-auto scrollbar-thin rounded-lg border border-shodh-border bg-shodh-surface-2 p-3 text-left text-caption font-mono text-shodh-text-muted whitespace-pre-wrap">
+        <pre className="max-w-full max-h-60 overflow-auto scrollbar-thin rounded-lg border border-shodh-border bg-shodh-surface-2 p-3 text-start text-caption font-mono text-shodh-text-muted whitespace-pre-wrap">
           {detail}
         </pre>
       )}
@@ -729,7 +729,7 @@ function SelectionStage({ target }: { target: Extract<FocusTarget, { kind: 'sele
           </p>
         ) : (
           <>
-            <blockquote className="pl-4 border-l-2 border-shodh-accent text-body-lg leading-relaxed text-shodh-text whitespace-pre-wrap break-words">{text}</blockquote>
+            <blockquote className="ps-4 border-s-2 border-shodh-accent text-body-lg leading-relaxed text-shodh-text whitespace-pre-wrap break-words">{text}</blockquote>
             {paragraph && (
               <p className="text-body leading-relaxed text-shodh-text-muted whitespace-pre-wrap break-words">{paragraph}</p>
             )}
@@ -748,7 +748,7 @@ function TableView({ rows }: { rows: string[][] }) {
         <thead className="bg-shodh-raised">
           <tr>
             {header.map((cell, i) => (
-              <th key={i} scope="col" className="px-[0.85em] py-[0.55em] text-left font-semibold text-shodh-text border-b border-shodh-border">{cell}</th>
+              <th key={i} scope="col" className="px-[0.85em] py-[0.55em] text-start font-semibold text-shodh-text border-b border-shodh-border">{cell}</th>
             ))}
           </tr>
         </thead>

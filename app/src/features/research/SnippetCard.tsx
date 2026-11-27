@@ -77,12 +77,12 @@ export function SnippetCard({ snippet, showFile = true, onChange }: { snippet: S
           type="button"
           onClick={() => openSnippet(snippet)}
           aria-label={`Open snippet ${label}`}
-          className={cn('text-left flex flex-col', FOCUS_RING, 'focus-visible:ring-offset-0 rounded-[14px]')}
+          className={cn('text-start flex flex-col', FOCUS_RING, 'focus-visible:ring-offset-0 rounded-[14px]')}
         >
           <SnippetThumb snippet={snippet} className="border-b border-shodh-border-subtle" />
           <div className="px-3 pt-2.5 pb-2.5 flex flex-col gap-0.5 min-w-0">
             <h3 id={titleId} className="text-small font-semibold text-shodh-text truncate" title={label}>
-              <Scissors className="inline w-3 h-3 mr-1 -mt-0.5 text-shodh-text-muted" aria-hidden="true" />
+              <Scissors className="inline w-3 h-3 me-1 -mt-0.5 text-shodh-text-muted" aria-hidden="true" />
               {label}
             </h3>
             <p className="text-caption text-shodh-text-muted truncate">
@@ -95,7 +95,7 @@ export function SnippetCard({ snippet, showFile = true, onChange }: { snippet: S
           </div>
         </button>
         <span
-          className="absolute left-2 top-2 w-6 h-6 inline-flex items-center justify-center rounded-md bg-shodh-surface/90 border border-shodh-border text-shodh-text-muted opacity-0 group-hover:opacity-100 transition-opacity duration-micro pointer-events-none"
+          className="absolute start-2 top-2 w-6 h-6 inline-flex items-center justify-center rounded-md bg-shodh-surface/90 border border-shodh-border text-shodh-text-muted opacity-0 group-hover:opacity-100 transition-opacity duration-micro pointer-events-none"
           title="Drag onto the chat to add as context"
           aria-hidden="true"
         >
@@ -107,7 +107,7 @@ export function SnippetCard({ snippet, showFile = true, onChange }: { snippet: S
           title="Delete (you can undo)"
           onClick={remove}
           className={cn(
-            'absolute right-2 top-2 w-7 h-7 inline-flex items-center justify-center rounded-lg bg-shodh-surface/90 border border-shodh-border text-shodh-text-muted hover:text-shodh-error',
+            'absolute end-2 top-2 w-7 h-7 inline-flex items-center justify-center rounded-lg bg-shodh-surface/90 border border-shodh-border text-shodh-text-muted hover:text-shodh-error',
             'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 transition-opacity duration-micro',
             FOCUS_RING,
           )}

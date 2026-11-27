@@ -131,7 +131,7 @@ export function ActivityTray({ jobs, onOpenConversation }: ActivityTrayProps) {
         <Activity className="w-4 h-4" aria-hidden="true" />
         {count > 0 && (
           <span
-            className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-shodh-accent text-shodh-on-accent text-caption font-bold leading-[18px] text-center tabular-nums"
+            className="absolute -top-1.5 -end-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-shodh-accent text-shodh-on-accent text-caption font-bold leading-[18px] text-center tabular-nums"
             aria-hidden="true"
           >
             {count}
@@ -144,7 +144,7 @@ export function ActivityTray({ jobs, onOpenConversation }: ActivityTrayProps) {
           id={panelId}
           role="dialog"
           aria-label="Running now"
-          className="ask-rise absolute z-50 bottom-full left-0 mb-2 w-[300px] rounded-xl border border-shodh-border-strong bg-shodh-surface shadow-[0_12px_36px_rgba(0,0,0,0.32)] p-2 flex flex-col gap-1"
+          className="ask-rise absolute z-50 bottom-full start-0 mb-2 w-[300px] rounded-xl border border-shodh-border-strong bg-shodh-surface shadow-[0_12px_36px_rgba(0,0,0,0.32)] p-2 flex flex-col gap-1"
         >
           <p className="px-2 pt-1 pb-0.5 text-caption font-semibold uppercase tracking-wide text-shodh-text-faint">Running now</p>
           {count === 0 && <p className="px-2 py-2 text-small text-shodh-text-muted">Nothing is running.</p>}
@@ -158,7 +158,7 @@ export function ActivityTray({ jobs, onOpenConversation }: ActivityTrayProps) {
                   onOpenConversation(liveRun.conversationId);
                   setOpen(false);
                 }}
-                className={cn('min-w-0 flex-1 text-left rounded-sm', FOCUS_RING)}
+                className={cn('min-w-0 flex-1 text-start rounded-sm', FOCUS_RING)}
               >
                 <span className="block text-small font-medium text-shodh-text truncate">{conversationTitle}</span>
                 <span className="block text-caption text-shodh-text-muted truncate">{runActivity(liveRun.transcript)}</span>

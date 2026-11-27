@@ -5,6 +5,7 @@ import { cn } from '../../lib/utils';
 import { VisualsDialog, useVisualCount } from '../visuals/GalleryDialog';
 import { chatTokenUsage, tokenUsageLine } from './tokenUsage';
 import type { ChatMessage } from './types';
+import { tr } from '../../i18n/tr';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-shodh-surface';
@@ -78,11 +79,11 @@ export function ChatActionsMenu({ conversationId, conversationTitle, messages, o
         ref={buttonRef}
         type="button"
         onClick={() => setOpen(o => !o)}
-        aria-label="More chat actions"
+        aria-label={tr('ask.chatActionsMenu.moreChatActions')}
         aria-haspopup="menu"
         aria-expanded={open}
         aria-controls={open ? menuId : undefined}
-        title="More chat actions"
+        title={tr('ask.chatActionsMenu.moreChatActions')}
         className={cn(
           'h-6 min-w-[24px] px-1.5 rounded-full inline-flex items-center justify-center bg-shodh-raised text-shodh-text-muted hover:text-shodh-text transition-colors duration-micro',
           FOCUS_RING,
@@ -92,11 +93,11 @@ export function ChatActionsMenu({ conversationId, conversationTitle, messages, o
       </button>
       {open && (
         <div className="shell-pop absolute end-0 top-7 z-50 min-w-[220px] rounded-lg border border-shodh-border-strong bg-shodh-raised shadow-lg overflow-hidden">
-          <div id={menuId} ref={menuRef} role="menu" aria-label="More chat actions" onKeyDown={onMenuKeyDown} className="py-1">
+          <div id={menuId} ref={menuRef} role="menu" aria-label={tr('ask.chatActionsMenu.moreChatActions')} onKeyDown={onMenuKeyDown} className="py-1">
             {onExport && (
               <button type="button" role="menuitem" onClick={() => { close(true); onExport(); }} className={ITEM}>
                 <Download className="w-3.5 h-3.5" aria-hidden="true" />
-                Export as Markdown
+                {tr('ask.chatActionsMenu.exportAsMarkdown')}
               </button>
             )}
             <button
@@ -104,7 +105,7 @@ export function ChatActionsMenu({ conversationId, conversationTitle, messages, o
               role="menuitem"
               onClick={() => { close(false); setVisualsOpen(true); }}
               className={ITEM}
-              title="Diagrams, charts, sketches, plots, simulations, equations and tables from this conversation"
+              title={tr('ask.chatActionsMenu.diagramsChartsSketchesPlotsSimulations')}
             >
               <Images className="w-3.5 h-3.5" aria-hidden="true" />
               {visualCount === null ? 'Visuals' : `Visuals (${visualCount})`}

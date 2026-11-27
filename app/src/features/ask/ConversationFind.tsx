@@ -15,6 +15,7 @@ import type { ChatMessage } from './types';
 import { countOf } from '../../lib/plural';
 import { IS_MAC_PLATFORM, shortcutText, withShortcut } from '../../lib/shortcuts';
 import { FOCUS_UNDERLINE } from '../../lib/focusStyles';
+import { tr } from '../../i18n/tr';
 
 /** CSS custom highlight names (styled in index.css). */
 const HIGHLIGHT_ALL = 'conversation-find';
@@ -197,7 +198,7 @@ export function ConversationFind({ messages, firstVisibleIndex, reveal, onTarget
   return (
     <div
       role="search"
-      aria-label="Find in this conversation"
+      aria-label={tr('ask.conversationFind.findInThisConversation')}
       data-esc-local
       className="ask-fade-in flex items-center gap-1 h-10 ps-3 pe-1 rounded-xl border border-shodh-border-strong bg-shodh-surface shadow-[0_6px_20px_rgba(0,0,0,0.14)]"
     >
@@ -207,10 +208,10 @@ export function ConversationFind({ messages, firstVisibleIndex, reveal, onTarget
         value={draft}
         onChange={e => setDraft(e.target.value)}
         onKeyDown={onKeyDown}
-        placeholder="Find in conversation"
-        aria-label="Find in conversation"
+        placeholder={tr('ask.conversationFind.findInConversation')}
+        aria-label={tr('ask.conversationFind.findInConversation')}
         spellCheck={false}
-        className={cn('w-48 min-w-0 bg-transparent text-small text-shodh-text placeholder:text-shodh-text-faint outline-none', FOCUS_UNDERLINE)}
+        className={cn('w-56 min-w-0 bg-transparent text-small text-shodh-text placeholder:text-shodh-text-faint outline-none', FOCUS_UNDERLINE)}
       />
       <span className="min-w-[72px] text-end text-caption tabular-nums text-shodh-text-muted" role="status" aria-live="polite">
         {status}
@@ -219,7 +220,7 @@ export function ConversationFind({ messages, firstVisibleIndex, reveal, onTarget
         type="button"
         onClick={() => step(-1)}
         disabled={total === 0}
-        aria-label="Previous match"
+        aria-label={tr('ask.conversationFind.previousMatch')}
         title={withShortcut('Previous match', 'prevMatch', IS_MAC_PLATFORM)}
         className={cn('w-7 h-7 inline-flex items-center justify-center rounded-lg text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text disabled:opacity-40 transition-colors duration-micro', FOCUS_RING)}
       >
@@ -229,7 +230,7 @@ export function ConversationFind({ messages, firstVisibleIndex, reveal, onTarget
         type="button"
         onClick={() => step(1)}
         disabled={total === 0}
-        aria-label="Next match"
+        aria-label={tr('ask.conversationFind.nextMatch')}
         title={withShortcut('Next match', 'nextMatch', IS_MAC_PLATFORM)}
         className={cn('w-7 h-7 inline-flex items-center justify-center rounded-lg text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text disabled:opacity-40 transition-colors duration-micro', FOCUS_RING)}
       >
@@ -238,7 +239,7 @@ export function ConversationFind({ messages, firstVisibleIndex, reveal, onTarget
       <button
         type="button"
         onClick={onClose}
-        aria-label="Close find"
+        aria-label={tr('ask.conversationFind.closeFind')}
         title={withShortcut('Close', 'close', IS_MAC_PLATFORM)}
         className={cn('w-7 h-7 inline-flex items-center justify-center rounded-lg text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro', FOCUS_RING)}
       >

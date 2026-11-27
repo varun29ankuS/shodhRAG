@@ -4,6 +4,7 @@ import { VIEW_TAB_LABELS } from '../../lib/viewTabs';
 import { heldNavigationText } from '../../lib/navigationGate';
 import type { Counted } from '../../lib/navigationGate';
 import type { HeldNavigation } from '../../features/ask/ChatSessionContext';
+import { tr } from '../../i18n/tr';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background';
@@ -35,13 +36,13 @@ export function AssistantNavigationChip({
         className={`inline-flex items-center gap-1 h-6 rounded-full px-2 font-medium text-shodh-accent-text hover:bg-shodh-raised ${FOCUS_RING}`}
       >
         <ArrowRight className="w-3 h-3" aria-hidden="true" />
-        Go there
+        {tr('shell.assistantNavigationChip.goThere')}
       </button>
       <button
         type="button"
         onClick={onDismiss}
-        aria-label="Dismiss"
-        title="Dismiss"
+        aria-label={tr('shell.assistantNavigationChip.dismiss')}
+        title={tr('shell.assistantNavigationChip.dismiss')}
         className={`inline-grid place-items-center w-6 h-6 rounded-full text-shodh-text-faint hover:text-shodh-text hover:bg-shodh-raised ${FOCUS_RING}`}
       >
         <X className="w-3.5 h-3.5" aria-hidden="true" />

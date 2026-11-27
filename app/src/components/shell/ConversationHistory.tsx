@@ -11,6 +11,7 @@ import { ConversationPreviewCard, usePreviewVisibility } from './ConversationPre
 import { connectorGroups, connectorName } from '../../features/connectors/conversations';
 import { ConnectorIcon } from '../../features/connectors/ConnectorIcon';
 import { FOCUS_UNDERLINE } from '../../lib/focusStyles';
+import { tr } from '../../i18n/tr';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-sidebar';
@@ -143,10 +144,10 @@ export function ConversationHistory({
         id={headingId}
         className="px-5 pt-4 short:pt-1 pb-1 text-caption font-semibold tracking-[0.08em] uppercase text-shodh-text-faint shrink-0"
       >
-        Chats
+        {tr('shell.conversationHistory.chats')}
       </h2>
       {!loaded ? (
-        <div className="px-5 py-2 flex flex-col gap-2.5" role="status" aria-label="Loading conversations">
+        <div className="px-5 py-2 flex flex-col gap-2.5" role="status" aria-label={tr('shell.conversationHistory.loadingConversations')}>
           {[72, 54, 64].map(w => (
             <span key={w} className="shell-skeleton h-3.5 rounded" style={{ width: `${w}%` }} aria-hidden="true" />
           ))}
@@ -164,7 +165,7 @@ export function ConversationHistory({
                 FOCUS_RING,
               )}
             >
-              Show archived workspaces
+              {tr('shell.conversationHistory.showArchivedWorkspaces')}
             </button>
           )}
         </div>
@@ -204,7 +205,7 @@ export function ConversationHistory({
                     type="button"
                     onClick={() => onOpenWorkspace(id)}
                     aria-label={`Open workspace ${group.workspace.name}`}
-                    title="Open workspace"
+                    title={tr('shell.conversationHistory.openWorkspace')}
                     className={cn(
                       'w-6 h-6 rounded-md inline-flex items-center justify-center text-shodh-text-muted hover:bg-shodh-raised-2 hover:text-shodh-text opacity-0 group-hover/ws:opacity-100 group-focus-within/ws:opacity-100 focus-visible:opacity-100 transition-opacity duration-micro',
                       FOCUS_RING,
@@ -216,7 +217,7 @@ export function ConversationHistory({
                     type="button"
                     onClick={() => onNewChatInWorkspace(id)}
                     aria-label={`New chat in ${group.workspace.name}`}
-                    title="New chat in this workspace"
+                    title={tr('shell.conversationHistory.newChatInThisWorkspace')}
                     className={cn(
                       'w-6 h-6 rounded-md inline-flex items-center justify-center text-shodh-text-muted hover:bg-shodh-raised-2 hover:text-shodh-text opacity-0 group-hover/ws:opacity-100 group-focus-within/ws:opacity-100 focus-visible:opacity-100 transition-opacity duration-micro',
                       FOCUS_RING,
@@ -272,7 +273,7 @@ export function ConversationHistory({
             );
           })}
           {automationRuns.length > 0 && (
-            <div role="group" aria-label="Automations" className="pt-2 first:pt-0">
+            <div role="group" aria-label={tr('shell.conversationHistory.automations')} className="pt-2 first:pt-0">
               <button
                 type="button"
                 onClick={() => setShowRuns(open => !open)}
@@ -288,7 +289,7 @@ export function ConversationHistory({
                   className={cn('w-3.5 h-3.5 shrink-0 text-shodh-text-faint transition-transform duration-micro motion-reduce:transition-none', showRuns && 'rotate-90')}
                   aria-hidden="true"
                 />
-                <span className="truncate">Automations</span>
+                <span className="truncate">{tr('shell.conversationHistory.automations')}</span>
                 <span className="ms-auto text-caption font-normal text-shodh-text-faint" aria-hidden="true">{automationRuns.length}</span>
               </button>
               {showRuns && (
@@ -302,7 +303,7 @@ export function ConversationHistory({
           )}
           {(named.length > 0 || fromConnectors.length > 0 || automationRuns.length > 0) && groups.length > 0 && (
             <h3 className="px-3 pt-3 pb-0.5 text-caption font-semibold tracking-[0.06em] uppercase text-shodh-text-faint">
-              No workspace
+              {tr('shell.conversationHistory.noWorkspace')}
             </h3>
           )}
           {groups.map(group => (
@@ -445,7 +446,7 @@ function ConversationRow({
     <li ref={rowRef} data-chat-row="" className="relative group">
       {editing ? (
         <div className="px-3 py-2 rounded-lg bg-shodh-raised">
-          <label className="sr-only" htmlFor={`${menuId}-rename`}>Conversation title</label>
+          <label className="sr-only" htmlFor={`${menuId}-rename`}>{tr('shell.conversationHistory.conversationTitle')}</label>
           <input
             id={`${menuId}-rename`}
             ref={inputRef}
@@ -553,18 +554,18 @@ function ConversationRow({
                   }}
                   icon={<FolderInput className="w-3.5 h-3.5" aria-hidden="true" />}
                 >
-                  No workspace
+                  {tr('shell.conversationHistory.noWorkspace')}
                 </MenuItem>
               )}
             </>
           ) : (
             <>
           <MenuItem onSelect={startRename} icon={<Pencil className="w-3.5 h-3.5" aria-hidden="true" />} hint="F2">
-            Rename
+            {tr('shell.conversationHistory.rename')}
           </MenuItem>
           {!conversation.source && (workspaces.some(w => !w.archived) || currentWorkspace !== null) && (
             <MenuItem onSelect={() => setMoving(true)} icon={<FolderInput className="w-3.5 h-3.5" aria-hidden="true" />}>
-              Move to workspace…
+              {tr('shell.conversationHistory.moveToWorkspace')}
             </MenuItem>
           )}
           <MenuItem
@@ -585,7 +586,7 @@ function ConversationRow({
             }}
             icon={<Trash2 className="w-3.5 h-3.5" aria-hidden="true" />}
           >
-            Delete
+            {tr('shell.conversationHistory.delete')}
           </MenuItem>
             </>
           )}

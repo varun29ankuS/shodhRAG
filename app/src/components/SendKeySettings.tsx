@@ -4,6 +4,7 @@ import { IS_MAC_PLATFORM, shortcutText } from '../lib/shortcuts';
 import { SEND_KEYS, sendShortcut } from '../lib/sendKey';
 import type { SendKey } from '../lib/sendKey';
 import { useSendKey } from '../hooks/useSendKey';
+import { tr } from '../i18n/tr';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
@@ -19,7 +20,7 @@ export default function SendKeySettings() {
   const labelId = useId();
   return (
     <div className="flex flex-col gap-3" data-testid="settings-send-key">
-      <p id={labelId} className="m-0 text-body font-semibold text-shodh-text">Send</p>
+      <p id={labelId} className="m-0 text-body font-semibold text-shodh-text">{tr('settings.sendKeySettings.send')}</p>
       <div
         role="radiogroup"
         aria-labelledby={labelId}

@@ -3,6 +3,7 @@ import { ChevronDown, Lightbulb, Search, Wrench } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { formatDuration, summarizeRun } from './run';
 import type { ResponseMetadata, RunRecord, RunStep } from './types';
+import { tr } from '../../i18n/tr';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-ground';
@@ -124,7 +125,7 @@ export function RunChip({ run, metadata, passageCount }: RunChipProps) {
       {open && (
         <ol
           id={timelineId}
-          aria-label="Run steps"
+          aria-label={tr('ask.runChip.runSteps')}
           className="ask-rise list-none -mt-1 ms-0 py-1 ps-4.5 border-s border-shodh-border flex flex-col gap-3"
         >
           {run.steps.map(step => {
@@ -142,7 +143,7 @@ export function RunChip({ run, metadata, passageCount }: RunChipProps) {
                 {meta && (
                   <span className="ms-auto ps-2 font-mono text-caption text-shodh-text-faint whitespace-nowrap">{meta}</span>
                 )}
-                {step.status === 'running' && <span className="sr-only">(in progress)</span>}
+                {step.status === 'running' && <span className="sr-only">{tr('ask.runChip.inProgress')}</span>}
               </li>
             );
           })}

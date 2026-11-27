@@ -3,6 +3,7 @@ import { cn } from '../../lib/utils';
 import { nextMenuIndex } from '../../lib/menuKeys';
 import type { RailQuestion } from './questionDots';
 import { keepInView } from './questionDots';
+import { tr } from '../../i18n/tr';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-shodh-ground';
@@ -67,7 +68,7 @@ export function QuestionRail({ questions, current, onJump, style }: QuestionRail
   return (
     <nav
       ref={navRef}
-      aria-label="Questions"
+      aria-label={tr('ask.questionRail.questions')}
       className="absolute z-10 flex flex-col justify-center"
       style={style}
       onKeyDown={onKeyDown}

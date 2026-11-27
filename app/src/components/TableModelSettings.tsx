@@ -5,6 +5,7 @@ import { Download, ShieldCheck } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { isInstallProgress, isSearchModelsStatus } from '../features/setup/searchModels';
 import type { InstallProgress } from '../features/setup/searchModels';
+import { tr } from '../i18n/tr';
 
 const TABLE_MODEL_PROGRESS_EVENT = 'table-model-progress';
 
@@ -91,7 +92,7 @@ export default function TableModelSettings() {
   return (
     <div className="mt-6 pt-6 border-t border-shodh-border-subtle flex items-start justify-between gap-6">
       <div className="min-w-0">
-        <h3 className="m-0 text-body-lg font-semibold text-shodh-text">Table structure model</h3>
+        <h3 className="m-0 text-body-lg font-semibold text-shodh-text">{tr('settings.tableModelSettings.tableStructureModel')}</h3>
         <p className="m-0 mt-0.5 text-small text-shodh-text-muted">{description}</p>
         {status?.installing && (
           <p className="m-0 mt-1 text-caption text-shodh-text-secondary tabular-nums" role="status" aria-live="polite">
@@ -107,7 +108,7 @@ export default function TableModelSettings() {
       {status?.ready ? (
         <span className="shrink-0 inline-flex items-center gap-1.5 text-small text-shodh-success">
           <ShieldCheck className="w-4 h-4" aria-hidden="true" />
-          Ready
+          {tr('settings.tableModelSettings.ready')}
         </span>
       ) : (
         <button
@@ -121,7 +122,7 @@ export default function TableModelSettings() {
           )}
         >
           <Download className="w-3.5 h-3.5" aria-hidden="true" />
-          Install
+          {tr('settings.tableModelSettings.install')}
         </button>
       )}
     </div>

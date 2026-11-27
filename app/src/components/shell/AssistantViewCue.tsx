@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Sparkles } from 'lucide-react';
 import type { ViewTab } from '../../lib/viewTabs';
 import { VIEW_CUE_MS, initialCueTracker, nextCue, visibleCue } from '../../lib/viewCue';
+import { tr } from '../../i18n/tr';
 
 interface Cue {
   id: number;
@@ -54,7 +55,7 @@ export function AssistantViewCue({ cue }: { cue: Cue | null }) {
       {cue && (
         <span key={cue.id} className="shell-cue ms-2 inline-flex items-center gap-1 text-caption font-medium text-shodh-text-muted">
           <Sparkles className="w-3 h-3 text-shodh-accent-text" />
-          <span>opened by Shodh</span>
+          <span>{tr('shell.assistantViewCue.openedByShodh')}</span>
         </span>
       )}
     </span>

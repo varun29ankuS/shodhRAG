@@ -8,6 +8,7 @@ import { MODE_ICONS } from '../features/agent/ModePicker';
 import type { Policy } from '../lib/appSettings';
 import { checkForUpdate, getUpdateStatus, setUpdateChecks } from '../lib/updates';
 import type { UpdateStatus } from '../lib/updates';
+import { tr } from '../i18n/tr';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
@@ -96,7 +97,7 @@ export default function PrivacySettings() {
   };
 
   if (!policy) {
-    return <p className="m-0 text-small text-shodh-text-muted">Loading…</p>;
+    return <p className="m-0 text-small text-shodh-text-muted">{tr('settings.privacySettings.loading')}</p>;
   }
 
   return (
@@ -162,10 +163,9 @@ function DefaultModeSettings() {
   return (
     <div role="radiogroup" aria-labelledby={titleId} aria-describedby={helpId} className="flex flex-col gap-2 pt-5 border-t border-shodh-border">
       <div>
-        <p id={titleId} className="m-0 text-body font-semibold text-shodh-text">Default mode</p>
+        <p id={titleId} className="m-0 text-body font-semibold text-shodh-text">{tr('settings.privacySettings.defaultMode')}</p>
         <p id={helpId} className="m-0 mt-0.5 text-small text-shodh-text-muted">
-          The mode a new conversation starts in; a conversation keeps its mode, and a change here never changes one that
-          has started. You can change a conversation&apos;s mode in the message box at any time. {MODE_FLOOR}
+          {tr('settings.privacySettings.theModeANewConversation')}{MODE_FLOOR}
         </p>
       </div>
       <div className="flex flex-col gap-1">
@@ -253,19 +253,16 @@ function CodeModeSettings() {
       />
       {confirming && (
         <div role="group" aria-labelledby={explainId} className="flex flex-col gap-2 p-3 rounded-xl border border-shodh-border bg-shodh-raised">
-          <p id={explainId} className="m-0 text-small font-semibold text-shodh-text">Turn on Code mode?</p>
+          <p id={explainId} className="m-0 text-small font-semibold text-shodh-text">{tr('settings.privacySettings.turnOnCodeMode')}</p>
           <p className="m-0 text-small text-shodh-text-secondary">
-            In Code mode the assistant can change files in the workspace&apos;s code folder and run commands on this
-            computer, such as builds and tests. Each change and command asks you first unless the conversation&apos;s
-            mode lets it run (Accept edits, Auto), and the work goes on a separate branch you can discard. Only turn it on for code
-            you are happy to have changed.
+            {tr('settings.privacySettings.inCodeModeTheAssistant')}
           </p>
           <div className="flex flex-wrap items-center gap-2">
             <button type="button" className={BUTTON} onClick={() => void save(true)} disabled={saving}>
-              Turn on Code mode
+              {tr('settings.privacySettings.turnOnCodeMode2')}
             </button>
             <button type="button" className={BUTTON} onClick={() => setConfirming(false)} disabled={saving}>
-              Cancel
+              {tr('settings.privacySettings.cancel')}
             </button>
           </div>
         </div>
@@ -345,9 +342,9 @@ function UpdateSettings() {
       />
       <div className="flex flex-wrap items-center gap-3">
         <button type="button" className={BUTTON} onClick={() => void checkNow()} disabled={busy || blocked}>
-          Check now
+          {tr('settings.privacySettings.checkNow')}
         </button>
-        <span className="text-small text-shodh-text-muted">Version {status.currentVersion}</span>
+        <span className="text-small text-shodh-text-muted">{tr('settings.privacySettings.version')}{status.currentVersion}</span>
       </div>
       {blocked ? (
         <p className="m-0 text-small text-shodh-text-muted">{status.blockedReason}</p>

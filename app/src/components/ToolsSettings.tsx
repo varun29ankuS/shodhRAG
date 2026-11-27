@@ -14,6 +14,7 @@ import type { Approval, ServerView, StagedInstall, ToolMode, ToolsOverview } fro
 import { formToConfig } from '../features/tools/format';
 import type { ServerForm } from '../features/tools/format';
 import { countOf } from '../lib/plural';
+import { tr } from '../i18n/tr';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
@@ -135,7 +136,7 @@ function ServerCard({ server, workspaceId, onChanged, onTested }: ServerCardProp
             {server.needsFolder && ' (in the code folder)'}
           </p>
         </div>
-        <label className="sr-only" htmlFor={`${toolsId}-mode`}>Modes for {server.name}</label>
+        <label className="sr-only" htmlFor={`${toolsId}-mode`}>{tr('settings.toolsSettings.modesFor')}{server.name}</label>
         <select
           id={`${toolsId}-mode`}
           value={modeChoice(server.modes)}
@@ -146,9 +147,9 @@ function ServerCard({ server, workspaceId, onChanged, onTested }: ServerCardProp
           }}
           className={cn('h-8 rounded-lg border border-shodh-border bg-shodh-ground px-2 text-small text-shodh-text', FOCUS_RING)}
         >
-          <option value="both">Research and Code</option>
-          <option value="research">Research only</option>
-          <option value="code">Code only</option>
+          <option value="both">{tr('settings.toolsSettings.researchAndCode')}</option>
+          <option value="research">{tr('settings.toolsSettings.researchOnly')}</option>
+          <option value="code">{tr('settings.toolsSettings.codeOnly')}</option>
         </select>
         <Toggle
           label={`Use ${server.name}`}
@@ -186,7 +187,7 @@ function ServerCard({ server, workspaceId, onChanged, onTested }: ServerCardProp
           className={BUTTON}
         >
           <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
-          Remove
+          {tr('settings.toolsSettings.remove')}
         </button>
       </div>
       {expanded && server.tools.length > 0 && (
@@ -203,7 +204,7 @@ function ServerCard({ server, workspaceId, onChanged, onTested }: ServerCardProp
               <div className="min-w-0 flex-1">
                 <p className="m-0 text-small font-medium text-shodh-text break-words">
                   {tool.title ?? tool.name}
-                  {tool.readOnly && <span className="ms-1.5 text-caption font-normal text-shodh-text-faint">read-only</span>}
+                  {tool.readOnly && <span className="ms-1.5 text-caption font-normal text-shodh-text-faint">{tr('settings.toolsSettings.readOnly')}</span>}
                 </p>
                 {tool.description && (
                   <p className="m-0 text-caption text-shodh-text-muted line-clamp-2" title={tool.description}>
@@ -211,7 +212,7 @@ function ServerCard({ server, workspaceId, onChanged, onTested }: ServerCardProp
                   </p>
                 )}
               </div>
-              <label className="sr-only" htmlFor={`${toolsId}-${tool.name}`}>Approval for {tool.name}</label>
+              <label className="sr-only" htmlFor={`${toolsId}-${tool.name}`}>{tr('settings.toolsSettings.approvalFor')}{tool.name}</label>
               <select
                 id={`${toolsId}-${tool.name}`}
                 value={tool.approval}
@@ -223,8 +224,8 @@ function ServerCard({ server, workspaceId, onChanged, onTested }: ServerCardProp
                 }
                 className={cn('h-7 rounded-md border border-shodh-border bg-shodh-ground px-1.5 text-caption text-shodh-text', FOCUS_RING)}
               >
-                <option value="ask">Ask first</option>
-                <option value="auto">Run automatically</option>
+                <option value="ask">{tr('settings.toolsSettings.askFirst')}</option>
+                <option value="auto">{tr('settings.toolsSettings.runAutomatically')}</option>
               </select>
             </li>
           ))}
@@ -270,7 +271,7 @@ function AddServer({ workspaceId, onAdded }: { workspaceId: string | null; onAdd
 
   return (
     <form onSubmit={e => void submit(e)} className="rounded-xl border border-shodh-border bg-shodh-surface-2 p-3.5 flex flex-col gap-3">
-      <div role="tablist" aria-label="How to add a server" className="flex gap-1">
+      <div role="tablist" aria-label={tr('settings.toolsSettings.howToAddAServer')} className="flex gap-1">
         {(['paste', 'form'] as const).map(id => (
           <button
             key={id}
@@ -294,7 +295,7 @@ function AddServer({ workspaceId, onAdded }: { workspaceId: string | null; onAdd
       {tab === 'paste' ? (
         <div className="flex flex-col gap-1.5">
           <label htmlFor={`${ids}-paste`} className="text-small text-shodh-text-secondary">
-            An <code>mcp.json</code> from Cursor or Claude Desktop, or just its servers
+            {tr('settings.toolsSettings.an')}<code>{tr('settings.toolsSettings.mcpJson')}</code>{tr('settings.toolsSettings.fromCursorOrClaudeDesktop')}
           </label>
           <textarea
             id={`${ids}-paste`}
@@ -308,17 +309,17 @@ function AddServer({ workspaceId, onAdded }: { workspaceId: string | null; onAdd
         </div>
       ) : (
         <div className="grid grid-cols-[120px_1fr] gap-x-3 gap-y-2 items-center">
-          <label htmlFor={`${ids}-name`} className="text-small text-shodh-text-secondary">Name</label>
+          <label htmlFor={`${ids}-name`} className="text-small text-shodh-text-secondary">{tr('settings.toolsSettings.name')}</label>
           <input id={`${ids}-name`} value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className={INPUT} />
-          <label htmlFor={`${ids}-kind`} className="text-small text-shodh-text-secondary">Runs as</label>
+          <label htmlFor={`${ids}-kind`} className="text-small text-shodh-text-secondary">{tr('settings.toolsSettings.runsAs')}</label>
           <select
             id={`${ids}-kind`}
             value={form.kind}
             onChange={e => setForm({ ...form, kind: e.target.value as ServerForm['kind'] })}
             className={INPUT}
           >
-            <option value="stdio">A program on this computer</option>
-            <option value="http">A server at a URL</option>
+            <option value="stdio">{tr('settings.toolsSettings.aProgramOnThisComputer')}</option>
+            <option value="http">{tr('settings.toolsSettings.aServerAtAUrl')}</option>
           </select>
           <label htmlFor={`${ids}-target`} className="text-small text-shodh-text-secondary">
             {form.kind === 'stdio' ? 'Command' : 'URL'}
@@ -346,7 +347,7 @@ function AddServer({ workspaceId, onAdded }: { workspaceId: string | null; onAdd
         </div>
       )}
       <p className="m-0 text-caption text-shodh-text-muted">
-        Tokens stay in the config file on this computer. They are never shown to the model or written to logs.
+        {tr('settings.toolsSettings.tokensStayInTheConfig')}
       </p>
       {problem && (
         <p role="alert" className="m-0 text-caption text-shodh-error break-words">
@@ -369,7 +370,7 @@ function RepoLink({ repo }: { repo: string }) {
       onClick={() => void openUrl(repo).catch(e => notify.error('The link could not be opened', { description: errorText(e) }))}
       className={cn('text-shodh-accent-text hover:underline rounded', FOCUS_RING)}
     >
-      source repo
+      {tr('settings.toolsSettings.sourceRepo')}
     </button>
   );
 }
@@ -446,16 +447,15 @@ function SkillsSection({ overview, workspaceId, onChanged }: { overview: ToolsOv
     <section aria-labelledby={`${sourceId}-heading`} className="flex flex-col gap-3">
       <div>
         <div className="flex items-center gap-1">
-          <h3 id={`${sourceId}-heading`} className={SECTION_HEADING}>Skills</h3>
-          <InfoPopover label="About skills" title="Skills">
-            <p className="m-0">A skill is a folder with a SKILL.md file, in the Agent Skills format.</p>
+          <h3 id={`${sourceId}-heading`} className={SECTION_HEADING}>{tr('settings.toolsSettings.skills')}</h3>
+          <InfoPopover label="About skills" title={tr('settings.toolsSettings.skills')}>
+            <p className="m-0">{tr('settings.toolsSettings.aSkillIsAFolder')}</p>
             <p className="m-0">
-              Only each skill&apos;s name and description go with every answer; the rest is read when a task fits. Files a
-              skill ships are read, never run.
+              {tr('settings.toolsSettings.onlyEachSkillSName')}
             </p>
           </InfoPopover>
         </div>
-        <p className="m-0 mt-0.5 text-small text-shodh-text-muted">Instructions the assistant loads when a task fits.</p>
+        <p className="m-0 mt-0.5 text-small text-shodh-text-muted">{tr('settings.toolsSettings.instructionsTheAssistantLoadsWhen')}</p>
       </div>
       {skills.length > 0 && (
         <ul className="m-0 p-0 list-none flex flex-col gap-2">
@@ -465,7 +465,7 @@ function SkillsSection({ overview, workspaceId, onChanged }: { overview: ToolsOv
                 <p className="m-0 text-small font-semibold text-shodh-text">{skill.name}</p>
                 <p className="m-0 text-caption text-shodh-text-muted">{skill.description}</p>
                 <p className="m-0 mt-0.5 text-caption text-shodh-text-faint">
-                  {skill.files === 1 ? '1 file' : `${skill.files} files`} besides SKILL.md
+                  {skill.files === 1 ? '1 file' : `${skill.files} files`}{tr('settings.toolsSettings.besidesSkillMd')}
                   {skill.license && skill.repo && (
                     <>
                       {' · '}
@@ -476,7 +476,7 @@ function SkillsSection({ overview, workspaceId, onChanged }: { overview: ToolsOv
                   )}
                 </p>
               </div>
-              <label className="sr-only" htmlFor={`${sourceId}-${skill.name}-mode`}>Modes for {skill.name}</label>
+              <label className="sr-only" htmlFor={`${sourceId}-${skill.name}-mode`}>{tr('settings.toolsSettings.modesFor')}{skill.name}</label>
               <select
                 id={`${sourceId}-${skill.name}-mode`}
                 value={modeChoice(skill.modes)}
@@ -490,9 +490,9 @@ function SkillsSection({ overview, workspaceId, onChanged }: { overview: ToolsOv
                 }}
                 className={cn('h-8 rounded-lg border border-shodh-border bg-shodh-ground px-2 text-small text-shodh-text', FOCUS_RING)}
               >
-                <option value="both">Research and Code</option>
-                <option value="research">Research only</option>
-                <option value="code">Code only</option>
+                <option value="both">{tr('settings.toolsSettings.researchAndCode')}</option>
+                <option value="research">{tr('settings.toolsSettings.researchOnly')}</option>
+                <option value="code">{tr('settings.toolsSettings.codeOnly')}</option>
               </select>
               <Toggle
                 label={`Use ${skill.name}${workspaceId ? ' in this workspace' : ''}`}
@@ -507,16 +507,16 @@ function SkillsSection({ overview, workspaceId, onChanged }: { overview: ToolsOv
               <button
                 type="button"
                 aria-label={`Save ${skill.name} as an automation`}
-                title="Opens a new automation filled with this skill"
+                title={tr('settings.toolsSettings.opensANewAutomationFilled')}
                 onClick={() => openNewAutomation(prefillFromSkill(skill))}
                 className={cn('h-8 px-2.5 inline-flex items-center justify-center rounded-lg border border-shodh-border text-small text-shodh-text-secondary whitespace-nowrap hover:bg-shodh-raised', FOCUS_RING)}
               >
-                Automate
+                {tr('settings.toolsSettings.automate')}
               </button>
               <button
                 type="button"
                 aria-label={`Remove ${skill.name}`}
-                title="Remove this skill from Shodh"
+                title={tr('settings.toolsSettings.removeThisSkillFromShodh')}
                 onClick={() => removeSkill(skill.name)}
                 className={cn('w-8 h-8 inline-flex items-center justify-center rounded-lg text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text', FOCUS_RING)}
               >
@@ -528,7 +528,7 @@ function SkillsSection({ overview, workspaceId, onChanged }: { overview: ToolsOv
       )}
       {overview.recommended.some(r => !r.installed) && (
         <div className="flex flex-col gap-2">
-          <h4 className="m-0 text-caption font-semibold uppercase tracking-wide text-shodh-text-faint">Recommended</h4>
+          <h4 className="m-0 text-caption font-semibold uppercase tracking-wide text-shodh-text-faint">{tr('settings.toolsSettings.recommended')}</h4>
           <ul className="m-0 p-0 list-none flex flex-col gap-2">
             {overview.recommended
               .filter(r => !r.installed)
@@ -546,7 +546,7 @@ function SkillsSection({ overview, workspaceId, onChanged }: { overview: ToolsOv
                     </p>
                   </div>
                   <button type="button" className={BUTTON} disabled={busy} onClick={() => void review(r.id)}>
-                    Review
+                    {tr('settings.toolsSettings.review')}
                   </button>
                 </li>
               ))}
@@ -559,13 +559,13 @@ function SkillsSection({ overview, workspaceId, onChanged }: { overview: ToolsOv
         </p>
       ))}
       <div className="flex flex-col gap-1.5">
-        <label htmlFor={sourceId} className="text-small text-shodh-text-secondary">Install from a folder or an https git URL</label>
+        <label htmlFor={sourceId} className="text-small text-shodh-text-secondary">{tr('settings.toolsSettings.installFromAFolderOr')}</label>
         <div className="flex gap-2">
           <input
             id={sourceId}
             value={source}
             onChange={e => setSource(e.target.value)}
-            placeholder="https://github.com/… or C:\Skills\my-skill"
+            placeholder={tr('settings.toolsSettings.httpsGithubComOrC')}
             spellCheck={false}
             className={cn(INPUT, 'font-mono text-caption')}
           />
@@ -578,7 +578,7 @@ function SkillsSection({ overview, workspaceId, onChanged }: { overview: ToolsOv
               })
             }
           >
-            Browse
+            {tr('settings.toolsSettings.browse')}
           </button>
           <button type="button" className={BUTTON} disabled={busy || !source.trim()} onClick={() => void review()}>
             {busy && !staged ? 'Reading…' : 'Review'}
@@ -593,7 +593,7 @@ function SkillsSection({ overview, workspaceId, onChanged }: { overview: ToolsOv
       {staged && (
         <div className="rounded-xl border border-shodh-border bg-shodh-surface-2 p-3.5 flex flex-col gap-2" aria-live="polite">
           <p className="m-0 text-small text-shodh-text">
-            {staged.skills.length === 1 ? 'This skill' : `These ${staged.skills.length} skills`} will be installed from{' '}
+            {staged.skills.length === 1 ? 'This skill' : `These ${staged.skills.length} skills`}{tr('settings.toolsSettings.willBeInstalledFrom')}{' '}
             <span className="font-mono break-all">{staged.source}</span>:
           </p>
           <ul className="m-0 ps-4 flex flex-col gap-1 text-small">
@@ -601,12 +601,12 @@ function SkillsSection({ overview, workspaceId, onChanged }: { overview: ToolsOv
               <li key={s.name}>
                 <span className="font-semibold text-shodh-text">{s.name}</span>
                 <span className="text-shodh-text-muted"> · {s.description} · {countOf(s.files, 'file')}</span>
-                {s.replaces && <span className="text-shodh-warning"> · replaces the installed one</span>}
+                {s.replaces && <span className="text-shodh-warning">{tr('settings.toolsSettings.replacesTheInstalledOne')}</span>}
               </li>
             ))}
           </ul>
           {staged.problems.length > 0 && (
-            <p className="m-0 text-caption text-shodh-text-muted">{staged.problems.length} folder(s) could not be read and are skipped.</p>
+            <p className="m-0 text-caption text-shodh-text-muted">{staged.problems.length}{tr('settings.toolsSettings.folderSCouldNotBe')}</p>
           )}
           <div className="flex gap-2">
             <button type="button" className={cn(BUTTON, 'bg-shodh-raised-2')} disabled={busy} onClick={() => void install()}>
@@ -621,7 +621,7 @@ function SkillsSection({ overview, workspaceId, onChanged }: { overview: ToolsOv
                 setStaged(null);
               }}
             >
-              Cancel
+              {tr('settings.toolsSettings.cancel')}
             </button>
           </div>
         </div>
@@ -704,14 +704,14 @@ export default function ToolsSettings() {
   };
 
   if (loadError) return <p role="alert" className="m-0 text-small text-shodh-error">{loadError}</p>;
-  if (!overview) return <p className="m-0 text-small text-shodh-text-muted">Loading…</p>;
+  if (!overview) return <p className="m-0 text-small text-shodh-text-muted">{tr('settings.toolsSettings.loading')}</p>;
 
   const enola = overview.enola;
   return (
     <div className="flex flex-col gap-7">
       <div className="flex flex-col gap-1.5">
         <label htmlFor={scopeId} className="text-small font-medium text-shodh-text-secondary">
-          Servers and skills for
+          {tr('settings.toolsSettings.serversAndSkillsFor')}
         </label>
         <select
           id={scopeId}
@@ -723,10 +723,10 @@ export default function ToolsSettings() {
           }}
           className={cn(INPUT, 'max-w-[360px]')}
         >
-          <option value="">Every chat</option>
+          <option value="">{tr('settings.toolsSettings.everyChat')}</option>
           {workspaces.map(w => (
             <option key={w.id} value={w.id}>
-              The workspace {w.name}
+              {tr('settings.toolsSettings.theWorkspace')}{w.name}
             </option>
           ))}
         </select>
@@ -740,19 +740,18 @@ export default function ToolsSettings() {
       <section aria-labelledby={`${scopeId}-mcp`} className="flex flex-col gap-3">
         <div className="flex items-start gap-3 flex-wrap">
           <div className="min-w-0 flex-1">
-            <h3 id={`${scopeId}-mcp`} className={SECTION_HEADING}>MCP servers</h3>
+            <h3 id={`${scopeId}-mcp`} className={SECTION_HEADING}>{tr('settings.toolsSettings.mcpServers')}</h3>
             <p className="m-0 mt-0.5 text-small text-shodh-text-muted">
-              Programs and services that give the assistant more tools. Tools the server does not mark read-only ask
-              you before every call.
+              {tr('settings.toolsSettings.programsAndServicesThatGive')}
             </p>
           </div>
           <button type="button" className={BUTTON} onClick={() => setAdding(a => !a)} aria-expanded={adding}>
             <Plus className="w-3.5 h-3.5" aria-hidden="true" />
-            Add server
+            {tr('settings.toolsSettings.addServer')}
           </button>
           <button type="button" className={BUTTON} onClick={() => void openFile()} title={overview.configPath}>
             <FileJson className="w-3.5 h-3.5" aria-hidden="true" />
-            Edit as file
+            {tr('settings.toolsSettings.editAsFile')}
           </button>
         </div>
         {adding && (
@@ -772,7 +771,7 @@ export default function ToolsSettings() {
           </p>
         ))}
         {overview.servers.length === 0 && !adding && (
-          <p className="m-0 text-small text-shodh-text-muted">No servers yet.</p>
+          <p className="m-0 text-small text-shodh-text-muted">{tr('settings.toolsSettings.noServersYet')}</p>
         )}
         <ul className="m-0 p-0 list-none flex flex-col gap-2.5">
           {overview.servers.map(server => (
@@ -790,11 +789,9 @@ export default function ToolsSettings() {
         {!workspaceId && enola.supported && !enola.registered && (
           <div className="rounded-xl border border-dashed border-shodh-border p-3.5 flex items-center gap-3">
             <div className="min-w-0 flex-1">
-              <p className="m-0 text-small font-semibold text-shodh-text">enola {enola.version}</p>
+              <p className="m-0 text-small font-semibold text-shodh-text">{tr('settings.toolsSettings.enola')}{enola.version}</p>
               <p className="m-0 text-caption text-shodh-text-muted">
-                Maps a codebase’s architecture (modules, dependencies, impact of a change) for Code mode. Downloaded
-                from its GitHub release and checked to match the official copy before it runs; it reads the code folder and keeps its
-                index in <code>.enola/</code> there.
+                {tr('settings.toolsSettings.mapsACodebaseSArchitecture')}<code>{tr('settings.toolsSettings.enola2')}</code>{tr('settings.toolsSettings.there')}
               </p>
             </div>
             <button type="button" className={BUTTON} disabled={installingEnola} onClick={() => void installEnola()}>
@@ -808,9 +805,9 @@ export default function ToolsSettings() {
 
       <section aria-labelledby={`${scopeId}-builtin`} className="flex flex-col gap-3">
         <div>
-          <h3 id={`${scopeId}-builtin`} className={SECTION_HEADING}>Built-in tools</h3>
+          <h3 id={`${scopeId}-builtin`} className={SECTION_HEADING}>{tr('settings.toolsSettings.builtInTools')}</h3>
           <p className="m-0 mt-0.5 text-small text-shodh-text-muted">
-            What Shodh’s assistant can always do. Tools that change something ask you first.
+            {tr('settings.toolsSettings.whatShodhSAssistantCan')}
           </p>
         </div>
         <button
@@ -820,7 +817,7 @@ export default function ToolsSettings() {
           className={cn('self-start inline-flex items-center gap-1 text-small text-shodh-text-secondary hover:text-shodh-text rounded', FOCUS_RING)}
         >
           {builtinOpen ? <ChevronDown className="w-3.5 h-3.5" aria-hidden="true" /> : <ChevronRight className="w-3.5 h-3.5" aria-hidden="true" />}
-          {countOf(overview.builtin.reduce((n, g) => n + g.tools.length, 0), 'tool')} in {countOf(overview.builtin.length, 'group')}
+          {countOf(overview.builtin.reduce((n, g) => n + g.tools.length, 0), 'tool')}{tr('settings.toolsSettings.in')}{countOf(overview.builtin.length, 'group')}
         </button>
         {builtinOpen &&
           overview.builtin.map(group => (

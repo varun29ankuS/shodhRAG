@@ -9,6 +9,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { source, withoutComments } from './jsxScan.ts';
+import { en } from '../src/i18n/en.ts';
 import {
   DOCK_GUTTER_PX,
   PAGE_ACTION_SLOT_CLASS,
@@ -62,7 +63,10 @@ test("each view's title is the name its tab has", () => {
     tasks: 'Tasks', automations: 'Automations', activity: 'Activity', settings: 'Settings',
   };
   for (const [view, file] of Object.entries(VIEWS)) {
-    assert.match(source(file), new RegExp(`title="${titles[view]}"`), view);
+    // Written in place, or read from the catalogue (the migrated views).
+    const text = source(file);
+    const keyed = [...text.matchAll(/title=\{tr\('([\w.]+)'\)\}/g)].some(m => (en as Record<string, string>)[m[1]] === titles[view]);
+    assert.ok(new RegExp(`title="${titles[view]}"`).test(text) || keyed, view);
   }
 });
 
@@ -152,7 +156,8 @@ test('loading, empty and failed are drawn one way', () => {
   assert.match(table, /loading \? <ViewState kind="loading" title="Loading events" \/> : <ViewState kind="empty" title="No events match these filters" \/>/);
   assert.match(source('features/audit/AuditView.tsx'), /unavailable && <ViewState kind="error" title="Activity is unavailable" detail=\{unavailable\} \/>/);
   // "Try again" is one button, drawn by the state itself.
-  assert.match(state, /\{onRetry && \(\s*<button\s+type="button"\s+onClick=\{onRetry\}[\s\S]*?Try again/);
+  assert.match(state, /\{onRetry && \(\s*<button\s+type="button"\s+onClick=\{onRetry\}[\s\S]*?\{tr\('shell\.viewState\.tryAgain'\)\}/);
+  assert.equal(en['shell.viewState.tryAgain'], 'Try again');
   // A folder's files, and a workspace's task board.
   const browser = source('features/library/FileBrowser.tsx');
   assert.match(browser, /<ViewState kind="error" title="Files could not be listed" detail=\{load\.message\} onRetry=\{\(\) => void fetchFiles\(\)\} \/>/);
@@ -189,5 +194,5 @@ test("Ask's message box is one element at the bottom, before and after the first
   // A new chat changes what is above the box, not the box.
   assert.match(ask, /\{empty \? emptyChat : \(/);
   assert.doesNotMatch(ask, /if \(messages\.length === 0\) \{\s*return \(/);
-  assert.equal(ask.match(/<section aria-label="Ask"/g)?.length, 1);
+  assert.equal(ask.match(/<section aria-label=\{tr\('ask\.askView\.ask'\)\}/g)?.length, 1);
 });

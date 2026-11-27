@@ -3,6 +3,7 @@ import { cn } from '../lib/utils';
 import { Kbd } from './ui/Kbd';
 import { TEXT_SIZES, TEXT_SIZE_LABELS } from '../lib/textSize';
 import { useTextSize } from '../hooks/useTextSize';
+import { tr } from '../i18n/tr';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
@@ -19,9 +20,9 @@ export default function AppearanceSettings() {
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-col gap-0.5">
-        <p id={labelId} className="m-0 text-body font-semibold text-shodh-text">Text size</p>
+        <p id={labelId} className="m-0 text-body font-semibold text-shodh-text">{tr('settings.appearanceSettings.textSize')}</p>
         <p id={hintId} className="m-0 text-small text-shodh-text-muted">
-          How large everything in Shodh is drawn, on top of your display&apos;s own scaling.
+          {tr('settings.appearanceSettings.howLargeEverythingInShodh')}
         </p>
       </div>
       <div
@@ -63,9 +64,9 @@ export default function AppearanceSettings() {
         })}
       </div>
       <p className="m-0 flex flex-wrap items-center gap-x-4 gap-y-1 text-small text-shodh-text-secondary">
-        <span className="inline-flex items-center gap-1.5"><Kbd shortcut="textLarger" /> Larger</span>
-        <span className="inline-flex items-center gap-1.5"><Kbd shortcut="textSmaller" /> Smaller</span>
-        <span className="inline-flex items-center gap-1.5"><Kbd shortcut="textReset" /> Default</span>
+        <span className="inline-flex items-center gap-1.5"><Kbd shortcut="textLarger" />{tr('settings.appearanceSettings.larger')}</span>
+        <span className="inline-flex items-center gap-1.5"><Kbd shortcut="textSmaller" />{tr('settings.appearanceSettings.smaller')}</span>
+        <span className="inline-flex items-center gap-1.5"><Kbd shortcut="textReset" />{tr('settings.appearanceSettings.default')}</span>
       </p>
       {error && <p role="alert" className="m-0 text-small text-shodh-error">{error}</p>}
     </div>

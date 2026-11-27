@@ -11,6 +11,7 @@ import type { ViewTab } from '../../lib/viewTabs';
 import type { SearchHit } from './types';
 import { useSourceDocument } from './useSourceDocument';
 import { VIEWER_FOCUS_RING as FOCUS_RING } from './viewer/viewerTypes';
+import { tr } from '../../i18n/tr';
 
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])';
@@ -172,10 +173,10 @@ export function SourcePreview({ hit, siblings, onSelectHit, onClose, onOpenView,
               'h-[30px] px-2.5 shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border-strong text-caption text-shodh-text hover:bg-shodh-raised transition-colors duration-micro',
               FOCUS_RING,
             )}
-            title="Open in the focus view to zoom and ask about this source"
+            title={tr('ask.sourcePreview.openInTheFocusView')}
           >
             <MessageSquareText className="w-3.5 h-3.5" aria-hidden="true" />
-            Ask about this
+            {tr('ask.sourcePreview.askAboutThis')}
           </button>
         )}
         <button
@@ -194,7 +195,7 @@ export function SourcePreview({ hit, siblings, onSelectHit, onClose, onOpenView,
           ref={closeRef}
           type="button"
           onClick={onClose}
-          aria-label="Close source viewer"
+          aria-label={tr('ask.sourcePreview.closeSourceViewer')}
           className={cn(
             'w-[30px] h-[30px] shrink-0 inline-flex items-center justify-center rounded-lg text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
             FOCUS_RING,
@@ -205,8 +206,8 @@ export function SourcePreview({ hit, siblings, onSelectHit, onClose, onOpenView,
       </header>
 
       {otherPassages.length > 0 && (
-        <nav aria-label="Other passages from this file" className="flex items-center gap-1.5 px-4 py-2 border-b border-shodh-border-subtle overflow-x-auto scrollbar-thin">
-          <span className="shrink-0 text-caption text-shodh-text-faint">Also cited:</span>
+        <nav aria-label={tr('ask.sourcePreview.otherPassagesFromThisFile')} className="flex items-center gap-1.5 px-4 py-2 border-b border-shodh-border-subtle overflow-x-auto scrollbar-thin">
+          <span className="shrink-0 text-caption text-shodh-text-faint">{tr('ask.sourcePreview.alsoCited')}</span>
           {otherPassages.map(s => {
             const where = formatLocation(s);
             return (

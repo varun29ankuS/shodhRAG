@@ -5,6 +5,7 @@ import { attachmentLabel, composerAttachments } from './imageAttachments';
 import type { ImageTextAttachment } from './imageAttachments';
 import { composerFiles, keptFile, readConversationFile, sameConversationFile } from './fileQuestion';
 import type { ConversationFile, FileRef } from './fileQuestion';
+import { tr } from '../../i18n/tr';
 
 /** The attachments waiting for the next question of `conversationId` (see `imageAttachments`). */
 export function useImageAttachments(conversationId: string | null): readonly ImageTextAttachment[] {
@@ -87,7 +88,7 @@ export function FileRefChip({
           type="button"
           onClick={() => (onRemove ? onRemove() : composerFiles.set(conversationId, null))}
           aria-label={`Search all sources instead of only ${file.name}`}
-          title="Search all sources instead"
+          title={tr('ask.attachmentChips.searchAllSourcesInstead')}
           className={cn('target-24 w-5 h-5 shrink-0 inline-flex items-center justify-center rounded-full text-shodh-text-muted hover:bg-shodh-pressed hover:text-shodh-text', FOCUS_RING)}
         >
           <X className="w-3 h-3" aria-hidden="true" />
@@ -110,7 +111,7 @@ export function AttachmentChips({
   if (attachments.length === 0) return null;
   return (
     <ul
-      aria-label="Attached to your next question"
+      aria-label={tr('ask.attachmentChips.attachedToYourNextQuestion')}
       className={cn('flex flex-wrap gap-1.5 m-0 list-none', compact ? 'px-3 pt-2' : 'px-4.5 pt-3')}
     >
       {attachments.map(attachment => {
@@ -127,7 +128,7 @@ export function AttachmentChips({
               type="button"
               onClick={() => composerAttachments.remove(conversationId, attachment.id)}
               aria-label={`Remove: ${label}`}
-              title="Remove"
+              title={tr('ask.attachmentChips.remove')}
               className={cn('target-24 w-5 h-5 shrink-0 inline-flex items-center justify-center rounded-full text-shodh-text-muted hover:bg-shodh-pressed hover:text-shodh-text', FOCUS_RING)}
             >
               <X className="w-3 h-3" aria-hidden="true" />

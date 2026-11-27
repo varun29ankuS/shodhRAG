@@ -48,6 +48,7 @@ import {
   opensNewMenu,
 } from '../../lib/newMenu';
 import type { NewMenuItemId } from '../../lib/newMenu';
+import { tr } from '../../i18n/tr';
 
 export interface SidebarSource {
   id: string;
@@ -282,7 +283,7 @@ export default function Sidebar({
 
   return (
     <nav
-      aria-label="Primary"
+      aria-label={tr('shell.sidebar.primary')}
       className="h-full shrink-0 flex flex-col border-e border-shodh-border bg-shodh-sidebar text-shodh-text select-none overflow-hidden transition-[width] duration-panel ease-standard"
       style={{ width: collapsed ? COLLAPSED_WIDTH : EXPANDED_WIDTH }}
     >
@@ -301,7 +302,7 @@ export default function Sidebar({
         />
         {!collapsed && (
           <div className="flex flex-col min-w-0 flex-1 leading-tight">
-            <span className="text-body-lg font-bold tracking-[0.02em]">Shodh</span>
+            <span className="text-body-lg font-bold tracking-[0.02em]">{tr('shell.sidebar.shodh')}</span>
             <span className="text-caption text-shodh-text-faint" lang="hi">शोध</span>
           </div>
         )}
@@ -341,7 +342,7 @@ export default function Sidebar({
             <Plus className="w-[15px] h-[15px] shrink-0" strokeWidth={2.2} aria-hidden="true" />
             {!collapsed && (
               <>
-                <span>New chat</span>
+                <span>{tr('shell.sidebar.newChat')}</span>
                 <Kbd shortcut="newChat" onAccent className="ms-auto" />
               </>
             )}
@@ -353,7 +354,7 @@ export default function Sidebar({
             ref={newMenuRef}
             id={newMenuId}
             role="menu"
-            aria-label="New"
+            aria-label={tr('shell.sidebar.new')}
             onKeyDown={onNewMenuKeyDown}
             className={cn(POPOVER, 'min-w-[220px]')}
             style={newMenu.pos ? { left: newMenu.pos.left, top: newMenu.pos.top } : { opacity: 0, left: 0, top: 0 }}

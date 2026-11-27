@@ -14,6 +14,7 @@ import { Transcript } from '../../features/agent/Transcript';
 import { Kbd, IS_MAC } from '../ui/Kbd';
 import { ariaKeyShortcuts, withShortcut } from '../../lib/shortcuts';
 import type { DockAction, DockSnapshot } from '../../lib/dockProtocol';
+import { tr } from '../../i18n/tr';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-shodh-surface';
@@ -113,7 +114,7 @@ export function DockPanel({ model, onExpandAsk, fixed, maxHeight, pillRef, panel
           className={cn('w-2 h-2 rounded-full shrink-0', live ? (waiting ? 'bg-shodh-warning ask-breathe' : 'bg-shodh-accent-text ask-breathe') : 'bg-shodh-text-faint')}
           aria-hidden="true"
         />
-        <span className="font-semibold shrink-0">Assistant</span>
+        <span className="font-semibold shrink-0">{tr('shell.dockPanel.assistant')}</span>
         {live && (
           <span className="min-w-0 truncate text-shodh-text-muted">
             {waiting ? 'Needs your approval' : working ? working.label : 'Working…'}
@@ -172,7 +173,7 @@ export function DockPanel({ model, onExpandAsk, fixed, maxHeight, pillRef, panel
       canSteer={transcript?.status === 'running'}
       approvalPending={waiting !== null}
       blockedReason={model.blockedReason}
-      placeholder="Reply…"
+      placeholder={tr('shell.dockPanel.reply')}
       attachments={model.composerExtras}
       voice={snapshot.voiceSupported
         ? { supported: true, listening: snapshot.dictating, toggle: () => onAction({ kind: 'dictate', on: !snapshot.dictating }) }
@@ -206,7 +207,7 @@ export function DockPanel({ model, onExpandAsk, fixed, maxHeight, pillRef, panel
       ref={panelRef}
       role="dialog"
       aria-modal="false"
-      aria-label="Conversation"
+      aria-label={tr('shell.dockPanel.conversation')}
       onKeyDown={onPanelKeyDown}
       data-dock-box=""
       className={cn(
@@ -222,7 +223,7 @@ export function DockPanel({ model, onExpandAsk, fixed, maxHeight, pillRef, panel
           className={cn('w-2 h-2 rounded-full shrink-0', live ? 'bg-shodh-accent-text ask-breathe' : 'bg-shodh-success')}
           aria-hidden="true"
         />
-        <span className="text-small font-semibold text-shodh-text shrink-0">Assistant</span>
+        <span className="text-small font-semibold text-shodh-text shrink-0">{tr('shell.dockPanel.assistant')}</span>
         <span className="min-w-0 truncate text-caption text-shodh-text-muted">{snapshot.title}</span>
         <div className="ms-auto flex items-center">
           {controls.map(({ label, icon: Icon, onClick }) => (
@@ -243,19 +244,19 @@ export function DockPanel({ model, onExpandAsk, fixed, maxHeight, pillRef, panel
         </div>
       </header>
 
-      <div ref={scrollerRef} className="flex-1 min-h-0 overflow-y-auto scrollbar-thin px-3.5 py-3 flex flex-col gap-3" role="log" aria-label="Latest exchange">
+      <div ref={scrollerRef} className="flex-1 min-h-0 overflow-y-auto scrollbar-thin px-3.5 py-3 flex flex-col gap-3" role="log" aria-label={tr('shell.dockPanel.latestExchange')}>
         {snapshot.trimmed && (
           <button
             type="button"
             onClick={onExpandAsk}
-            title="This answer is too long to show whole here"
+            title={tr('shell.dockPanel.thisAnswerIsTooLong')}
             className={cn(
               'self-stretch inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-dashed border-shodh-border text-caption text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
               FOCUS_RING,
             )}
           >
             <History className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-            <span className="min-w-0 text-start">Earlier steps · Show in Ask</span>
+            <span className="min-w-0 text-start">{tr('shell.dockPanel.earlierStepsShowInAsk')}</span>
           </button>
         )}
         {snapshot.lastUser && (

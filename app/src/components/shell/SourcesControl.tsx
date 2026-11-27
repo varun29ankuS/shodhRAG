@@ -1,5 +1,6 @@
 import { Database, Globe } from 'lucide-react';
 import { cn } from '../../lib/utils';
+import { tr } from '../../i18n/tr';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-shodh-ground';
@@ -27,7 +28,7 @@ export function SourcesControl({ label, title, onOpen, searchAll }: SourcesContr
           type="button"
           aria-pressed={searchAll.on}
           onClick={searchAll.toggle}
-          title="Next question only: search your whole library"
+          title={tr('shell.sourcesControl.nextQuestionOnlySearchYour')}
           data-testid="topbar-search-all"
           className={cn(
             'h-[26px] px-2.5 shrink-0 whitespace-nowrap inline-flex items-center gap-1 rounded-full text-caption font-medium border transition-colors duration-micro',
@@ -38,7 +39,7 @@ export function SourcesControl({ label, title, onOpen, searchAll }: SourcesContr
           )}
         >
           <Globe className="w-3 h-3" aria-hidden="true" />
-          All library
+          {tr('shell.sourcesControl.allLibrary')}
         </button>
       )}
       <button

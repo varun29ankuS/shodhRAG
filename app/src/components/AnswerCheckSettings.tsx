@@ -8,6 +8,7 @@ import type { AnswerPrefs } from '../lib/appSettings';
 import { isInstallProgress, isSearchModelsStatus } from '../features/setup/searchModels';
 import type { InstallProgress } from '../features/setup/searchModels';
 import { SwitchRow } from './PrivacySettings';
+import { tr } from '../i18n/tr';
 
 const ANSWER_CHECK_PROGRESS_EVENT = 'answer-check-progress';
 
@@ -90,7 +91,7 @@ export function AnswerCheckModelRow() {
     <div className="flex flex-col gap-2">
       <div className="flex items-start justify-between gap-6">
         <div className="min-w-0">
-          <p className="m-0 text-body font-semibold text-shodh-text">Answer checking model</p>
+          <p className="m-0 text-body font-semibold text-shodh-text">{tr('settings.answerCheckSettings.answerCheckingModel')}</p>
           <p className="m-0 mt-0.5 text-small text-shodh-text-muted">
             {status?.ready
               ? 'Installed. Statements are checked for what their passage actually says, including reversed or swapped facts.'
@@ -105,7 +106,7 @@ export function AnswerCheckModelRow() {
         {status?.ready ? (
           <span className="shrink-0 inline-flex items-center gap-1.5 text-small text-shodh-success">
             <ShieldCheck className="w-4 h-4" aria-hidden="true" />
-            Ready
+            {tr('settings.answerCheckSettings.ready')}
           </span>
         ) : (
           <button
@@ -119,7 +120,7 @@ export function AnswerCheckModelRow() {
             )}
           >
             <Download className="w-3.5 h-3.5" aria-hidden="true" />
-            Install
+            {tr('settings.answerCheckSettings.install')}
           </button>
         )}
       </div>
@@ -184,10 +185,9 @@ export default function AnswerCheckSettings() {
         onChange={value => void change({ thinkBeforeAnswering: value })}
       />
       <div className="flex flex-col gap-1">
-        <h3 className="m-0 text-body-lg font-semibold text-shodh-text">Answer checking</h3>
+        <h3 className="m-0 text-body-lg font-semibold text-shodh-text">{tr('settings.answerCheckSettings.answerChecking')}</h3>
         <p className="m-0 text-small text-shodh-text-muted">
-          Every answer is checked on this computer, statement by statement, against the passages it cites. Statements
-          a passage does not support are flagged in the answer.
+          {tr('settings.answerCheckSettings.everyAnswerIsCheckedOn')}
         </p>
       </div>
       <SwitchRow

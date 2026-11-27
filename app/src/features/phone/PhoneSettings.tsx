@@ -7,6 +7,7 @@ import { countdown } from '../connectors/telegramModel';
 import { Callout, DANGER_BUTTON, OUTLINE_BUTTON, PRIMARY_BUTTON, QUIET_BUTTON, Skeleton } from '../connectors/ui';
 import { errorText, type PairedPhone, type PairingCode, PHONE_DEVICES_CHANGED, whenSeen } from './phoneModel';
 import StayAvailable from './StayAvailable';
+import { tr } from '../../i18n/tr';
 
 /**
  * Settings → Phone: pair a phone with a QR code (it works once, for five minutes), and
@@ -91,11 +92,9 @@ export default function PhoneSettings() {
 
         <div className="min-w-0 flex-1 flex flex-col gap-3">
           <div>
-            <p className="m-0 text-body font-semibold text-shodh-text">Scan with Shodh on your phone</p>
+            <p className="m-0 text-body font-semibold text-shodh-text">{tr('settings.phoneSettings.scanWithShodhOnYour')}</p>
             <p className="m-0 mt-0.5 text-small text-shodh-text-secondary max-w-[56ch]">
-              Open Shodh on your Android phone and choose Pair with computer. The phone then asks this computer
-              directly, end to end encrypted. Phones can ask and read; anything in Code mode, file changes and
-              commands still need you here.
+              {tr('settings.phoneSettings.openShodhOnYourAndroid')}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -112,25 +111,25 @@ export default function PhoneSettings() {
           </div>
           <p className="m-0 text-caption text-shodh-text-muted" aria-live="off">
             {code && left ? (
-              <>Works once, for <span className="tabular-nums">{left}</span> more. A new code replaces this one.</>
+              <>{tr('settings.phoneSettings.worksOnceFor')}<span className="tabular-nums">{left}</span>{tr('settings.phoneSettings.moreANewCodeReplaces')}</>
             ) : (
               'A code works once, for five minutes.'
             )}
           </p>
           {pairError && (
             <Callout tone="error" role="alert">
-              <p className="m-0">The code could not be made: {pairError}</p>
+              <p className="m-0">{tr('settings.phoneSettings.theCodeCouldNotBe')}{pairError}</p>
             </Callout>
           )}
         </div>
       </div>
 
       <div className="flex flex-col gap-2">
-        <h3 className="m-0 text-body font-semibold text-shodh-text">Paired phones</h3>
+        <h3 className="m-0 text-body font-semibold text-shodh-text">{tr('settings.phoneSettings.pairedPhones')}</h3>
         {phones === null && !listError ? (
           <Skeleton className="h-12 w-full" />
         ) : phones && phones.length === 0 ? (
-          <p className="m-0 text-small text-shodh-text-muted">No phone is paired yet.</p>
+          <p className="m-0 text-small text-shodh-text-muted">{tr('settings.phoneSettings.noPhoneIsPairedYet')}</p>
         ) : (
           <ul className="m-0 p-0 list-none flex flex-col gap-2">
             {(phones ?? []).map(phone => (
@@ -142,23 +141,23 @@ export default function PhoneSettings() {
                 </div>
                 {confirming === phone.nodeId ? (
                   <div className="flex items-center gap-2">
-                    <span className="text-small text-shodh-text-secondary">Remove it? It is locked out at once.</span>
+                    <span className="text-small text-shodh-text-secondary">{tr('settings.phoneSettings.removeItItIsLocked')}</span>
                     <button type="button" className={DANGER_BUTTON} disabled={removing !== null} onClick={() => remove(phone.nodeId)}>
                       {removing === phone.nodeId ? (
                         <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />
                       ) : (
                         <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
                       )}
-                      Remove
+                      {tr('settings.phoneSettings.remove')}
                     </button>
                     <button type="button" className={QUIET_BUTTON} disabled={removing !== null} onClick={() => setConfirming(null)}>
-                      Keep
+                      {tr('settings.phoneSettings.keep')}
                     </button>
                   </div>
                 ) : (
                   <button type="button" className={DANGER_BUTTON} onClick={() => setConfirming(phone.nodeId)}>
                     <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
-                    Remove
+                    {tr('settings.phoneSettings.remove')}
                   </button>
                 )}
               </li>
@@ -167,7 +166,7 @@ export default function PhoneSettings() {
         )}
         {listError && (
           <Callout tone="error" role="alert">
-            <p className="m-0">The paired phones could not be read: {listError}</p>
+            <p className="m-0">{tr('settings.phoneSettings.thePairedPhonesCouldNot')}{listError}</p>
           </Callout>
         )}
       </div>

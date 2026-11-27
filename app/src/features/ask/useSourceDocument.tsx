@@ -10,6 +10,7 @@ import { TextViewer } from './viewer/TextViewer';
 import { getSourceFileInfo, toSourceError, type SourceAccessError, type SourceFileInfo } from './viewer/sourceAccess';
 import type { LocateResult } from './viewer/viewerTypes';
 import { VIEWER_FOCUS_RING as FOCUS_RING } from './viewer/viewerTypes';
+import { tr } from '../../i18n/tr';
 
 /** Extensions shown as prose (proportional font); other text is code. */
 const PROSE_EXTENSIONS = new Set(['pdf', 'docx', 'pptx', 'txt', 'text', 'md', 'markdown', 'mdx', 'rst', 'log', 'html', 'htm']);
@@ -63,7 +64,7 @@ function PassageBlock({ passage }: { passage: string }) {
 /** Shown whenever the document itself cannot be displayed. */
 function PassageFallback({ message, passage, tone = 'warning' }: { message: string; passage: string; tone?: 'warning' | 'info' }) {
   return (
-    <div tabIndex={0} aria-label="Cited passage" className={cn('flex-1 min-h-0 overflow-y-auto scrollbar-thin p-5 flex flex-col gap-4', FOCUS_RING)}>
+    <div tabIndex={0} aria-label={tr('ask.useSourceDocument.citedPassage')} className={cn('flex-1 min-h-0 overflow-y-auto scrollbar-thin p-5 flex flex-col gap-4', FOCUS_RING)}>
       <p role={tone === 'warning' ? 'alert' : undefined} className="flex items-start gap-2 text-small leading-relaxed text-shodh-text-secondary">
         {tone === 'warning' ? (
           <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-shodh-warning" aria-hidden="true" />
@@ -73,7 +74,7 @@ function PassageFallback({ message, passage, tone = 'warning' }: { message: stri
         <span>{message}</span>
       </p>
       <figure className="m-0 flex flex-col gap-2">
-        <figcaption className="text-caption font-medium uppercase tracking-wider text-shodh-text-faint">Retrieved passage</figcaption>
+        <figcaption className="text-caption font-medium uppercase tracking-wider text-shodh-text-faint">{tr('ask.useSourceDocument.retrievedPassage')}</figcaption>
         <PassageBlock passage={passage} />
       </figure>
     </div>
@@ -117,7 +118,7 @@ function LocateNotice({
                   onClick={onRetry}
                   className="font-medium text-shodh-accent-text hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm"
                 >
-                  Try again
+                  {tr('ask.useSourceDocument.tryAgain')}
                 </button>
               </>
             )}
@@ -143,7 +144,7 @@ function LocateNotice({
       {showPassage && passage && (
         <details>
           <summary className={cn('cursor-pointer w-fit rounded text-caption text-shodh-text-muted hover:text-shodh-text', FOCUS_RING)}>
-            Show the retrieved passage
+            {tr('ask.useSourceDocument.showTheRetrievedPassage')}
           </summary>
           <div className="mt-2 max-h-48 overflow-y-auto scrollbar-thin">
             <PassageBlock passage={passage} />
@@ -263,7 +264,7 @@ export function useSourceDocument(hit: SearchHit, { onPageChange }: SourceDocume
     body = (
       <div className="flex-1 flex items-center justify-center gap-2 text-small text-shodh-text-muted">
         <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
-        Opening document…
+        {tr('ask.useSourceDocument.openingDocument')}
       </div>
     );
   } else if (panel.status === 'web') {

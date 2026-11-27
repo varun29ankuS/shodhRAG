@@ -10,6 +10,7 @@ import {
   onAppSettingsChanged,
   updatePreferences,
 } from '../lib/appSettings';
+import { tr } from '../i18n/tr';
 
 /**
  * Search preferences the user can change. Only the passage count exists:
@@ -104,7 +105,7 @@ export default function SearchSettings({ config, onUpdate, onReset }: SearchSett
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Sliders className="w-4 h-4" style={{ color: colors.primary }} />
-          <span className="text-body font-semibold" style={{ color: colors.text }}>Search</span>
+          <span className="text-body font-semibold" style={{ color: colors.text }}>{tr('settings.searchSettings.search')}</span>
         </div>
         <button
           onClick={onReset}
@@ -112,7 +113,7 @@ export default function SearchSettings({ config, onUpdate, onReset }: SearchSett
           style={{ borderColor: colors.border, color: colors.textMuted }}
         >
           <RotateCcw className="w-3 h-3" />
-          Reset
+          {tr('settings.searchSettings.reset')}
         </button>
       </div>
 
@@ -120,7 +121,7 @@ export default function SearchSettings({ config, onUpdate, onReset }: SearchSett
       <div data-agent-item={agentItemKey('setting', 'search_max_results')} className="rounded-lg">
         <div className="flex items-center justify-between mb-1.5">
           <label className="text-caption font-medium" style={{ color: colors.textSecondary }}>
-            Passages per search
+            {tr('settings.searchSettings.passagesPerSearch')}
           </label>
           <span className="text-caption font-bold" style={{ color: colors.text }}>{config.maxResults}</span>
         </div>
@@ -129,17 +130,17 @@ export default function SearchSettings({ config, onUpdate, onReset }: SearchSett
           min={MIN_SEARCH_RESULTS}
           max={MAX_SEARCH_RESULTS}
           value={config.maxResults}
-          aria-label="Passages per search"
+          aria-label={tr('settings.searchSettings.passagesPerSearch')}
           onChange={e => onUpdate({ maxResults: Number(e.target.value) })}
           className="w-full h-1 rounded-full appearance-none cursor-pointer"
           style={{ accentColor: colors.primary }}
         />
         <div className="flex justify-between text-caption mt-0.5" style={{ color: colors.textMuted }}>
-          <span>{MIN_SEARCH_RESULTS} (fast)</span>
-          <span>{MAX_SEARCH_RESULTS} (thorough)</span>
+          <span>{MIN_SEARCH_RESULTS}{tr('settings.searchSettings.fast')}</span>
+          <span>{MAX_SEARCH_RESULTS}{tr('settings.searchSettings.thorough')}</span>
         </div>
         <p className="text-caption mt-1.5" style={{ color: colors.textMuted }}>
-          Each search combines meaning-based and keyword matching, then ranks the passages; the assistant may ask for more when a question needs it.
+          {tr('settings.searchSettings.eachSearchCombinesMeaningBased')}
         </p>
       </div>
     </div>

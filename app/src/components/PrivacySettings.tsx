@@ -104,7 +104,7 @@ export default function PrivacySettings() {
     <div className="flex flex-col gap-5">
       <SwitchRow
         label="Local-only mode"
-        description={'Nothing leaves this computer; local models only.'}
+        description={'Ask’s assistant: nothing leaves this computer; local models only.'}
         checked={policy.localOnly}
         disabled={saving}
         onChange={localOnly => void change({ ...policy, localOnly })}
@@ -335,7 +335,7 @@ function UpdateSettings() {
     <div className="flex flex-col gap-3 pt-5 border-t border-shodh-border">
       <SwitchRow
         label="Check for updates"
-        description={'Checks GitHub daily; installs only when you choose. Sends nothing about you.'}
+        description={'Checks GitHub daily, never in Local-only mode. Sends nothing about you; installs only when you choose.'}
         checked={status.checkAutomatically && !blocked}
         disabled={busy || blocked}
         onChange={enabled => void toggle(enabled)}

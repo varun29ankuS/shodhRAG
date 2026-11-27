@@ -13,6 +13,7 @@ import { UsageCards } from './UsageCards';
 import { EVENT_TYPES, MAX_RETENTION_DAYS, MIN_RETENTION_DAYS } from './types';
 import type { AuditEventType, AuditQuery, AuditRow, AuditStats, VerifyReport } from './types';
 import { ViewState } from '../../components/shell/ViewState';
+import { InfoPopover } from '../../components/ui/InfoPopover';
 
 const PAGE_SIZE = 200;
 const SEARCH_DEBOUNCE_MS = 300;
@@ -367,15 +368,22 @@ export default function AuditView({ frame }: AuditViewProps) {
         <p aria-live="polite" className="m-0 min-h-[18px] text-small">
           <VerifyResult report={verifyReport} error={verifyError} />
         </p>
-        <p className="m-0 text-caption text-shodh-text-muted">
-          Every question, tool call, approval, retrieval, answer and settings or source change is recorded in{' '}
-          <span className="font-mono">shodh.db</span> as a hash chain; editing, deleting or reordering an event breaks it.{' '}
-          {stats
-            ? stats.encrypted
-              ? 'The audit database is encrypted with a key held in the OS credential store.'
-              : 'The audit database is not encrypted in this build; protect it with disk encryption (BitLocker or FileVault).'
-            : null}
-        </p>
+        <div className="flex items-center gap-1 text-caption text-shodh-text-muted">
+          <span>{stats ? (stats.encrypted ? 'Tamper-evident · encrypted' : 'Tamper-evident · not encrypted') : 'Tamper-evident'}</span>
+          <InfoPopover label="About this log" title="Activity log">
+            <p className="m-0">
+              Every question, tool call, approval, retrieval, answer and settings or source change is recorded in{' '}
+              <span className="font-mono">shodh.db</span> as a hash chain; editing, deleting or reordering an event breaks it.
+            </p>
+            {stats && (
+              <p className="m-0">
+                {stats.encrypted
+                  ? 'The audit database is encrypted with a key held in the OS credential store.'
+                  : 'The audit database is not encrypted in this build; protect it with disk encryption (BitLocker or FileVault).'}
+              </p>
+            )}
+          </InfoPopover>
+        </div>
         {stats?.unrecorded && (
           <p role="alert" className="m-0 text-small text-shodh-error">
             {stats.unrecorded.count.toLocaleString()}{' '}

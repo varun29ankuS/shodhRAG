@@ -500,7 +500,7 @@ export function VisualGallery({
         <p className="py-8 text-center text-small text-shodh-text-muted">
           {debounced || kind !== 'all'
             ? 'No visual matches.'
-            : emptyText ?? 'Diagrams, charts, sketches, plots, simulations, equations and tables from answers appear here.'}
+            : emptyText ?? 'Nothing yet'}
         </p>
       ) : (
         <>

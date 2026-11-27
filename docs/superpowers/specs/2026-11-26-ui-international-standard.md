@@ -240,3 +240,21 @@ Still true:
   (a reload marks it interrupted), so this is how a running state reaches a picture.
 - **Two fixes from 2b's pictures**: a table's "Expand & ask" sits in a row above it instead of over its last header
   cell, and dark code blocks no longer paint a band behind each line.
+
+## 11. What 2d did, said plainly
+
+- **Logical CSS across `app/src`**: margins, paddings, insets, text alignment, side borders and corners are
+  logical (`ms/me`, `ps/pe`, `start/end`, `text-start/end`, `border-s/e`, `rounded-s/e`, `rounded-ss/se/es/ee`).
+  Centring with `left-1/2` and `-translate-x-1/2` is the same in either direction and stays.
+- **Locale helpers** (`app/src/i18n/format.ts`): numbers, dates and plural forms in the user's locale; an ISO
+  date built from its parts. The 17 calls that pinned `en-US`, `en-GB` or the `en-CA` date trick use them.
+- **The catalogue** (`app/src/i18n/en.ts`, read with `tr` and `trCount`): the JSX text and the `aria-label`,
+  `title`, `placeholder` and `alt` words of the shell (`components/shell`), Ask (`features/ask`) and the
+  Settings sections. Text built in expressions (templates, ternaries) is not yet in it.
+- **Gates** (`app/tests/i18nReady.test.ts`): physical utilities, pinned locales, words written in the migrated
+  files, unknown and unused keys, and a pseudo-locale 30% longer that every fixed-width label in them must fit.
+  The migrated views size their buttons to their labels (they never wrap, rule 7); the one fixed-width field,
+  the conversation's find box, was too narrow for it and is wider.
+- **Copy cuts**: the setup card on the empty Ask and Library is one line and its button; the Activity log's
+  paragraph is one line with the rest behind an info button; the Workspaces empty state, the Claude Pro/Max
+  note, and the Artifacts section lines and empty states are a few words each.

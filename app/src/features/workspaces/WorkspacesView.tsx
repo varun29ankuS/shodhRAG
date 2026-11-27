@@ -180,10 +180,7 @@ export default function WorkspacesView({
               <section aria-labelledby="ws-empty" className="flex flex-col gap-3 rounded-xl border border-dashed border-shodh-border p-6">
                 <Layers className="w-6 h-6 text-shodh-text-muted" aria-hidden="true" />
                 <h3 id="ws-empty" className="m-0 text-body-lg font-semibold text-shodh-text">No workspaces yet</h3>
-                <p className="m-0 text-small text-shodh-text-secondary max-w-[600px]">
-                  Start one for a literature review, a grant, a paper or a client. Add its folders, files, snippets and
-                  papers; chats in it answer only from them, following the workspace’s instructions.
-                </p>
+                <p className="m-0 text-small text-shodh-text-secondary">Chats here answer from its sources only.</p>
                 <ul className="m-0 p-0 list-none grid grid-cols-1 sm:grid-cols-2 gap-2">
                   {templates.map(t => (
                     <li key={t.id}>

@@ -232,7 +232,7 @@ export function LibraryView({
       }
     >
 
-        <SetupCard />
+        <SetupCard brief />
 
         <CpuSearchNotice />
 

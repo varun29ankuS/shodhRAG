@@ -1575,7 +1575,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
         <h1 className="m-0 text-center text-display font-semibold tracking-[-0.01em] text-shodh-text">
           {tr('ask.askView.askAnythingAboutYourFiles')}
         </h1>
-        <SetupCard waiting={queued.waiting} onCancelWaiting={queued.cancel} />
+        <SetupCard brief waiting={queued.waiting} onCancelWaiting={queued.cancel} />
         {seedNotice}
         {!hasSources ? (
           <div className="flex flex-col items-center gap-3 text-center">

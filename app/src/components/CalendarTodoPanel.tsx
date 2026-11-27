@@ -26,6 +26,11 @@ import { useWorkspaces } from '../features/workspaces/WorkspaceContext';
 import { agentItemKey } from '../lib/agentHighlight';
 import { ViewState } from './shell/ViewState';
 import { FOCUS_UNDERLINE } from '../lib/focusStyles';
+import { useWindowedList } from '../hooks/useWindowedList';
+
+/** A task row's height before it is measured, and the space between rows (`gap-0.5`). */
+const TASK_ROW_ESTIMATE = 56;
+const TASK_ROW_GAP = 2;
 
 type FilterTab = 'all' | 'pending' | 'completed';
 
@@ -164,6 +169,9 @@ function QuickAdd({ defaultDay, workspace }: { defaultDay: string | null; worksp
 // ── Task row ─────────────────────────────────────────────────────
 
 function TaskRow({
+  index,
+  top,
+  measure,
   task,
   active,
   editing,
@@ -173,6 +181,10 @@ function TaskRow({
   onRequestDelete,
   onMove,
 }: {
+  /** The row's place in the list, and its offset there (the list is windowed). */
+  index: number;
+  top: number;
+  measure: (el: Element | null) => void;
   task: TodoItem;
   active: boolean;
   editing: boolean;
@@ -230,7 +242,7 @@ function TaskRow({
   ].filter(Boolean).join(', ');
 
   return (
-    <li className="list-none">
+    <li ref={measure} data-index={index} className="list-none absolute left-0 right-0" style={{ top }}>
       <div
         ref={rowRef}
         data-task-row={task.id}
@@ -484,7 +496,11 @@ export default function CalendarTodoPanel() {
   );
   const [activeId, setActiveId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const listRef = useRef<HTMLUListElement>(null);
+  // The page scrolls; the list in it draws only the rows in view (useWindowedList).
+  const [scrollNode, setScrollNode] = useState<HTMLDivElement | null>(null);
+  const [listNode, setListNode] = useState<HTMLUListElement | null>(null);
+  // A row to bring into view once the list shows it, and whether to focus it.
+  const [rowRequest, setRowRequest] = useState<{ id: string; focus: boolean; seq: number } | null>(null);
   const workspacesHeadingId = useId();
   const focusAfterDelete = useRef<string | null>(null);
   // Agent focus requests already applied; one made before this layout mounted is not replayed.
@@ -542,9 +558,39 @@ export default function CalendarTodoPanel() {
   // The roving tab stop: the active row, else the first.
   const tabStopId = filteredTasks.some(t => t.id === activeId) ? activeId : filteredTasks[0]?.id ?? null;
 
+  const windowed = useWindowedList({
+    count: filteredTasks.length,
+    scroller: scrollNode,
+    list: listNode,
+    estimate: TASK_ROW_ESTIMATE,
+    getKey: index => filteredTasks[index].id,
+    gap: TASK_ROW_GAP,
+    // The tab stop and the row being edited stay drawn wherever the list is scrolled.
+    keep: [
+      filteredTasks.findIndex(t => t.id === tabStopId),
+      editingId === null ? null : filteredTasks.findIndex(t => t.id === editingId),
+    ],
+  });
+  const revealRow = windowed.reveal;
+
+  // A requested row, once the filters that hid it are cleared: drawn, scrolled to, focused.
+  useEffect(() => {
+    if (!rowRequest) return;
+    const index = filteredTasks.findIndex(t => t.id === rowRequest.id);
+    if (index < 0) return;
+    let cancelled = false;
+    void revealRow(index, rowRequest.focus ? 'auto' : 'center').then(row => {
+      if (cancelled || !rowRequest.focus) return;
+      row?.querySelector<HTMLElement>('[data-task-row]')?.focus();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [rowRequest, filteredTasks, revealRow]);
+
   const focusRow = (id: string) => {
     setActiveId(id);
-    listRef.current?.querySelector<HTMLElement>(`[data-task-row="${CSS.escape(id)}"]`)?.focus();
+    setRowRequest(prev => ({ id, focus: true, seq: (prev?.seq ?? 0) + 1 }));
   };
 
   const move = (fromId: string, to: 'prev' | 'next' | 'first' | 'last') => {
@@ -584,11 +630,7 @@ export default function CalendarTodoPanel() {
     setSelectedDay(task && storedDayKey(task.dueDate) !== focusRequest.day ? null : focusRequest.day);
     if (!task) return;
     setActiveId(task.id);
-    requestAnimationFrame(() => {
-      listRef.current
-        ?.querySelector<HTMLElement>(`[data-task-row="${CSS.escape(task.id)}"]`)
-        ?.scrollIntoView({ block: 'center' });
-    });
+    setRowRequest(prev => ({ id: task.id, focus: false, seq: (prev?.seq ?? 0) + 1 }));
   }, [focusRequest, tasks]);
 
   const pendingCount = scopedTasks.filter(t => !isDone(t)).length;
@@ -628,7 +670,7 @@ export default function CalendarTodoPanel() {
         </p>
       </div>
 
-      <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin px-8 pb-page-end">
+      <div ref={setScrollNode} className="flex-1 min-h-0 overflow-y-auto scrollbar-thin px-8 pb-page-end">
       <div className="flex flex-wrap items-start gap-5">
         <section aria-label="Task list" className="flex-[1_1_24rem] min-w-0 flex flex-col gap-3">
           <QuickAdd defaultDay={selectedDay} workspace={filteredWorkspace} />
@@ -721,10 +763,15 @@ export default function CalendarTodoPanel() {
                 <span>{showsWorkspaceColumn(allWorkspaces, filteredTasks) ? 'Workspace' : null}</span>
                 <span />
               </div>
-              <ul ref={listRef} aria-label="Tasks" className="flex flex-col gap-0.5">
-                {filteredTasks.map(task => (
+              <ul ref={setListNode} aria-label="Tasks" className="relative m-0 p-0" style={{ height: windowed.total }}>
+                {windowed.rows.map(row => {
+                  const task = filteredTasks[row.index];
+                  return (
                   <TaskRow
-                    key={task.id}
+                    key={row.key}
+                    index={row.index}
+                    top={row.top}
+                    measure={windowed.virtualizer.measureElement}
                     task={task}
                     active={task.id === tabStopId}
                     editing={task.id === editingId}
@@ -734,7 +781,8 @@ export default function CalendarTodoPanel() {
                     onRequestDelete={() => doDelete(task)}
                     onMove={to => move(task.id, to)}
                   />
-                ))}
+                  );
+                })}
               </ul>
               </>
             )}

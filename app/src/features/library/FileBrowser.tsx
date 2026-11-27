@@ -38,6 +38,7 @@ import { onWindowEvent, SHOW_SOURCE_EVENT } from '../research/snippetBus';
 import type { SourceBoxRequest } from '../research/snippetBus';
 import { browserTimers, requestPdfMeta, usePdfMeta } from './pdfListMeta';
 import { Prefetcher } from './prefetch';
+import { useWindowedList } from '../../hooks/useWindowedList';
 import type { LibrarySource } from './sources';
 import { IS_MAC_PLATFORM, shortcutText, withShortcut } from '../../lib/shortcuts';
 
@@ -52,8 +53,9 @@ const BUTTON = cn(
   FOCUS_RING,
 );
 
-/** Rows rendered at once; a filter narrows larger folders. */
-const MAX_ROWS = 500;
+/** A row's height (`EntryRow`, `h-10`), and the list's padding above and below. */
+const ROW_HEIGHT = 40;
+const LIST_PADDING = 4;
 
 /** Key-repeat through the list previews only where the reader pauses. */
 const PREVIEW_DELAY_MS = 120;
@@ -146,7 +148,11 @@ export function FileBrowser({ source, onExit, onAskAboutFile, onFileCount }: Fil
     readNumberPreference(browserStorage, LIST_WIDTH_KEY, LIST_WIDTH_DEFAULT, LIST_WIDTH_MIN, LIST_WIDTH_MAX),
   );
   const [splitWidth, setSplitWidth] = useState(0);
-  const listRef = useRef<HTMLUListElement>(null);
+  // The list scrolls in its own box and draws only the rows in view (useWindowedList).
+  const [scrollNode, setScrollNode] = useState<HTMLDivElement | null>(null);
+  const [listNode, setListNode] = useState<HTMLUListElement | null>(null);
+  // A row to move the focus to once it is drawn (a key, or the first row).
+  const [focusRequest, setFocusRequest] = useState<{ key: string | null; seq: number } | null>(null);
   const filterRef = useRef<HTMLInputElement>(null);
   const splitRef = useRef<HTMLDivElement>(null);
   const paneRef = useRef<HTMLElement>(null);
@@ -191,10 +197,41 @@ export function FileBrowser({ source, onExit, onAskAboutFile, onFileCount }: Fil
     if (!current) return [];
     return filtering ? searchFiles(current, filter, sortKey, descending) : folderEntries(current, sortKey, descending);
   }, [current, filtering, filter, sortKey, descending]);
-  const shown = useMemo(() => (entries.length > MAX_ROWS ? entries.slice(0, MAX_ROWS) : entries), [entries]);
+  // Every entry is listed: only the rows in view are drawn.
+  const shown = entries;
 
   // Keep a valid active row for roving focus.
   const activeIndex = Math.max(0, shown.findIndex(e => entryKey(e) === activeKey));
+
+  const windowed = useWindowedList({
+    count: shown.length,
+    scroller: scrollNode,
+    list: listNode,
+    estimate: ROW_HEIGHT,
+    getKey: index => entryKey(shown[index]),
+    paddingStart: LIST_PADDING,
+    paddingEnd: LIST_PADDING,
+    // The tab stop stays drawn, so Tab always lands in the list.
+    keep: [activeIndex],
+  });
+  const revealRow = windowed.reveal;
+
+  /** Moves the focus to the row with `key` (the first row when null), drawing it first. */
+  const requestRowFocus = useCallback((key: string | null) => {
+    setFocusRequest(prev => ({ key, seq: (prev?.seq ?? 0) + 1 }));
+  }, []);
+  useEffect(() => {
+    if (!focusRequest) return;
+    const index = focusRequest.key === null ? 0 : shown.findIndex(e => entryKey(e) === focusRequest.key);
+    if (index < 0) return;
+    let cancelled = false;
+    void revealRow(index).then(row => {
+      if (!cancelled) row?.querySelector<HTMLElement>('[data-row]')?.focus();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [focusRequest, shown, revealRow]);
 
   const cancelPendingPreview = useCallback(() => {
     if (previewTimer.current !== null) {
@@ -237,11 +274,9 @@ export function FileBrowser({ source, onExit, onAskAboutFile, onFileCount }: Fil
       if (!entry) return;
       setActiveKey(entryKey(entry));
       if (previewIt && entry.kind === 'file') preview(entry, PREVIEW_DELAY_MS);
-      requestAnimationFrame(() => {
-        listRef.current?.querySelector<HTMLElement>(`[data-row="${CSS.escape(entryKey(entry))}"]`)?.focus();
-      });
+      requestRowFocus(entryKey(entry));
     },
-    [shown, preview],
+    [shown, preview, requestRowFocus],
   );
 
   const enterDir = useCallback((dir: string[]) => {
@@ -255,23 +290,21 @@ export function FileBrowser({ source, onExit, onAskAboutFile, onFileCount }: Fil
     const leaving = segments;
     setSegments(segments.slice(0, -1));
     setActiveKey(`d:${leaving.join('/')}`);
-    requestAnimationFrame(() => {
-      listRef.current?.querySelector<HTMLElement>(`[data-row="${CSS.escape(`d:${leaving.join('/')}`)}"]`)?.focus();
-    });
-  }, [segments]);
+    requestRowFocus(`d:${leaving.join('/')}`);
+  }, [segments, requestRowFocus]);
 
   /** Click: folders open, files preview at once. */
   const activate = useCallback(
     (entry: TreeEntry) => {
       if (entry.kind === 'dir') {
         enterDir(entry.dir);
-        requestAnimationFrame(() => listRef.current?.querySelector<HTMLElement>('[data-row]')?.focus());
+        requestRowFocus(null);
       } else {
         setActiveKey(entryKey(entry));
         preview(entry, 0);
       }
     },
-    [enterDir, preview],
+    [enterDir, preview, requestRowFocus],
   );
 
   /** Enter / double-click on a file: preview it and move focus into it. */
@@ -408,32 +441,18 @@ export function FileBrowser({ source, onExit, onAskAboutFile, onFileCount }: Fil
     [prefetchFile, prefetcher, previewFile],
   );
 
-  // Titles and page counts for the PDF rows on screen.
+  // Titles and page counts for the PDF rows drawn (those in view and a few beyond).
+  const drawnPdfPaths = windowed.rows
+    .map(row => shown[row.index])
+    .filter((entry): entry is FileNode => entry?.kind === 'file' && entry.extension === 'pdf')
+    .map(entry => entry.path);
+  const drawnPdfKey = drawnPdfPaths.join('\n');
   useEffect(() => {
-    const list = listRef.current;
-    if (!list) return;
-    const visiblePaths = new Set<string>();
-    let frame = 0;
-    const observer = new IntersectionObserver(
-      observed => {
-        for (const entry of observed) {
-          const path = (entry.target as HTMLElement).dataset.metaPath;
-          if (!path) continue;
-          if (entry.isIntersecting) visiblePaths.add(path);
-          else visiblePaths.delete(path);
-        }
-        cancelAnimationFrame(frame);
-        frame = requestAnimationFrame(() => requestPdfMeta([...visiblePaths]));
-      },
-      { root: list, rootMargin: '120px 0px' },
-    );
-    list.querySelectorAll<HTMLElement>('[data-meta-path]').forEach(el => observer.observe(el));
-    return () => {
-      cancelAnimationFrame(frame);
-      observer.disconnect();
-      requestPdfMeta([]);
-    };
-  }, [shown, load.status]);
+    const paths = drawnPdfKey ? drawnPdfKey.split('\n') : [];
+    const frame = requestAnimationFrame(() => requestPdfMeta(paths));
+    return () => cancelAnimationFrame(frame);
+  }, [drawnPdfKey]);
+  useEffect(() => () => requestPdfMeta([]), []);
 
   // Split between the list and the document.
   useEffect(() => {
@@ -569,20 +588,26 @@ export function FileBrowser({ source, onExit, onAskAboutFile, onFileCount }: Fil
             <EmptyFolder filtering={filtering} filter={filter} indexing={source.status === 'indexing'} rootEmpty={!!totals && totals.files === 0} />
           )}
           {load.status === 'ready' && shown.length > 0 && (
-            <>
+            <div ref={setScrollNode} className="flex-1 min-h-0 overflow-y-auto overscroll-contain scrollbar-thin">
               <ul
-                ref={listRef}
+                ref={setListNode}
                 role="list"
                 aria-label={filtering ? `Files matching ${filter.trim()}` : `Contents of ${crumbs[crumbs.length - 1]}`}
                 onKeyDown={handleListKeyDown}
-                className="flex-1 min-h-0 overflow-y-auto overscroll-contain scrollbar-thin py-1"
+                className="relative m-0 p-0 list-none"
+                style={{ height: windowed.total }}
               >
-                {shown.map((entry, i) => (
+                {windowed.rows.map(row => {
+                  const entry = shown[row.index];
+                  return (
                   <EntryRow
-                    key={entryKey(entry)}
+                    key={row.key}
+                    index={row.index}
+                    top={row.top}
+                    measure={windowed.virtualizer.measureElement}
                     entry={entry}
                     rowKey={entryKey(entry)}
-                    tabbable={i === activeIndex}
+                    tabbable={row.index === activeIndex}
                     selected={entry.kind === 'file' && previewFile?.path === entry.path}
                     showFolder={filtering}
                     onFocus={() => setActiveKey(entryKey(entry))}
@@ -593,14 +618,10 @@ export function FileBrowser({ source, onExit, onAskAboutFile, onFileCount }: Fil
                     filePath={entry.kind === 'file' ? displayPath(source.path, entry) : null}
                     onAsk={entry.kind === 'file' ? () => onAskAboutFile(entry, source) : undefined}
                   />
-                ))}
+                  );
+                })}
               </ul>
-              {entries.length > shown.length && (
-                <p className="shrink-0 px-6 py-2 text-caption text-shodh-text-faint border-t border-shodh-border-subtle">
-                  {`Showing ${shown.length.toLocaleString()} of ${entries.length.toLocaleString()}. Type in the filter to narrow the list.`}
-                </p>
-              )}
-            </>
+            </div>
           )}
         </section>
 
@@ -745,6 +766,10 @@ function TypeBadge({ extension }: { extension: string }) {
 }
 
 interface EntryRowProps {
+  /** The row's place in the list, and its offset there (the list is windowed). */
+  index: number;
+  top: number;
+  measure: (el: Element | null) => void;
   entry: TreeEntry;
   rowKey: string;
   tabbable: boolean;
@@ -762,7 +787,7 @@ interface EntryRowProps {
   onAsk?: () => void;
 }
 
-function EntryRow({ entry, rowKey, tabbable, selected, showFolder, folderPath, filePath, onFocus, onActivate, onOpen, onHover, onAsk }: EntryRowProps) {
+function EntryRow({ index, top, measure, entry, rowKey, tabbable, selected, showFolder, folderPath, filePath, onFocus, onActivate, onOpen, onHover, onAsk }: EntryRowProps) {
   const isDir = entry.kind === 'dir';
   const isPdf = entry.kind === 'file' && entry.extension === 'pdf';
   const meta = usePdfMeta(isPdf ? entry.path : null);
@@ -782,7 +807,7 @@ function EntryRow({ entry, rowKey, tabbable, selected, showFolder, folderPath, f
   const secondary = !isDir ? [title ? entry.name : null, showFolder && entry.dir.length > 0 ? entry.dir.join(' › ') : null].filter(Boolean).join(' · ') : '';
 
   return (
-    <li className="relative group px-2">
+    <li ref={measure} data-index={index} className="absolute left-0 right-0 group px-2" style={{ top }}>
       <button
         type="button"
         data-row={rowKey}

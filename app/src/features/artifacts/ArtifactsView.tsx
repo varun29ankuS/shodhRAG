@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useId, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useState } from 'react';
 import { GitBranch, Hammer, MessageCircle, Search } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { relativeTime } from '../../utils/time';
@@ -10,6 +10,13 @@ import { STATUS_LABELS, filterCreations, selectionFor } from './model';
 import type { ArtifactSelection, CodeChange, Creation } from './model';
 import { PageFrame } from '../../components/shell/PageFrame';
 import { ViewState } from '../../components/shell/ViewState';
+import { useWindowedList } from '../../hooks/useWindowedList';
+import { gridColumns, gridRows, rowOfCard } from '../../lib/windowedRows';
+
+/** The creations grid: a card's least width, the space between cards (`gap-3`), a row's height before it is measured. */
+const CARD_MIN_PX = 280;
+const CARD_GAP_PX = 12;
+const CARD_ROW_ESTIMATE = 96;
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
@@ -77,6 +84,45 @@ export default function ArtifactsView({ onOpenChat, onChange }: ArtifactsViewPro
 
   const shown = useMemo(() => filterCreations(creations ?? [], text), [creations, text]);
 
+  // The grid draws only the rows of cards in view (useWindowedList), in the page's scroller.
+  const [pageNode, setPageNode] = useState<HTMLDivElement | null>(null);
+  const [gridNode, setGridNode] = useState<HTMLDivElement | null>(null);
+  const [gridWidth, setGridWidth] = useState(0);
+  useLayoutEffect(() => {
+    if (!gridNode) return;
+    const measure = () => setGridWidth(gridNode.clientWidth);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(gridNode);
+    return () => observer.disconnect();
+  }, [gridNode]);
+  const columns = gridColumns(gridWidth, CARD_MIN_PX, CARD_GAP_PX);
+  const cardRows = useMemo(() => gridRows(shown.length, columns), [shown.length, columns]);
+  const windowed = useWindowedList({
+    count: cardRows.length,
+    scroller: pageNode,
+    list: gridNode,
+    estimate: CARD_ROW_ESTIMATE,
+    getKey: index => shown[cardRows[index].first].id,
+    gap: CARD_GAP_PX,
+  });
+  const revealCardRow = windowed.reveal;
+
+  // Tab past the last card drawn (or Shift+Tab before the first) goes on to the next card,
+  // drawn first, as it would in a grid that drew every card.
+  const onGridKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== 'Tab') return;
+    const card = (e.target as HTMLElement).closest<HTMLElement>('[data-card-index]');
+    if (!card) return;
+    const next = Number(card.dataset.cardIndex) + (e.shiftKey ? -1 : 1);
+    if (next < 0 || next >= shown.length) return;
+    if (e.currentTarget.querySelector(`[data-card-index="${next}"]`)) return;
+    e.preventDefault();
+    void revealCardRow(rowOfCard(next, columns)).then(row => {
+      row?.querySelector<HTMLElement>(`[data-card-index="${next}"] button`)?.focus();
+    });
+  }, [shown.length, columns, revealCardRow]);
+
   if (selection) {
     return (
       <ArtifactPage
@@ -94,7 +140,7 @@ export default function ArtifactsView({ onOpenChat, onChange }: ArtifactsViewPro
   }
 
   return (
-    <PageFrame title="Artifacts" lede="Everything Shodh made">
+    <PageFrame ref={setPageNode} title="Artifacts" lede="Everything Shodh made">
 
         <section aria-labelledby="artifacts-creations" className="flex flex-col gap-3">
           <div className="flex items-end justify-between gap-3 flex-wrap">
@@ -128,9 +174,27 @@ export default function ArtifactsView({ onOpenChat, onChange }: ArtifactsViewPro
           ) : shown.length === 0 ? (
             <p className="m-0 text-small text-shodh-text-muted">No creation matches “{text.trim()}”.</p>
           ) : (
-            <ul className="grid gap-3 grid-cols-[repeat(auto-fill,minmax(280px,1fr))] list-none p-0 m-0">
-              {shown.map(creation => (
-                <li key={creation.id}>
+            <div
+              ref={setGridNode}
+              role="list"
+              aria-label="Creations"
+              onKeyDown={onGridKeyDown}
+              className="relative"
+              style={{ height: windowed.total }}
+            >
+              {windowed.rows.map(row => {
+                const { first, last } = cardRows[row.index];
+                return (
+              <div
+                key={row.key}
+                ref={windowed.virtualizer.measureElement}
+                data-index={row.index}
+                role="presentation"
+                className="absolute left-0 right-0 grid gap-3"
+                style={{ top: row.top, gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
+              >
+              {shown.slice(first, last + 1).map((creation, offset) => (
+                <div key={creation.id} role="listitem" data-card-index={first + offset}>
                   <button
                     type="button"
                     onClick={() => setSelection(prev => ({ id: creation.id, version: null, pane: 'preview', showPreview: false, seq: (prev?.seq ?? 0) + 1 }))}
@@ -151,9 +215,12 @@ export default function ArtifactsView({ onOpenChat, onChange }: ArtifactsViewPro
                       {creation.versions.length === 1 ? 'version' : 'versions'} · {relativeTime(creation.updatedAt)}
                     </span>
                   </button>
-                </li>
+                </div>
               ))}
-            </ul>
+              </div>
+                );
+              })}
+            </div>
           )}
         </section>
 

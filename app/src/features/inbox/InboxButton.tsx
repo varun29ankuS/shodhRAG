@@ -43,6 +43,11 @@ import type { InboxChoice, InboxItem, InboxTab, PanelNav, PrimaryAction, Request
 import { repeatDecide, repeatGet, repeatSet } from '../tasks/repeatApi';
 import { whatsNewApi } from '../whatsNew/api';
 import { automationsApi } from '../automations/api';
+import { useWindowedList } from '../../hooks/useWindowedList';
+
+/** An item's height before it is measured, and the list's padding above and below (`p-1`). */
+const INBOX_ROW_ESTIMATE = 72;
+const INBOX_LIST_PADDING = 4;
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-shodh-surface';
@@ -90,6 +95,9 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
   const rootRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const rowRefs = useRef(new Map<string, HTMLButtonElement>());
+  // The list scrolls in its own box and draws only the items in view (useWindowedList).
+  const [scrollNode, setScrollNode] = useState<HTMLDivElement | null>(null);
+  const [listNode, setListNode] = useState<HTMLUListElement | null>(null);
   const tabRefs = useRef(new Map<InboxTab, HTMLButtonElement>());
   // A row takes focus when the panel opens and on J/K, never on a tab switch.
   const focusRowRef = useRef(false);
@@ -162,6 +170,18 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
   const counts = inboxCounts({ loaded, error: loadError, items: visible });
   const current = list[selected[tab]] ?? null;
   const state = panelState({ loaded, error: loadError, count: list.length });
+  const windowed = useWindowedList({
+    count: state === 'list' ? list.length : 0,
+    scroller: scrollNode,
+    list: listNode,
+    estimate: INBOX_ROW_ESTIMATE,
+    getKey: index => list[index].id,
+    paddingStart: INBOX_LIST_PADDING,
+    paddingEnd: INBOX_LIST_PADDING,
+    // The selected item (the tab stop) stays drawn wherever the list is scrolled.
+    keep: [selected[tab]],
+  });
+  const revealRow = windowed.reveal;
 
   // The selection follows its item when the list changes, in each tab on its own.
   const selectedIdRef = useRef<Record<InboxTab, string | null>>({ attention: null, info: null });
@@ -190,7 +210,9 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
     // Also when the focused row went away (dismissed, answered): focus stays in the list.
     if (focusRowRef.current || document.activeElement === document.body) {
       focusRowRef.current = false;
-      rowRefs.current.get(current.id)?.focus();
+      const id = current.id;
+      // Drawn first: an item scrolled out of the list is not in the document.
+      void revealRow(selected[tab]).then(() => rowRefs.current.get(id)?.focus());
     }
   }, [open, current?.id]);
 
@@ -493,8 +515,17 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
                 )}
               </div>
             ) : (
-              <ul data-inbox-list="" className="m-0 p-1 list-none max-h-[420px] overflow-y-auto" aria-label={`${TAB_LABEL[tab]} items`}>
-                {list.map((item, index) => {
+              <div ref={setScrollNode} className="max-h-[420px] overflow-y-auto">
+              <ul
+                ref={setListNode}
+                data-inbox-list=""
+                className="relative m-0 p-0 list-none"
+                style={{ height: windowed.total }}
+                aria-label={`${TAB_LABEL[tab]} items`}
+              >
+                {windowed.rows.map(row => {
+                  const index = row.index;
+                  const item = list[index];
                   const tone = STATUS_TONE[item.status];
                   const actions = actionsFor(item);
                   const isSelected = index === selected[tab];
@@ -503,8 +534,11 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
                   const showOpen = item.link !== null && !actions.choices;
                   return (
                     <li
-                      key={item.id}
-                      className={cn('rounded-lg px-2.5 py-2 flex flex-col gap-1.5', isSelected && 'bg-shodh-raised')}
+                      key={row.key}
+                      ref={windowed.virtualizer.measureElement}
+                      data-index={index}
+                      className={cn('absolute left-1 right-1 rounded-lg px-2.5 py-2 flex flex-col gap-1.5', isSelected && 'bg-shodh-raised')}
+                      style={{ top: row.top }}
                     >
                       <button
                         ref={el => {
@@ -590,6 +624,7 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
                   );
                 })}
               </ul>
+              </div>
             )}
           </div>
 

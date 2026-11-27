@@ -6,6 +6,11 @@
  * hides its overflow is measured for all the text inside it. A field's
  * placeholder or value is measured in its own font against the room the field gives it.
  *
+ * One kind of cut text passes: a name shortened with an ellipsis whose whole text is in
+ * a `title` on the element or on its row or control (`shortenedWithTitle`), as a chat's
+ * long title is in the sidebar. Without the ellipsis, without that title, or with a
+ * title that says something else, it fails like any other.
+ *
  * The rule (`clipped`) takes numbers only, so the Node tests hold it; `clippedText` reads
  * those numbers from a page.
  */
@@ -32,6 +37,24 @@ export function clipped(box: BoxMeasure): 'width' | 'height' | null {
   if (hides(box.overflowY) && box.scrollHeight > box.clientHeight) return 'height';
   return null;
 }
+
+/** Spaces collapsed and trimmed, as the text reads on screen. */
+const readText = (text: string) => text.replace(/\s+/g, ' ').trim();
+
+/**
+ * Whether text cut to its width is a name shortened on purpose: drawn with an ellipsis
+ * (`textOverflow`, computed), with all of it (`fullText`) in a `title` (`titles`: the
+ * element's own, then its row's or control's) that says exactly that text.
+ */
+export function shortenedWithTitle(textOverflow: string, fullText: string, titles: readonly (string | null)[]): boolean {
+  if (textOverflow !== 'ellipsis') return false;
+  const text = readText(fullText);
+  if (!text) return false;
+  return titles.some(title => title !== null && readText(title) === text);
+}
+
+/** A row or control whose `title` may hold the whole of a shortened name inside it. */
+const ROW_OR_CONTROL = 'li, tr, button, a[href], [role="row"], [role="option"], [role="menuitem"], [role="listitem"], [role="treeitem"]';
 
 /** Whether text `textWidth` wide fits a field with `room` for it. */
 export function fieldTextFits(textWidth: number, room: number): boolean {
@@ -129,6 +152,11 @@ export function clippedText(doc: Document): { count: number; lines: string[] } {
       overflowX: style.overflowX,
       overflowY: style.overflowY,
     });
+    if (why === 'width' && shortenedWithTitle(
+      style.textOverflow,
+      el.textContent ?? '',
+      [el.getAttribute('title'), el.closest(ROW_OR_CONTROL)?.getAttribute('title') ?? null],
+    )) continue;
     if (why === 'width') report(`width ${nameOf(el)} "${quote(text)}" text=${el.scrollWidth} room=${el.clientWidth}`);
     else if (why === 'height') report(`height ${nameOf(el)} "${quote(text)}" text=${el.scrollHeight} room=${el.clientHeight}`);
   }

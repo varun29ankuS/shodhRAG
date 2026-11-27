@@ -8,6 +8,7 @@ import { SEARCH_MODELS_SOURCE, setupDisclosure, setupHeading, waitingLine } from
 import type { PartView } from './readiness';
 import { checksumRow, runtimeVerifiedSentence, verifiedSentence } from './verification';
 import { TechnicalDetails } from './TechnicalDetails';
+import { InfoPopover } from '../../components/ui/InfoPopover';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
@@ -41,7 +42,7 @@ export function SetupCard({ compact = false, className, waiting = false, onCance
 
   const shell = cn(
     'ask-rise rounded-xl border border-shodh-border bg-shodh-surface flex flex-col gap-3',
-    compact ? 'p-3' : 'p-4',
+    compact ? 'px-3 py-2' : 'p-4',
     className,
   );
 
@@ -109,6 +110,44 @@ export function SetupCard({ compact = false, className, waiting = false, onCance
   const installing = state.phase === 'installing';
   const failed = state.phase === 'failed';
   const errors = state.parts.filter(p => p.error).map(p => p.error as string);
+
+  // Over a conversation (above its message box): one line and the button, so it covers
+  // as little of the answers as it can. What is downloaded is one click away; a failure
+  // keeps the whole card, with its errors.
+  if (compact && !failed) {
+    return (
+      <section aria-label="Shodh setup" className={shell}>
+        <div className="flex items-center gap-2.5">
+          <Download className="w-4 h-4 shrink-0 text-shodh-accent" aria-hidden="true" />
+          <p className="m-0 flex-1 min-w-0 text-small font-semibold text-shodh-text">{setupHeading(state)}</p>
+          {state.phase === 'needed' && (
+            <InfoPopover label="What Shodh downloads" title={setupHeading(state)}>
+              <p className="m-0">{setupDisclosure(state, state.runtimeSource)}</p>
+            </InfoPopover>
+          )}
+          {waiting && onCancelWaiting && (
+            <button type="button" onClick={onCancelWaiting} className={cn(QUIET_BUTTON, FOCUS_RING)}>
+              Don&apos;t send it
+            </button>
+          )}
+          {installing ? (
+            <button type="button" disabled className={cn(PRIMARY_BUTTON, 'shrink-0', FOCUS_RING)}>
+              <Loader2 className="w-3.5 h-3.5 agent-spin" aria-hidden="true" />
+              Setting up…
+            </button>
+          ) : (
+            <button type="button" onClick={state.startSetup} className={cn(PRIMARY_BUTTON, 'shrink-0', FOCUS_RING)}>
+              <Download className="w-3.5 h-3.5" aria-hidden="true" />
+              Set up Shodh
+            </button>
+          )}
+        </div>
+        {waiting && (
+          <p className="m-0 text-small text-shodh-text" aria-live="polite">{waitingLine(state)}</p>
+        )}
+      </section>
+    );
+  }
 
   return (
     <section aria-label="Shodh setup" className={shell}>

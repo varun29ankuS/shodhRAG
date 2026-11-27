@@ -28,7 +28,10 @@
 //!    The pictures are for people to review. What is checked is the text: the
 //!    window measures every text it draws in each view ([`launch_probe_text_fit`]),
 //!    and one that is cut off or spills out of its box fails the probe, after
-//!    the last picture, with every such text logged.
+//!    the last picture, with every such text logged; so does a sidebar that shows
+//!    fewer than [`MIN_CHAT_ROWS`] chats whole. After the views, a scene: Ask with
+//!    a sample conversation open and the sidebar folded ([`TOUR_SCENES`]), for the
+//!    reading column, its wide blocks and the question rail.
 //!
 //! Each fact is one `Launch probe:` log line, then `Launch probe: PASS` or
 //! `Launch probe: FAIL <what>`.
@@ -42,6 +45,7 @@ use std::time::Duration;
 use shodh_rag::harness::events::NavigationTarget;
 use tauri::{AppHandle, Emitter, Listener, LogicalPosition, LogicalSize, Manager};
 
+use crate::conversation_commands::{ConversationMessage, ConversationStore, TurnWrite};
 use crate::creations::preview_embed::{self, CssRect, Placement, Visibility};
 use crate::creations::preview_window::{Place, PREVIEW_EVENT};
 use crate::creations::CreationStore;
@@ -84,6 +88,26 @@ struct TextFit {
     count: u32,
     /// One line for each (the first [`MAX_CLIPPED_LINES`]).
     clipped: Vec<String>,
+    /// The sidebar's chat rows.
+    chats: ChatRoom,
+}
+
+/// The chat rows the sidebar draws, and how many of them are whole on screen
+/// (`features/launch/chatRoom.ts`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+pub struct ChatRoom {
+    pub listed: u32,
+    pub whole: u32,
+}
+
+/// The fewest chat rows the sidebar must show whole in each view of the app,
+/// or all of them when fewer are listed: a short window keeps room for the chats.
+pub const MIN_CHAT_ROWS: u32 = 3;
+
+/// Whether the sidebar's chats have room: at least one is listed, and the first
+/// [`MIN_CHAT_ROWS`] (or all, when fewer) are whole on screen.
+pub fn chats_have_room(chats: ChatRoom) -> bool {
+    chats.listed > 0 && chats.whole >= MIN_CHAT_ROWS.min(chats.listed)
 }
 
 /// The measures the window has reported, in the order it reported them.
@@ -94,7 +118,8 @@ const MAX_CLIPPED_LINES: usize = 60;
 const MAX_CLIPPED_LINE_CHARS: usize = 400;
 
 /// The main window's answer to the tour's `measure`: the text of the view it
-/// shows that does not fit its box. Kept only while the probe runs; any other
+/// shows that does not fit its box, and the sidebar's chat rows
+/// (`features/launch/chatRoom.ts`). Kept only while the probe runs; any other
 /// instance drops it.
 #[tauri::command]
 pub fn launch_probe_text_fit(
@@ -104,11 +129,13 @@ pub fn launch_probe_text_fit(
     height: u32,
     count: u32,
     clipped: Vec<String>,
+    chats: ChatRoom,
 ) {
     if !STARTED.load(Ordering::SeqCst) {
         return;
     }
-    let known = TOUR_VIEWS.contains(&view.as_str()) && TOUR_THEMES.contains(&theme.as_str());
+    let toured = TOUR_VIEWS.contains(&view.as_str()) || TOUR_SCENES.contains(&view.as_str());
+    let known = toured && TOUR_THEMES.contains(&theme.as_str());
     if !known {
         return;
     }
@@ -127,6 +154,7 @@ pub fn launch_probe_text_fit(
             height,
             count,
             clipped,
+            chats,
         });
 }
 
@@ -400,8 +428,31 @@ pub const TOUR_VIEWS: &[&str] = &[
     "activity",
     "settings",
 ];
+/// After the views, scenes of one view each: `conversation` is Ask with the
+/// sample conversation open ([`SAMPLE_CONVERSATION_ID`]) and the sidebar folded,
+/// so the reading column, its wide blocks and the question rail have room on the
+/// runner's small screen (`features/launch/LaunchProbeHost.tsx`).
+pub const TOUR_SCENES: &[&str] = &["conversation"];
 /// Both themes, each view in each.
 pub const TOUR_THEMES: &[&str] = &["dark", "light"];
+/// The sample conversations the tour writes before its first view, so the
+/// sidebar lists a few chats as a user's does. The first is the scene's: three
+/// questions, the last answered with a table and code.
+pub const SAMPLE_CONVERSATION_ID: &str = "launch-probe-conversation";
+const SAMPLE_CONVERSATIONS: &str =
+    include_str!("../tests/fixtures/launch_probe_conversations.json");
+
+/// One sample conversation, as the fixture writes it.
+#[derive(Debug, serde::Deserialize)]
+struct SampleConversation {
+    id: String,
+    messages: Vec<ConversationMessage>,
+}
+
+/// The sample conversations, in the fixture's order.
+fn sample_conversations() -> Result<Vec<SampleConversation>, String> {
+    serde_json::from_str(SAMPLE_CONVERSATIONS).map_err(|e| format!("the sample conversations: {e}"))
+}
 /// How long a view is given to load its code and its first data and paint,
 /// before the job is told to take its picture. The picture is for people to
 /// review; nothing is read from it.
@@ -417,21 +468,39 @@ pub fn view_captured_file(view: &str, theme: &str) -> String {
     format!("launch-probe-captured-view-{view}-{theme}")
 }
 
+/// Writes the sample conversations into the profile, as a window saves one,
+/// and tells the windows, which list them.
+fn write_sample_conversations(app: &AppHandle, data_dir: &Path) -> Result<(), String> {
+    let store = ConversationStore::in_dir(data_dir);
+    for sample in sample_conversations()? {
+        let writes = sample.messages.into_iter().map(TurnWrite::Whole).collect();
+        store
+            .write_turns(&sample.id, writes, &[], true)?
+            .ok_or_else(|| format!("the sample conversation {} was not saved", sample.id))?;
+        crate::conversation_commands::emit_changed(app, &sample.id);
+    }
+    Ok(())
+}
+
 /// The views tour: each view of the app in each theme, opened by the main
 /// window's own frontend as a click in the sidebar opens it, one after the
-/// other, each waiting for the launch job's screenshot. It runs after every
-/// check of the probe, so it changes none of them.
+/// other, then each scene, each waiting for the launch job's screenshot. It
+/// runs after every check of the probe, so it changes none of them.
 async fn views_tour(app: &AppHandle, data_dir: &Path) -> Result<(), String> {
     let to_main = || tauri::EventTarget::Webview {
         label: crate::background::MAIN_WINDOW.to_string(),
     };
+    write_sample_conversations(app, data_dir)?;
     let mut clipped_total: u32 = 0;
+    let mut chats_short: u32 = 0;
     for theme in TOUR_THEMES {
-        for view in TOUR_VIEWS {
+        for view in TOUR_VIEWS.iter().chain(TOUR_SCENES.iter()) {
+            let scene = TOUR_SCENES.contains(view);
+            let conversation = scene.then_some(SAMPLE_CONVERSATION_ID);
             app.emit_to(
                 to_main(),
                 LAUNCH_PROBE_EVENT,
-                serde_json::json!({ "kind": "show", "view": view, "theme": theme }),
+                serde_json::json!({ "kind": "show", "view": view, "theme": theme, "conversation": conversation }),
             )
             .map_err(|e| format!("the {view} view could not be asked for: {e}"))?;
             tokio::time::sleep(TOUR_SETTLE).await;
@@ -458,6 +527,20 @@ async fn views_tour(app: &AppHandle, data_dir: &Path) -> Result<(), String> {
                 fit.count
             );
             clipped_total = clipped_total.saturating_add(fit.count);
+            tracing::info!(
+                "Launch probe: view {view} in {theme} chats whole={} listed={}",
+                fit.chats.whole,
+                fit.chats.listed
+            );
+            // A scene folds the sidebar; every view of the app shows it, with its chats.
+            if !scene && !chats_have_room(fit.chats) {
+                tracing::error!(
+                    "Launch probe: chats cut {view} {theme} whole={} listed={} (at least {MIN_CHAT_ROWS} must show whole)",
+                    fit.chats.whole,
+                    fit.chats.listed
+                );
+                chats_short = chats_short.saturating_add(1);
+            }
             tracing::info!("Launch probe: view {view} in {theme} shown");
             let captured = data_dir.join(view_captured_file(view, theme));
             wait_for("the launch job's screenshot of a view", 60, || {
@@ -467,14 +550,20 @@ async fn views_tour(app: &AppHandle, data_dir: &Path) -> Result<(), String> {
         }
     }
     tracing::info!(
-        "Launch probe: views tour done views={} themes={} clipped={clipped_total}",
+        "Launch probe: views tour done views={} scenes={} themes={} clipped={clipped_total} chats_short={chats_short}",
         TOUR_VIEWS.len(),
+        TOUR_SCENES.len(),
         TOUR_THEMES.len()
     );
     // After the last picture, so a failure still leaves every view to look at.
     if clipped_total > 0 {
         return Err(format!(
             "{clipped_total} texts are cut off or spill out of their boxes in the views tour (each is a \"Launch probe: clipped\" line)"
+        ));
+    }
+    if chats_short > 0 {
+        return Err(format!(
+            "in {chats_short} views the sidebar shows too few chats whole (each is a \"Launch probe: chats cut\" line)"
         ));
     }
     Ok(())
@@ -899,12 +988,13 @@ mod tests {
             view_captured_file("library", "dark"),
             "launch-probe-captured-view-library-dark"
         );
-        // Every view once, and each picture's file is its own.
+        // Every view and scene once, and each picture's file is its own.
         let mut files: Vec<String> = TOUR_THEMES
             .iter()
             .flat_map(|theme| {
                 TOUR_VIEWS
                     .iter()
+                    .chain(TOUR_SCENES.iter())
                     .map(move |view| view_captured_file(view, theme))
             })
             .collect();
@@ -912,7 +1002,51 @@ mod tests {
         files.sort();
         files.dedup();
         assert_eq!(files.len(), count);
-        assert_eq!(count, 18);
+        assert_eq!(count, 20);
+        // A scene is not a view of the app.
+        assert!(TOUR_SCENES.iter().all(|scene| !TOUR_VIEWS.contains(scene)));
+    }
+
+    #[test]
+    fn the_sidebar_must_show_the_first_chats_whole() {
+        let room = |listed, whole| chats_have_room(ChatRoom { listed, whole });
+        assert!(room(12, 3));
+        assert!(room(12, 9));
+        assert!(!room(12, 2));
+        // Fewer listed than the least: every one of them.
+        assert!(room(2, 2));
+        assert!(!room(2, 1));
+        // None listed is no room shown, not room enough.
+        assert!(!room(0, 0));
+    }
+
+    #[test]
+    fn the_sample_conversations_fill_the_sidebar_and_the_scene() {
+        let samples = sample_conversations().expect("the sample conversations parse");
+        // As many chats as the sidebar must show whole.
+        assert!(samples.len() >= MIN_CHAT_ROWS as usize);
+        // The scene's comes first: three questions, its last answer a table and code.
+        let scene = &samples[0];
+        assert_eq!(scene.id, SAMPLE_CONVERSATION_ID);
+        let questions = scene.messages.iter().filter(|m| m.role == "user").count();
+        assert!(questions >= 3, "{questions} questions");
+        let last = scene.messages.last().expect("an answer last");
+        assert_eq!(last.role, "assistant");
+        assert!(last.content.contains("\n|---|"));
+        assert!(last.content.contains("```rust"));
+        // Every conversation and message is its own.
+        let mut ids: Vec<&str> = samples.iter().map(|s| s.id.as_str()).collect();
+        let mut message_ids: Vec<&str> = samples
+            .iter()
+            .flat_map(|s| s.messages.iter().map(|m| m.id.as_str()))
+            .collect();
+        let (conversations, messages) = (ids.len(), message_ids.len());
+        ids.sort_unstable();
+        ids.dedup();
+        message_ids.sort_unstable();
+        message_ids.dedup();
+        assert_eq!(ids.len(), conversations);
+        assert_eq!(message_ids.len(), messages);
     }
 
     #[test]

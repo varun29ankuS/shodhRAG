@@ -270,7 +270,7 @@ export default function Sidebar({
         'shrink-0 inline-flex items-center justify-center transition-colors duration-micro',
         collapsed
           ? 'w-10 h-6 rounded-md text-shodh-text-muted hover:bg-shodh-raised-2/60 hover:text-shodh-text'
-          : 'w-8 h-9 rounded-r-[9px] border-l border-shodh-accent-hover hover:bg-shodh-accent-hover',
+          : 'w-8 h-9 short:h-8 rounded-r-[9px] border-l border-shodh-accent-hover hover:bg-shodh-accent-hover',
         FOCUS_RING
       )}
     >
@@ -290,7 +290,7 @@ export default function Sidebar({
       <div
         className={cn(
           'flex items-center gap-2.5 shrink-0',
-          collapsed ? 'flex-col px-3 pt-4.5 pb-3' : 'px-4.5 pt-4.5 pb-3.5'
+          collapsed ? 'flex-col px-3 pt-4.5 pb-3 short:pt-3 short:pb-2' : 'px-4.5 pt-4.5 pb-3.5 short:pt-3 short:pb-2'
         )}
       >
         <img
@@ -322,7 +322,7 @@ export default function Sidebar({
       </div>
 
       {/* New chat, and the New menu (▾) */}
-      <div className="shrink-0 px-3 pb-2.5">
+      <div className="shrink-0 px-3 pb-2.5 short:pb-2">
         <div className={cn('flex', collapsed ? 'flex-col items-center gap-1' : 'w-full rounded-[9px] bg-shodh-accent text-shodh-on-accent')}>
           <button
             type="button"
@@ -331,7 +331,7 @@ export default function Sidebar({
             title={collapsed ? NEW_CHAT_LABEL : undefined}
             aria-keyshortcuts={ariaKeyShortcuts('newChat', IS_MAC)}
             className={cn(
-              'flex items-center gap-2 h-9 text-small font-semibold transition-colors duration-micro',
+              'flex items-center gap-2 h-9 short:h-8 text-small font-semibold transition-colors duration-micro',
               collapsed
                 ? 'w-10 justify-center rounded-[9px] bg-shodh-accent text-shodh-on-accent hover:bg-shodh-accent-hover'
                 : 'flex-1 min-w-0 px-3 rounded-l-[9px] hover:bg-shodh-accent-hover',
@@ -388,7 +388,7 @@ export default function Sidebar({
       <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin flex flex-col">
       {/* Views */}
       <ul
-        className={cn('flex flex-col gap-0.5 py-1 shrink-0', collapsed ? 'px-3 items-center' : 'px-2')}
+        className={cn('flex flex-col gap-0.5 short:gap-0 py-1 shrink-0', collapsed ? 'px-3 items-center' : 'px-2')}
         onKeyDown={e => moveFocusInList(e, '[data-nav-item]')}
       >
         {PRIMARY_VIEWS.map(view => (
@@ -426,8 +426,8 @@ export default function Sidebar({
       {/* Footer */}
       <div
         className={cn(
-          'shrink-0 border-t border-shodh-border flex flex-col gap-2',
-          collapsed ? 'p-3 items-center' : 'p-3'
+          'shrink-0 border-t border-shodh-border flex flex-col gap-2 short:gap-1',
+          collapsed ? 'p-3 short:py-2 items-center' : 'p-3 short:py-2'
         )}
       >
         <div className={collapsed ? undefined : 'w-full'}>
@@ -485,7 +485,7 @@ function NavButton({
       aria-label={collapsed ? label : undefined}
       title={collapsed ? label : undefined}
       className={cn(
-        'flex items-center h-9 rounded-lg text-body transition-colors duration-micro',
+        'flex items-center h-9 short:h-7 rounded-lg text-body transition-colors duration-micro',
         collapsed ? 'w-10 justify-center' : 'w-full gap-2.5 px-3',
         active
           ? 'bg-shodh-raised-2 text-shodh-text font-semibold'

@@ -141,7 +141,7 @@ export function ConversationHistory({
     <section aria-labelledby={headingId} className="flex-1 min-h-[12rem] flex flex-col">
       <h2
         id={headingId}
-        className="px-5 pt-4 pb-1 text-caption font-semibold tracking-[0.08em] uppercase text-shodh-text-faint shrink-0"
+        className="px-5 pt-4 short:pt-1 pb-1 text-caption font-semibold tracking-[0.08em] uppercase text-shodh-text-faint shrink-0"
       >
         Chats
       </h2>
@@ -442,7 +442,7 @@ function ConversationRow({
   const currentWorkspace = conversation.workspaceId ?? null;
 
   return (
-    <li ref={rowRef} className="relative group">
+    <li ref={rowRef} data-chat-row="" className="relative group">
       {editing ? (
         <div className="px-3 py-2 rounded-lg bg-shodh-raised">
           <label className="sr-only" htmlFor={`${menuId}-rename`}>Conversation title</label>
@@ -493,9 +493,9 @@ function ConversationRow({
         >
           <span className="flex items-center gap-1.5 min-w-0">
             {conversation.pinned && <Pin className="w-3 h-3 shrink-0 text-shodh-text-faint" aria-hidden="true" />}
-            <span className="text-small truncate">{conversation.title}</span>
+            <span className="text-small truncate" title={conversation.title}>{conversation.title}</span>
           </span>
-          {meta && <span className="text-caption text-shodh-text-faint truncate" aria-hidden="true">{meta}</span>}
+          {meta && <span className="text-caption text-shodh-text-faint truncate short:hidden" aria-hidden="true">{meta}</span>}
         </button>
       )}
 

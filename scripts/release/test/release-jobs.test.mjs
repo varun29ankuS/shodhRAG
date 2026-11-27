@@ -113,10 +113,16 @@ test("the Windows launch job's views tour is the probe's own list, in its order"
   const body = code(job('launch-windows').block);
   const quoted = (line) => [...line.matchAll(/'([^']+)'/g)].map((m) => m[1]);
   const views = body.match(/^ +\$tourViews = (.+)$/m);
+  const scenes = body.match(/^ +\$tourScenes = (.+)$/m);
   const themes = body.match(/^ +\$tourThemes = (.+)$/m);
-  assert.ok(views && themes, 'the job lists the views and themes it photographs');
+  assert.ok(views && scenes && themes, 'the job lists the views, scenes and themes it photographs');
   assert.deepEqual(quoted(views[1]), list('TOUR_VIEWS'));
+  assert.deepEqual(quoted(scenes[1]), list('TOUR_SCENES'));
   assert.deepEqual(quoted(themes[1]), list('TOUR_THEMES'));
+  // Each view, then each scene, in each theme: a picture of every one.
+  assert.match(body, /foreach \(\$view in @\(\$tourViews\) \+ @\(\$tourScenes\)\) \{/);
+  assert.match(probe, /for view in TOUR_VIEWS\.iter\(\)\.chain\(TOUR_SCENES\.iter\(\)\) \{/);
+  assert.match(body, /\$tourExpected = \(\$tourViews\.Count \+ \$tourScenes\.Count\) \* \$tourThemes\.Count/);
   // The job asks for the tour by its name, waits for each view by the probe's line, and
   // answers with the file the probe waits for.
   assert.match(body, /\$env:SHODH_LAUNCH_PROBE_TOUR = 'views'/);
@@ -131,9 +137,14 @@ test("the Windows launch job's views tour is the probe's own list, in its order"
   // own FAIL line, and by the count the tour ends with.
   assert.match(probe, /"Launch probe: view \{view\} in \{theme\} text page=\{\}x\{\} clipped=\{\}"/);
   assert.match(body, /if \(\$tourMeasured -ne \$tourExpected\) \{ throw /);
-  assert.match(probe, /"Launch probe: views tour done views=\{\} themes=\{\} clipped=\{clipped_total\}"/);
-  assert.match(body, /views tour done views=\$\(\$tourViews\.Count\) themes=\$\(\$tourThemes\.Count\) clipped=0\\s\*\$" \}\)\) \{ throw /);
+  assert.match(probe, /"Launch probe: views tour done views=\{\} scenes=\{\} themes=\{\} clipped=\{clipped_total\} chats_short=\{chats_short\}"/);
+  assert.match(body, /\$tourDone = "Launch probe: views tour done views=\$\(\$tourViews\.Count\) scenes=\$\(\$tourScenes\.Count\) themes=\$\(\$tourThemes\.Count\)"/);
+  assert.match(body, /"\$tourDone clipped=0 chats_short=\\d\+\\s\*\$" \}\)\) \{ throw /);
   assert.match(probe, /if clipped_total > 0 \{\s+return Err\(/);
+  // Every view of the app shows the first chats whole in the sidebar, or the job fails
+  // the same two ways.
+  assert.match(body, /"\$tourDone clipped=\\d\+ chats_short=0\\s\*\$" \}\)\) \{ throw /);
+  assert.match(probe, /if chats_short > 0 \{\s+return Err\(/);
   // The macOS launch job does not ask for the tour, so the probe there ends as before.
   assert.doesNotMatch(code(job('launch-macos').block), /SHODH_LAUNCH_PROBE_TOUR/);
 });

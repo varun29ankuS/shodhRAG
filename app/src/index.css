@@ -199,6 +199,15 @@
   .scrollbar-thin::-webkit-scrollbar-thumb:hover {
     @apply bg-muted-foreground;
   }
+
+  /* A list too narrow for a scrollbar (the question rail): it scrolls by wheel and keys. */
+  .scrollbar-none {
+    scrollbar-width: none;
+  }
+
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
 }
 
 /* Gradient text for branding */

@@ -183,7 +183,38 @@ Still true:
   than the field. One hit fails the job, with every hit in the log. Nothing is passed over by name.
   What it covers is what the tour shows: nine views with the launch profile's data, at the probe's window
   size. A long name a user types can still be shortened with an ellipsis where a row gives it a title.
+  The gate holds that exactly (2b, chosen by the user): cut text passes only when its computed
+  `text-overflow` is `ellipsis` and a `title` on the element itself or on its row or control (`li`, `tr`, a
+  button, a link, or an element with a row, option, menu item, list item or tree item role) equals its whole
+  text, spaces collapsed. No title, a title that says anything else, or text cut without an ellipsis fails as
+  before, and text taller than its box is never let through (`shortenedWithTitle`, `textFit.test.ts`).
 - **The fixes it forced are in the layout, not in widths**: the page title never shortens and the action slot
   wraps under it; Automations' model choice is in the toolbar row and its side pane opens only when it holds
   something; the Tasks add row wraps and the page has one scroller; the sidebar's views and chats share a
   scroller when the window is short, so the chats keep room for a few rows.
+
+## 9. What 2b leaves, said plainly
+
+Done in 2b:
+
+- **The 800 px column and 1100 px wide blocks** in Ask and a connector's conversation. An answer's code, tables,
+  charts and diagrams are wide; math, derivations and symbol tables read with the text. Questions, notices and
+  side threads keep their blocks in their own box (`MessageContentRenderer`'s `wide`, set only on answers).
+- **The question dots rail**, in the 28 px gutter wide blocks leave, below the find box and above the message
+  box. One Tab stop, the menus' arrows. Hidden below three questions.
+- **The docked plan only where it covers nothing**, the widest block included (`planDocks`). Below that it stays
+  in its answer. 2c replaces it with the run view.
+- **A short window (800 px tall or less) tightens the sidebar**: 28 px view rows, a chat row's time hidden (it
+  stays in the row's label). The launch tour checks that every view shows at least three chats whole.
+- **Windowed lists**: Library's files (the 500-row cap is gone), Tasks, the Inbox, the Artifacts creations and
+  the visuals gallery (up to 500 drawn thumbnails before). Activity's event table was already windowed, so the
+  audit's claim about it was wrong.
+
+Still true:
+
+- **The runner's screen is 1024×768.** The `conversation` scene folds the sidebar, so the column is 800 px and
+  its wide blocks are about 880 px. No CI picture shows a full 1100 px block.
+- **Library's folder cards and the Workspaces list are not windowed.** Neither was named in the audit; each
+  holds what a user adds by hand (folders, workspaces), tens of rows.
+- **The windowed lists are checked by reading their sources and by the launch tour's pictures**; the launch
+  profile has few rows, so no CI run scrolls a list of thousands.

@@ -8,10 +8,13 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   COLUMN_GUTTER_PX,
+  PLAN_DOCK_INSET_PX,
+  PLAN_DOCK_PX,
   TEXT_COLUMN_PX,
   WIDE_BLOCK_CLASS,
   WIDE_BLOCK_HOST_CLASS,
   WIDE_BLOCK_MAX_PX,
+  planDocks,
   textWidth,
   wideBlockOverhang,
   wideBlockWidth,
@@ -49,10 +52,62 @@ test('the stylesheet draws the same numbers', () => {
   assert.ok(css.includes(`@container ${WIDE_BLOCK_HOST_CLASS} (min-width: 0px) {\n  .${WIDE_BLOCK_CLASS} {\n    width: ${width};\n    margin-inline: calc((100% - ${width}) / 2);`), 'the wide block rule');
 });
 
-test('the conversation hosts wide blocks, and a previewed page is one', () => {
-  assert.match(source('features/ask/AskView.tsx'), /'flex-1 overflow-y-auto scrollbar-thin', WIDE_BLOCK_HOST_CLASS/);
+test('the text reads in an 800px column; wide blocks reach 1100px', () => {
+  assert.equal(TEXT_COLUMN_PX, 800);
+  assert.equal(WIDE_BLOCK_MAX_PX, 1100);
+});
+
+test('the conversation hosts wide blocks: an answer\'s code, tables, charts and diagrams', () => {
+  const ask = source('features/ask/AskView.tsx');
+  assert.match(ask, /'flex-1 overflow-y-auto scrollbar-thin', WIDE_BLOCK_HOST_CLASS/);
+  // The answer's text is drawn wide; a notice or a question is not.
+  assert.match(ask, /onOpenArtifact=\{onOpenArtifact\}\s+wide\s+\/>/);
+  assert.doesNotMatch(source('features/ask/UserText.tsx'), /\bwide\b/);
+  assert.doesNotMatch(source('features/focus/SideThread.tsx'), /<MessageContentRenderer[^>]*\bwide\b/);
+  // An agent answer's own text, not a working note, an earlier draft or the floating chat's.
+  assert.match(source('features/agent/Transcript.tsx'), /compact=\{compact \|\| superseded \|\| note\}\s+wide=\{!\(compact \|\| superseded \|\| note\)\}/);
   assert.match(source('features/ask/ConversationLog.tsx'), /maxWidth: TEXT_COLUMN_PX/);
-  assert.match(source('features/ask/MessageContentRenderer.tsx'), /isHtmlLanguage\(lang\) && WIDE_BLOCK_CLASS/);
+
+  const renderer = source('features/ask/MessageContentRenderer.tsx');
+  // Code (every language, a previewed page with it).
+  assert.match(renderer, /'my-4 rounded-xl overflow-hidden border border-shodh-border bg-shodh-surface', wide && WIDE_BLOCK_CLASS/);
+  // Tables, in the text and as artifacts; charts as artifacts.
+  assert.match(renderer, /<FocusFrame noun="table" getTarget=\{tableFromElement\} doubleClick=\{false\} className=\{cn\('my-4', wide && WIDE_BLOCK_CLASS\)\}>/);
+  assert.match(renderer, /noun="chart".*className=\{cn\(wide && WIDE_BLOCK_CLASS\)\}>/);
+  assert.match(renderer, /key=\{artifact\.id\} noun="table"[^>]*className=\{cn\(wide && WIDE_BLOCK_CLASS\)\}>/);
+  // Charts and diagrams in the text; math, derivations and symbol tables read with it.
+  const wideVisuals = /const WIDE_VISUAL_LANGUAGES = new Set\(\[([^\]]*)\]\)/.exec(renderer);
+  assert.ok(wideVisuals, 'the wide visuals are listed');
+  assert.deepEqual([...wideVisuals[1].matchAll(/'([^']+)'/g)].map(m => m[1]).sort(), ['chart', 'diagram', 'figure', 'plot', 'simulation', 'svg']);
+  assert.match(renderer, /if \(WIDE_VISUAL_LANGUAGES\.has\(lang\) \|\| isMermaidLanguage\(lang\)\) return wide \? <div className=\{WIDE_BLOCK_CLASS\}>/);
+  // The memos that draw blocks change with it.
+  assert.match(renderer, /\}\), \[isDark, theme, print, wide\]\);/);
+  assert.match(renderer, /\}, \[codeComponents, processLatest, wide\]\);/);
+});
+
+test('every conversation reads in the same column', () => {
+  const connector = source('features/connectors/ConnectorConversationView.tsx');
+  assert.doesNotMatch(connector, /max-w-\[700px\]/);
+  assert.equal(connector.match(/style=\{\{ maxWidth: TEXT_COLUMN_PX \}\}/g)?.length, 3);
+});
+
+test('the plan docks beside the conversation only where it covers none of it', () => {
+  // The docked plan is the width planDocks counts with.
+  assert.match(source('features/agent/PlanPanel.tsx'), new RegExp(`variant === 'docked' \\? 'w-\\[${PLAN_DOCK_PX}px\\]'`));
+  for (let host = 0; host <= 3000; host += 4) {
+    if (!planDocks(host)) continue;
+    // Room right of the widest block for the plan and its inset.
+    const right = (host - wideBlockWidth(host)) / 2;
+    assert.ok(right >= PLAN_DOCK_PX + PLAN_DOCK_INSET_PX, `at ${host}`);
+  }
+  // Clear of the rail in the gutter, and docked in a wide enough window.
+  assert.ok(PLAN_DOCK_INSET_PX > COLUMN_GUTTER_PX);
+  assert.ok(!planDocks(1440 - 248));
+  assert.ok(planDocks(2400));
+  const ask = source('features/ask/AskView.tsx');
+  assert.match(ask, /const planDocked = planDocks\(hostBox\.width\);/);
+  assert.match(ask, /inlinePlan=\{!planDocked \|\| message\.transcript !== latest\}/);
+  assert.match(ask, /\{planDocked && latest\?\.plan && \(/);
 });
 
 test('a previewed page is no longer held to 360px', () => {

@@ -376,6 +376,7 @@ function TextBlock({
   const body = (
     <MessageContentRenderer
       compact={compact || superseded || note}
+      wide={!(compact || superseded || note)}
       content={text}
       hits={hits}
       artifacts={artifacts}

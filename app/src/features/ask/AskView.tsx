@@ -3,10 +3,11 @@ import { ArrowUpRight, Check, Copy, CornerLeftUp, FileDown, FileText, FolderPlus
 import { useTheme } from '../../contexts/ThemeContext';
 import { invoke } from '@tauri-apps/api/core';
 import { cn } from '../../lib/utils';
-import { TEXT_COLUMN_PX, WIDE_BLOCK_HOST_CLASS } from './wideBlock';
+import { COLUMN_GUTTER_PX, PLAN_DOCK_INSET_PX, TEXT_COLUMN_PX, WIDE_BLOCK_HOST_CLASS, planDocks } from './wideBlock';
+import { QuestionRail } from './QuestionRail';
+import { currentQuestion, railQuestions, railShown } from './questionDots';
 import { ModelNotice } from '../connection/ModelNotice';
 import type { ViewTab } from '../../lib/viewTabs';
-import { useMediaQuery } from '../../hooks/useMediaQuery';
 import { AgentComposer } from '../agent/AgentComposer';
 import { ConnectorConversationView, SeedNotice } from '../connectors/ConnectorConversationView';
 import { continueSeed, readSeed, seedGoesWithNextQuestion } from '../connectors/conversations';
@@ -115,8 +116,9 @@ const FOCUS_RING =
 
 const VISIBLE_SOURCE_CHIPS = 6;
 
-/** Width from which the task list docks to the right of the conversation. */
-const WIDE_LAYOUT_QUERY = '(min-width: 1440px)';
+/** The question rail's width (its dots' targets) and its top, clear of the find box. */
+const RAIL_WIDTH_PX = 24;
+const RAIL_TOP_PX = 64;
 
 /** Citation targets of a message: its run's passages, or legacy search results. */
 export function messageHits(message: ChatMessage): SearchHit[] {
@@ -543,6 +545,7 @@ function AssistantMessageView({
                 activeCitation={activeCitation}
                 onOpenCitation={handleOpen}
                 onOpenArtifact={onOpenArtifact}
+                wide
               />
             </div>
           )}
@@ -695,7 +698,7 @@ function SystemNotice({ message }: { message: ChatMessage }) {
 
 /**
  * The Ask screen: empty state with a centered composer, or the conversation
- * (centered 700px column) with a floating composer and a source preview
+ * (centred 800px column) with a floating composer and a source preview
  * slide-over.
  */
 export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage, onPasteImage, isDraggingFile = false, dropHandlers, draftRequest = null, onDraftApplied, topBarSlot = null }: AskViewProps) {
@@ -703,7 +706,6 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
   const session = useChatSession();
   const { messages, isStreaming, streamingConversationId, sideRun, send, retry, cancel, steer, approve, setRuntimeInstalled, updateMessage } = session;
   const focus = useFocus();
-  const wide = useMediaQuery(WIDE_LAYOUT_QUERY);
 
   // Kept per conversation outside this view, which unmounts on every view switch.
   const [draft, setDraft] = useDraft(session.activeConversationId);
@@ -878,6 +880,23 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
   }, []);
   const windowRef = useRef<ConversationLogHandle>(null);
 
+  // The conversation's width and its scrollbar's: whether the plan docks beside it, and
+  // where the question rail sits (in the gutter wide blocks leave, left of the scrollbar).
+  const [hostBox, setHostBox] = useState({ width: 0, scrollbar: 0 });
+  useEffect(() => {
+    if (!scroller) return;
+    const measure = () => {
+      const width = scroller.clientWidth;
+      const scrollbar = scroller.offsetWidth - scroller.clientWidth;
+      setHostBox(prev => (prev.width === width && prev.scrollbar === scrollbar ? prev : { width, scrollbar }));
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(scroller);
+    return () => observer.disconnect();
+  }, [scroller]);
+  const planDocked = planDocks(hostBox.width);
+
   // The message holding keyboard focus stays mounted while it is scrolled away.
   const onFocusIn = useCallback((e: React.FocusEvent<HTMLDivElement>) => {
     const item = (e.target as HTMLElement).closest<HTMLElement>(`[${MESSAGE_INDEX_ATTR}]`);
@@ -912,6 +931,31 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [messages.length]);
   const firstVisibleIndex = useCallback(() => windowRef.current?.firstVisibleIndex() ?? 0, []);
+
+  // The question dots rail: one dot per question, the one in view filled (read once a
+  // frame while the conversation scrolls).
+  const questions = useMemo(() => railQuestions(messages), [messages]);
+  const [inView, setInView] = useState(0);
+  useEffect(() => {
+    if (!scroller) return;
+    let frame = 0;
+    const update = () => {
+      frame = 0;
+      setInView(windowRef.current?.firstVisibleIndex() ?? 0);
+    };
+    const onScroll = () => {
+      if (!frame) frame = requestAnimationFrame(update);
+    };
+    scroller.addEventListener('scroll', onScroll, { passive: true });
+    frame = requestAnimationFrame(update);
+    return () => {
+      scroller.removeEventListener('scroll', onScroll);
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }, [scroller, messages.length, conversationId]);
+  const jumpToQuestion = useCallback((index: number) => {
+    void revealMessage(index);
+  }, [revealMessage]);
   const closeFind = useCallback(() => {
     setFindOpen(false);
     setFindIndex(null);
@@ -1453,9 +1497,9 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
         activeFile={isPreviewed ? preview.hit.sourceFile : null}
         canRetry={canRetry}
         latest={index === messages.length - 1}
-        // Wide screens dock the newest answer's plan beside the chat; every earlier
+        // A wide conversation docks the newest answer's plan beside it; every earlier
         // answer keeps its own, folded to its final counts, above its text.
-        inlinePlan={!wide || message.transcript !== latest}
+        inlinePlan={!planDocked || message.transcript !== latest}
         onOpenSource={openSource}
         onOpenArtifact={setOpenArtifactId}
         onRetry={handleRetry}
@@ -1608,6 +1652,21 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
         )}
       </div>
 
+      {railShown(questions.length) && (
+        <QuestionRail
+          questions={questions}
+          current={currentQuestion(questions, inView)}
+          onJump={jumpToQuestion}
+          // In the gutter wide blocks leave right of the conversation, below the find box,
+          // above the message box.
+          style={{
+            insetInlineEnd: hostBox.scrollbar + (COLUMN_GUTTER_PX - RAIL_WIDTH_PX) / 2,
+            top: RAIL_TOP_PX,
+            bottom: composerSpace,
+          }}
+        />
+      )}
+
       {findOpen && (
         <div className="absolute top-3 right-6 z-20">
           <Suspense fallback={null}>
@@ -1633,8 +1692,8 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
       </div>
       {topBarContext}
 
-      {wide && latest?.plan && (
-        <aside className="absolute right-6 top-[18px] z-10" aria-label="Plan of the latest answer">
+      {planDocked && latest?.plan && (
+        <aside className="absolute top-[18px] z-10" style={{ insetInlineEnd: hostBox.scrollbar + PLAN_DOCK_INSET_PX }} aria-label="Plan of the latest answer">
           <PlanPanel items={latest.plan} live={isLive(latest)} variant="docked" />
         </aside>
       )}

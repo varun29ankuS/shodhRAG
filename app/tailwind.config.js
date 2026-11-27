@@ -23,6 +23,11 @@ module.exports = {
       },
     },
     extend: {
+      // A window too short for the sidebar's full spacing (1000x700 and smaller): its
+      // rows and gaps tighten so the chats keep room under the views.
+      screens: {
+        short: { raw: '(max-height: 800px)' },
+      },
       // The type scale (src/lib/typeScale.ts; app/tests/typeScale.test.ts keeps the two
       // equal). Nothing is set below 12px: secondary text uses colour and weight.
       fontSize: {

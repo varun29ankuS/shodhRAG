@@ -1,10 +1,12 @@
 /**
  * Whether the text on screen fits: the launch test's measure of a view (`launch_probe.rs`,
  * the views tour). Every element that holds text of its own and is drawn is measured the
- * way the browser lays it out: text wider than its box (`scrollWidth > clientWidth`) is cut
- * off or spills, and so is text taller than a box that hides what does not fit. A box that
- * hides its overflow is measured for all the text inside it. A field's
- * placeholder or value is measured in its own font against the room the field gives it.
+ * way the browser lays it out. In a box that lets text spill, the text's own line boxes
+ * (`Range.getClientRects`) must lie inside the content box (`textSpill`): what else the box
+ * holds, such as an absolutely placed click target (`target-24`), is not text. A box that
+ * hides its overflow is measured for all the text inside it (`scrollWidth > clientWidth`),
+ * and so is text taller than a box that hides what does not fit. A field's placeholder
+ * or value is measured in its own font against the room the field gives it.
  *
  * One kind of cut text passes: a name shortened with an ellipsis whose whole text is in
  * a `title` on the element or on its row or control (`shortenedWithTitle`), as a chat's
@@ -56,6 +58,24 @@ export function shortenedWithTitle(textOverflow: string, fullText: string, title
 /** A row or control whose `title` may hold the whole of a shortened name inside it. */
 const ROW_OR_CONTROL = 'li, tr, button, a[href], [role="row"], [role="option"], [role="menuitem"], [role="listitem"], [role="treeitem"]';
 
+/** A horizontal extent on screen. */
+export interface Extent {
+  left: number;
+  right: number;
+}
+
+/**
+ * How far the text's lines (`lines`, each line box of its own text) reach past the
+ * content box `box` of an element that does not hide what spills, or 0 when all of it
+ * is inside. Measured on the text itself: a box can be wider inside than its text (an
+ * absolutely placed click target, `target-24`), and that is not text that does not fit.
+ */
+export function textSpill(lines: readonly Extent[], box: Extent): number {
+  let spill = 0;
+  for (const line of lines) spill = Math.max(spill, box.left - line.left, line.right - box.right);
+  return spill;
+}
+
 /** Whether text `textWidth` wide fits a field with `room` for it. */
 export function fieldTextFits(textWidth: number, room: number): boolean {
   return textWidth <= room;
@@ -96,6 +116,26 @@ function ownText(el: Element): string {
     if (node.nodeType === Node.TEXT_NODE) text += node.textContent ?? '';
   }
   return text.trim();
+}
+
+/** The line boxes of the element's own text, and its content box, on screen. */
+function ownTextExtents(el: HTMLElement, style: CSSStyleDeclaration, doc: Document): { lines: Extent[]; box: Extent } {
+  const lines: Extent[] = [];
+  const range = doc.createRange();
+  for (const node of Array.from(el.childNodes)) {
+    if (node.nodeType !== Node.TEXT_NODE || !(node.textContent ?? '').trim()) continue;
+    range.selectNodeContents(node);
+    for (const rect of Array.from(range.getClientRects())) {
+      if (rect.width > 0) lines.push({ left: rect.left, right: rect.right });
+    }
+  }
+  const rect = el.getBoundingClientRect();
+  const px = (value: string) => Number.parseFloat(value) || 0;
+  const box = {
+    left: rect.left + px(style.borderLeftWidth) + px(style.paddingLeft),
+    right: rect.right - px(style.borderRightWidth) - px(style.paddingRight),
+  };
+  return { lines, box };
 }
 
 /** The width of `text` in the element's font. */
@@ -144,8 +184,19 @@ export function clippedText(doc: Document): { count: number; lines: string[] } {
     const cutsY = hides(style.overflowY) ? inside : '';
     const text = cutsX || cutsY;
     if (!text) continue;
+    // Text in a box that lets it spill is measured on its own lines against the content
+    // box; a box that hides or scrolls is measured by what it holds (`clipped`).
+    if (cutsX && !hides(style.overflowX) && !scrolls(style.overflowX)) {
+      const { lines, box } = ownTextExtents(el, style, doc);
+      const spill = textSpill(lines, box);
+      if (spill > 0) {
+        const width = lines.reduce((w, line) => Math.max(w, line.right), box.left) - Math.min(box.left, ...lines.map(line => line.left));
+        report(`width ${nameOf(el)} "${quote(text)}" text=${Math.ceil(width)} room=${Math.floor(box.right - box.left)}`);
+        continue;
+      }
+    }
     const why = clipped({
-      scrollWidth: cutsX ? el.scrollWidth : 0,
+      scrollWidth: cutsX && hides(style.overflowX) ? el.scrollWidth : 0,
       clientWidth: el.clientWidth,
       scrollHeight: cutsY ? el.scrollHeight : 0,
       clientHeight: el.clientHeight,

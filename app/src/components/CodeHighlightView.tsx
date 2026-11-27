@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import React, { useMemo } from 'react';
 import type { ReactElement } from 'react';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import type { SyntaxHighlighterProps } from 'react-syntax-highlighter';
@@ -29,13 +29,26 @@ const renderHighlighter: ((props: SyntaxHighlighterProps) => ReactElement) | nul
     ? (SyntaxHighlighter as unknown as (props: SyntaxHighlighterProps) => ReactElement)
     : null;
 
+/**
+ * The themes with an unpainted `code` element. It is inline, so a background on it is
+ * drawn behind each line's text, a band like selected text (one-dark's is darker than
+ * the block); the block (`pre`) keeps its own, or the caller's.
+ */
+type PrismTheme = Record<string, React.CSSProperties>;
+const CODE_SELECTOR = 'code[class*="language-"]';
+function withUnpaintedCode(theme: PrismTheme): PrismTheme {
+  return { ...theme, [CODE_SELECTOR]: { ...theme[CODE_SELECTOR], background: 'transparent' } };
+}
+const DARK_THEME = withUnpaintedCode(oneDark as PrismTheme);
+const LIGHT_THEME = withUnpaintedCode(oneLight as PrismTheme);
+
 /** Prism highlighting; load it through `CodeHighlight`, which keeps Prism's grammars out of the startup bundle. */
 export function CodeHighlightView({ code, language, dark, customStyle, showLineNumbers = false, wrapLongLines = false, preTag, codeStyle }: CodeHighlightProps) {
   const styleKey = customStyle ? JSON.stringify(customStyle) : '';
   const codeKey = codeStyle ? JSON.stringify(codeStyle) : '';
   return useMemo(() => {
     const props: SyntaxHighlighterProps = {
-      style: dark ? oneDark : oneLight,
+      style: dark ? DARK_THEME : LIGHT_THEME,
       language,
       PreTag: preTag,
       showLineNumbers,

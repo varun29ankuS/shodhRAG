@@ -24,6 +24,12 @@ export interface FocusFrameProps {
   inline?: boolean;
   /** More actions on the visual, shown before "Expand & ask" in the same corner. */
   actions?: React.ReactNode;
+  /**
+   * Where the buttons go: `over` the visual's top-right corner (a diagram or chart, whose
+   * corner is margin), or in a row `above` it (a table, whose corner is a header cell:
+   * the buttons never cover what it shows).
+   */
+  placement?: 'over' | 'above';
   className?: string;
   children: React.ReactNode;
 }
@@ -61,7 +67,7 @@ export function useOpenFocus(): ((target: FocusTarget, trigger: HTMLElement | nu
  * nested level of the pop-out. Renders the visual unchanged anywhere else
  * (no anchor), e.g. a side answer still being written.
  */
-export function FocusFrame({ noun, getTarget, doubleClick = true, inline = false, actions, className, children }: FocusFrameProps) {
+export function FocusFrame({ noun, getTarget, doubleClick = true, inline = false, actions, placement = 'over', className, children }: FocusFrameProps) {
   const openFocus = useOpenFocus();
   const frameRef = useRef<HTMLElement>(null);
   const Wrapper = inline ? 'span' : 'div';
@@ -89,8 +95,14 @@ export function FocusFrame({ noun, getTarget, doubleClick = true, inline = false
       className={cn('group/focus relative', inline && 'inline-block', className)}
       onDoubleClick={doubleClick ? onDoubleClick : undefined}
     >
-      {children}
-      <span data-answer-ui="" className="absolute top-2 right-2 z-10 inline-flex items-center gap-1.5">
+      {placement === 'over' && children}
+      <span
+        data-answer-ui=""
+        className={cn(
+          'items-center gap-1.5',
+          placement === 'over' ? 'absolute top-2 right-2 z-10 inline-flex' : 'flex justify-end mb-1.5',
+        )}
+      >
         {actions}
         <button
           ref={buttonRef}
@@ -105,6 +117,7 @@ export function FocusFrame({ noun, getTarget, doubleClick = true, inline = false
           Expand &amp; ask
         </button>
       </span>
+      {placement === 'above' && children}
     </Wrapper>
   );
 }

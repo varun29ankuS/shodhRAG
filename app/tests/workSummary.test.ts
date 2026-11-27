@@ -240,10 +240,14 @@ test('a running answer folds its steps into one live line that leads with the cu
   assert.match(writing?.label ?? '', /^Writing the answer/);
 });
 
-test('the transcript shows the line as one summary that opens, live while running', () => {
+test('the transcript shows its work in one run view: the line, then plan, steps and summary', () => {
   const view = withoutComments(source('features/agent/Transcript.tsx'));
-  assert.ok(view.includes('<details className="group/work" data-testid="answer-steps" data-live={fold.live || undefined}>'));
-  assert.ok(view.includes('{fold.live && <Spinner />}'));
+  assert.ok(view.includes('{(fold || hasPlan || summary) && ('));
+  assert.ok(view.includes('line={fold ? fold.label : null}'));
+  assert.ok(view.includes('summary={summary}'));
   // The steps inside never show a pending approval: it docks above the composer.
   assert.ok(view.includes('pendingApprovals={false}'));
+  const panel = withoutComments(source('features/agent/RunPanel.tsx'));
+  assert.ok(panel.includes('data-testid="answer-steps" data-live={live || undefined}'));
+  assert.ok(panel.includes('{live && <Spinner className="mt-1 shrink-0" />}'));
 });

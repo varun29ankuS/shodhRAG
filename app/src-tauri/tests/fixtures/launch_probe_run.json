@@ -1,0 +1,256 @@
+{
+  "id": "launch-probe-run",
+  "question": {
+    "id": "launch-probe-run-question",
+    "role": "user",
+    "content": "Compare graph and IVF indexes for recall, using my papers.",
+    "timestamp": "2026-11-26T08:00:00.000Z"
+  },
+  "answerId": "launch-probe-run-answer",
+  "seed": {
+    "providerError": null,
+    "fallback": null,
+    "runId": "run-probe",
+    "sessionId": null,
+    "model": null,
+    "warning": null,
+    "status": "starting",
+    "startedAtMs": 1764160000000,
+    "durationMs": null,
+    "error": null,
+    "errorCode": null,
+    "blocks": [],
+    "steps": {},
+    "plan": null,
+    "usage": null,
+    "passages": [],
+    "groundings": [],
+    "interimIds": [],
+    "checking": false,
+    "thinking": "",
+    "interrupting": false,
+    "agentMode": "research"
+  },
+  "actions": [
+    {
+      "type": "run_started",
+      "runId": "run-probe",
+      "sessionId": "probe-session",
+      "model": "openrouter/probe-model",
+      "atMs": 1764160000100,
+      "warning": null
+    },
+    {
+      "type": "plan_updated",
+      "runId": "run-probe",
+      "items": [
+        {
+          "id": "1",
+          "text": "Find what the papers say about recall at small sizes",
+          "status": "in_progress",
+          "need": true,
+          "coverage": null,
+          "evidence": []
+        },
+        {
+          "id": "2",
+          "text": "Compare the graph and IVF indexes",
+          "status": "pending",
+          "need": true,
+          "coverage": null,
+          "evidence": []
+        },
+        {
+          "id": "3",
+          "text": "Write the comparison with its sources",
+          "status": "pending",
+          "need": false,
+          "coverage": null,
+          "evidence": []
+        }
+      ]
+    },
+    {
+      "type": "text_delta",
+      "runId": "run-probe",
+      "messageId": "n1",
+      "delta": "I'll search your papers first."
+    },
+    {
+      "type": "text_interim",
+      "runId": "run-probe",
+      "messageId": "n1",
+      "interim": true
+    },
+    {
+      "type": "step_started",
+      "runId": "run-probe",
+      "stepId": "step-1",
+      "parentStepId": null,
+      "tool": "search_documents",
+      "label": "Searching your documents",
+      "args": {
+        "query": "recall small index sizes"
+      },
+      "tier": "read",
+      "atMs": 1764160000900
+    },
+    {
+      "type": "step_finished",
+      "runId": "run-probe",
+      "stepId": "step-1",
+      "ok": true,
+      "summary": "2 passages",
+      "detail": {
+        "passages": [
+          {
+            "n": 1,
+            "file": "graph-indexes.pdf",
+            "path": "c:/papers/graph-indexes.pdf",
+            "display_path": "C:/Papers/graph-indexes.pdf",
+            "page": 6,
+            "heading": "Small indexes",
+            "score": 0.84,
+            "text": "Below ten thousand vectors a flat scan matches the graph index in speed at full recall."
+          },
+          {
+            "n": 2,
+            "file": "ivf-benchmarks.pdf",
+            "path": "c:/papers/ivf-benchmarks.pdf",
+            "display_path": "C:/Papers/ivf-benchmarks.pdf",
+            "page": 3,
+            "heading": "Recall at 10",
+            "score": 0.79,
+            "text": "IVF reaches 0.93 recall at 10 with 64 probes; the graph index reaches 0.97."
+          }
+        ]
+      },
+      "atMs": 1764160002400
+    },
+    {
+      "type": "plan_updated",
+      "runId": "run-probe",
+      "items": [
+        {
+          "id": "1",
+          "text": "Find what the papers say about recall at small sizes",
+          "status": "done",
+          "need": true,
+          "coverage": "covered",
+          "evidence": [
+            1
+          ]
+        },
+        {
+          "id": "2",
+          "text": "Compare the graph and IVF indexes",
+          "status": "in_progress",
+          "need": true,
+          "coverage": null,
+          "evidence": []
+        },
+        {
+          "id": "3",
+          "text": "Write the comparison with its sources",
+          "status": "pending",
+          "need": false,
+          "coverage": null,
+          "evidence": []
+        }
+      ]
+    },
+    {
+      "type": "step_started",
+      "runId": "run-probe",
+      "stepId": "step-2",
+      "parentStepId": null,
+      "tool": "read_document",
+      "label": "Reading ivf-benchmarks.pdf",
+      "args": {
+        "path": "c:/papers/ivf-benchmarks.pdf"
+      },
+      "tier": "read",
+      "atMs": 1764160002600
+    },
+    {
+      "type": "step_finished",
+      "runId": "run-probe",
+      "stepId": "step-2",
+      "ok": true,
+      "summary": "Read 12 pages",
+      "detail": null,
+      "atMs": 1764160005200
+    },
+    {
+      "type": "plan_updated",
+      "runId": "run-probe",
+      "items": [
+        {
+          "id": "1",
+          "text": "Find what the papers say about recall at small sizes",
+          "status": "done",
+          "need": true,
+          "coverage": "covered",
+          "evidence": [
+            1
+          ]
+        },
+        {
+          "id": "2",
+          "text": "Compare the graph and IVF indexes",
+          "status": "done",
+          "need": true,
+          "coverage": "covered",
+          "evidence": [
+            2
+          ]
+        },
+        {
+          "id": "3",
+          "text": "Write the comparison with its sources",
+          "status": "done",
+          "need": false,
+          "coverage": null,
+          "evidence": []
+        }
+      ]
+    },
+    {
+      "type": "text_delta",
+      "runId": "run-probe",
+      "messageId": "m2",
+      "delta": "Below ten thousand vectors a flat scan is as fast as the graph index at full recall [1]. At larger sizes the graph index keeps higher recall than IVF: 0.97 against 0.93 at 10 [2]."
+    },
+    {
+      "type": "usage",
+      "runId": "run-probe",
+      "inputTokens": 5400,
+      "outputTokens": 220,
+      "cacheReadTokens": 0,
+      "costUsd": 0
+    },
+    {
+      "type": "run_finished",
+      "runId": "run-probe",
+      "status": "completed",
+      "durationMs": 14200,
+      "error": null,
+      "providerError": null
+    }
+  ],
+  "stages": [
+    {
+      "scene": "run-plan",
+      "actions": 2
+    },
+    {
+      "scene": "run-progress",
+      "actions": 8
+    },
+    {
+      "scene": "run-summary",
+      "actions": 13,
+      "open": true
+    }
+  ]
+}

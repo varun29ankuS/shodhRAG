@@ -8,13 +8,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   COLUMN_GUTTER_PX,
-  PLAN_DOCK_INSET_PX,
-  PLAN_DOCK_PX,
   TEXT_COLUMN_PX,
   WIDE_BLOCK_CLASS,
   WIDE_BLOCK_HOST_CLASS,
   WIDE_BLOCK_MAX_PX,
-  planDocks,
   textWidth,
   wideBlockOverhang,
   wideBlockWidth,
@@ -72,7 +69,7 @@ test('the conversation hosts wide blocks: an answer\'s code, tables, charts and 
   // Code (every language, a previewed page with it).
   assert.match(renderer, /'my-4 rounded-xl overflow-hidden border border-shodh-border bg-shodh-surface', wide && WIDE_BLOCK_CLASS/);
   // Tables, in the text and as artifacts; charts as artifacts.
-  assert.match(renderer, /<FocusFrame noun="table" getTarget=\{tableFromElement\} doubleClick=\{false\} className=\{cn\('my-4', wide && WIDE_BLOCK_CLASS\)\}>/);
+  assert.match(renderer, /<FocusFrame noun="table" getTarget=\{tableFromElement\} doubleClick=\{false\} placement="above" className=\{cn\('my-4', wide && WIDE_BLOCK_CLASS\)\}>/);
   assert.match(renderer, /noun="chart".*className=\{cn\(wide && WIDE_BLOCK_CLASS\)\}>/);
   assert.match(renderer, /key=\{artifact\.id\} noun="table"[^>]*className=\{cn\(wide && WIDE_BLOCK_CLASS\)\}>/);
   // Charts and diagrams in the text; math, derivations and symbol tables read with it.
@@ -91,28 +88,25 @@ test('every conversation reads in the same column', () => {
   assert.equal(connector.match(/style=\{\{ maxWidth: TEXT_COLUMN_PX \}\}/g)?.length, 3);
 });
 
-test('the plan docks beside the conversation only where it covers none of it', () => {
-  // The docked plan is the width planDocks counts with.
-  assert.match(source('features/agent/PlanPanel.tsx'), new RegExp(`variant === 'docked' \\? 'w-\\[${PLAN_DOCK_PX}px\\]'`));
-  for (let host = 0; host <= 3000; host += 4) {
-    if (!planDocks(host)) continue;
-    // Room right of the widest block for the plan and its inset.
-    const right = (host - wideBlockWidth(host)) / 2;
-    assert.ok(right >= PLAN_DOCK_PX + PLAN_DOCK_INSET_PX, `at ${host}`);
-  }
-  // Clear of the rail in the gutter, and docked in a wide enough window.
-  assert.ok(PLAN_DOCK_INSET_PX > COLUMN_GUTTER_PX);
-  assert.ok(!planDocks(1440 - 248));
-  assert.ok(planDocks(2400));
-  const ask = source('features/ask/AskView.tsx');
-  assert.match(ask, /const planDocked = planDocks\(hostBox\.width\);/);
-  assert.match(ask, /inlinePlan=\{!planDocked \|\| message\.transcript !== latest\}/);
-  assert.match(ask, /\{planDocked && latest\?\.plan && \(/);
-});
-
 test('a previewed page is no longer held to 360px', () => {
   const block = source('features/ask/HtmlPreviewBlock.tsx');
   assert.doesNotMatch(block, /h-\[360px\]/);
   assert.match(block, /HTML_PREVIEW_HEIGHT_CLASS/);
   assert.ok(css.includes(`.${HTML_PREVIEW_HEIGHT_CLASS} {\n  height: clamp(360px, 60vh, 720px);`));
+});
+
+test('a table\'s buttons sit in a row above it, never over a header cell', () => {
+  const renderer = source('features/ask/MessageContentRenderer.tsx');
+  const tables = renderer.match(/<FocusFrame[^>]*noun="table"[^>]*>/g) ?? [];
+  assert.equal(tables.length, 2);
+  for (const frame of tables) assert.match(frame, /placement="above"/);
+  const frame = source('features/focus/FocusFrame.tsx');
+  assert.match(frame, /placement === 'over' \? 'absolute top-2 right-2 z-10 inline-flex' : 'flex justify-end mb-1\.5'/);
+  assert.match(frame, /\{placement === 'above' && children\}/);
+});
+
+test('a code block paints no band behind its lines', () => {
+  const view = source('components/CodeHighlightView.tsx');
+  assert.match(view, /\[CODE_SELECTOR\]: \{ \.\.\.theme\[CODE_SELECTOR\], background: 'transparent' \}/);
+  assert.match(view, /style: dark \? DARK_THEME : LIGHT_THEME,/);
 });

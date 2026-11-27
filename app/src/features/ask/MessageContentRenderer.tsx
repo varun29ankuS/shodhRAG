@@ -358,7 +358,7 @@ function MessageContent({
             className={cn(
               // Every badge has a 1px border (transparent where none shows), so a web
               // source's outline never resizes the badge as it is opened.
-              'target-24 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 ml-0.5 rounded-[5px] border align-[3px] text-caption font-bold leading-none tabular-nums transition-colors duration-micro',
+              'target-24 inline-flex items-center justify-center min-w-6 h-[18px] px-1 ml-0.5 rounded-[5px] border align-[3px] text-caption font-bold leading-none tabular-nums transition-colors duration-micro',
               isActive
                 ? 'border-shodh-accent bg-shodh-accent text-shodh-on-accent'
                 : isWeb
@@ -514,7 +514,7 @@ function MessageContent({
         <blockquote className="my-4 pl-4 border-l-2 border-shodh-border-strong text-shodh-text-tertiary">{children}</blockquote>
       ),
       table: ({ children }) => (
-        <FocusFrame noun="table" getTarget={tableFromElement} doubleClick={false} className={cn('my-4', wide && WIDE_BLOCK_CLASS)}>
+        <FocusFrame noun="table" getTarget={tableFromElement} doubleClick={false} placement="above" className={cn('my-4', wide && WIDE_BLOCK_CLASS)}>
           <div className="overflow-x-auto rounded-xl border border-shodh-border">
             <table className="w-full text-body border-collapse">{children}</table>
           </div>
@@ -602,7 +602,7 @@ function MessageContent({
       ))}
 
       {tables.map(artifact => (
-        <FocusFrame key={artifact.id} noun="table" getTarget={tableFromElement} doubleClick={false} className={cn(wide && WIDE_BLOCK_CLASS)}>
+        <FocusFrame key={artifact.id} noun="table" getTarget={tableFromElement} doubleClick={false} placement="above" className={cn(wide && WIDE_BLOCK_CLASS)}>
           <div className="rounded-2xl overflow-hidden border border-shodh-border">
             <TableArtifact artifact={artifact} theme={theme} />
           </div>

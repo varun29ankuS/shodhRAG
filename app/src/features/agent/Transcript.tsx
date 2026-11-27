@@ -10,6 +10,8 @@ import { ApprovalPrompt } from './ApprovalPrompt';
 import { answerIncomplete, outputStarted, currentStep, interimBlocks, isLive, notAnswerBlocks, pendingApproval, showsGroundingChip, supersededBlocks } from './reducer';
 import type { TranscriptBlock, TranscriptState } from './reducer';
 import { workFold } from './workSummary';
+import { runSummary } from './runSummary';
+import { RunPanel } from './RunPanel';
 import { revisionText } from './revisionText';
 import type { GroundingReport } from './events';
 import { answerReport, checksForMessage } from './grounding';
@@ -126,6 +128,9 @@ export function Transcript({
   // The answer's working folds into one line (what is happening now, while it runs), so
   // the answer starts at the top.
   const fold = useMemo(() => workFold(transcript), [transcript]);
+  // The run view: its plan, its steps (the fold) and, once finished, what it did.
+  const hasPlan = (transcript.plan?.length ?? 0) > 0;
+  const summary = useMemo(() => runSummary(transcript), [transcript]);
   const waiting = live && onDecide ? pendingApproval(transcript) : null;
   // A command running now stays in view under the line, with its output and its own Stop.
   const runningCommand = useMemo(() => {
@@ -150,58 +155,56 @@ export function Transcript({
 
   return (
     <div className={cn('flex flex-col min-w-0', compact ? 'gap-2.5' : 'gap-3.5')}>
-      {fold && (
-        <details className="group/work" data-testid="answer-steps" data-live={fold.live || undefined}>
-          <summary
-            className={cn(
-              'list-none [&::-webkit-details-marker]:hidden max-w-full w-fit inline-flex items-center gap-1.5 rounded-md cursor-pointer select-none text-shodh-text-muted hover:text-shodh-text transition-colors duration-micro',
-              compact ? 'text-caption' : 'text-small',
-              FOCUS_RING,
-            )}
-          >
-            <ChevronRight className="w-3.5 h-3.5 shrink-0 transition-transform duration-micro group-open/work:rotate-90 motion-reduce:transition-none" aria-hidden="true" />
-            {fold.live && <Spinner />}
-            <span className={cn('min-w-0 truncate', fold.live && 'text-shodh-text-secondary')} aria-live={fold.live ? 'polite' : undefined}>{fold.label}</span>
-          </summary>
-          <div className={cn('mt-2 pl-3 border-l border-shodh-border-subtle flex flex-col', compact ? 'gap-2' : 'gap-3')}>
-            {transcript.blocks.slice(0, fold.answerIndex).map(block => {
-              if (block.kind === 'step') {
-                const s = transcript.steps[block.stepId];
-                if (!s || s === runningCommand) return null;
-                return <StepLine key={block.stepId} step={s} steps={transcript.steps} onDecide={live ? onDecide : undefined} compact={compact} live={live} pendingApprovals={false} />;
-              }
-              if (block.kind === 'steer') {
+      {(fold || hasPlan || summary) && (
+        <RunPanel
+          line={fold ? fold.label : null}
+          live={live}
+          plan={transcript.plan}
+          steps={fold ? (
+            <>
+              {transcript.blocks.slice(0, fold.answerIndex).map(block => {
+                if (block.kind === 'step') {
+                  const s = transcript.steps[block.stepId];
+                  if (!s || s === runningCommand) return null;
+                  return <StepLine key={block.stepId} step={s} steps={transcript.steps} onDecide={live ? onDecide : undefined} compact={compact} live={live} pendingApprovals={false} />;
+                }
+                if (block.kind === 'steer') {
+                  return (
+                    <p key={block.id} className="flex items-start gap-2 text-small text-shodh-text-secondary">
+                      <CornerDownRight className="w-3.5 h-3.5 mt-0.5 shrink-0 text-shodh-accent-text" aria-hidden="true" />
+                      <span className="min-w-0 break-words">
+                        <span className="sr-only">You steered: </span>
+                        {block.text}
+                      </span>
+                    </p>
+                  );
+                }
+                if (block.kind === 'revision') return <RevisionRow key={block.id} block={block} compact live={live} />;
                 return (
-                  <p key={block.id} className="flex items-start gap-2 text-small text-shodh-text-secondary">
-                    <CornerDownRight className="w-3.5 h-3.5 mt-0.5 shrink-0 text-shodh-accent-text" aria-hidden="true" />
-                    <span className="min-w-0 break-words">
-                      <span className="sr-only">You steered: </span>
-                      {block.text}
-                    </span>
-                  </p>
+                  <TextBlock
+                    key={block.id}
+                    id={block.id}
+                    text={block.text}
+                    superseded={superseded.has(block.id)}
+                    note={notes.has(block.id)}
+                    afterAnswer={answerBlockIndex >= 0 && transcript.blocks.indexOf(block) > answerBlockIndex}
+                    groundings={transcript.groundings}
+                    answer={answer}
+                    hits={hits}
+                    activeCitation={activeCitation}
+                    onOpenCitation={onOpenCitation}
+                    onCiteInstead={superseded.has(block.id) || notes.has(block.id) ? undefined : citeInstead}
+                    compact
+                  />
                 );
-              }
-              if (block.kind === 'revision') return <RevisionRow key={block.id} block={block} compact live={live} />;
-              return (
-                <TextBlock
-                  key={block.id}
-                  id={block.id}
-                  text={block.text}
-                  superseded={superseded.has(block.id)}
-                  note={notes.has(block.id)}
-                  afterAnswer={answerBlockIndex >= 0 && transcript.blocks.indexOf(block) > answerBlockIndex}
-                  groundings={transcript.groundings}
-                  answer={answer}
-                  hits={hits}
-                  activeCitation={activeCitation}
-                  onOpenCitation={onOpenCitation}
-                  onCiteInstead={superseded.has(block.id) || notes.has(block.id) ? undefined : citeInstead}
-                  compact
-                />
-              );
-            })}
-          </div>
-        </details>
+              })}
+            </>
+          ) : null}
+          summary={summary}
+          hits={hits}
+          onOpenCitation={onOpenCitation}
+          compact={compact}
+        />
       )}
       {runningCommand && (
         <StepLine step={runningCommand} steps={transcript.steps} onDecide={onDecide} compact={compact} live pendingApprovals={false} />

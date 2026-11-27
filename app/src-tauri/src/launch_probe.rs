@@ -428,11 +428,13 @@ pub const TOUR_VIEWS: &[&str] = &[
     "activity",
     "settings",
 ];
-/// After the views, scenes of one view each: `conversation` is Ask with the
-/// sample conversation open ([`SAMPLE_CONVERSATION_ID`]) and the sidebar folded,
-/// so the reading column, its wide blocks and the question rail have room on the
-/// runner's small screen (`features/launch/LaunchProbeHost.tsx`).
-pub const TOUR_SCENES: &[&str] = &["conversation"];
+/// After the views, scenes of one view each, with the sidebar folded so the
+/// reading column has room on the runner's small screen
+/// (`features/launch/LaunchProbeHost.tsx`): `conversation` is Ask with the sample
+/// conversation open ([`SAMPLE_CONVERSATION_ID`]), for the column, its wide blocks
+/// and the question rail; each `run-*` is the sample agent run ([`SAMPLE_RUN`]) at
+/// one of its states, for the run view: its plan, its progress, its summary.
+pub const TOUR_SCENES: &[&str] = &["conversation", "run-plan", "run-progress", "run-summary"];
 /// Both themes, each view in each.
 pub const TOUR_THEMES: &[&str] = &["dark", "light"];
 /// The sample conversations the tour writes before its first view, so the
@@ -453,6 +455,57 @@ struct SampleConversation {
 fn sample_conversations() -> Result<Vec<SampleConversation>, String> {
     serde_json::from_str(SAMPLE_CONVERSATIONS).map_err(|e| format!("the sample conversations: {e}"))
 }
+
+/// The sample agent run: a question, and its answer's transcript as the run
+/// builds it (a seed and the reducer's actions, as `app/tests/fixtures/transcripts`
+/// write them). Each `run-*` scene shows the answer after the first actions of
+/// its stage, through the Ask view's own reducer.
+const SAMPLE_RUN: &str = include_str!("../tests/fixtures/launch_probe_run.json");
+
+/// The sample run, as the fixture writes it.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SampleRun {
+    /// The conversation it is in.
+    id: String,
+    question: ConversationMessage,
+    answer_id: String,
+    seed: serde_json::Value,
+    actions: Vec<serde_json::Value>,
+    stages: Vec<RunStage>,
+}
+
+/// One state of the run: its scene, how many actions lead to it, and whether
+/// the run view is opened there as a click opens it (a finished run's is closed).
+#[derive(Debug, serde::Deserialize)]
+struct RunStage {
+    scene: String,
+    actions: usize,
+    #[serde(default)]
+    open: bool,
+}
+
+fn sample_run() -> Result<SampleRun, String> {
+    serde_json::from_str(SAMPLE_RUN).map_err(|e| format!("the sample run: {e}"))
+}
+
+/// What the window is sent for a `run-*` scene: the answer to set and the
+/// transcript to reduce, or null for any other view.
+fn run_scene(run: &SampleRun, view: &str) -> Result<serde_json::Value, String> {
+    let Some(stage) = run.stages.iter().find(|stage| stage.scene == view) else {
+        return Ok(serde_json::Value::Null);
+    };
+    let actions = run
+        .actions
+        .get(..stage.actions)
+        .ok_or_else(|| format!("the {view} stage needs more actions than the run has"))?;
+    Ok(serde_json::json!({
+        "answerId": run.answer_id,
+        "seed": run.seed,
+        "actions": actions,
+        "open": stage.open,
+    }))
+}
 /// How long a view is given to load its code and its first data and paint,
 /// before the job is told to take its picture. The picture is for people to
 /// review; nothing is read from it.
@@ -468,11 +521,33 @@ pub fn view_captured_file(view: &str, theme: &str) -> String {
     format!("launch-probe-captured-view-{view}-{theme}")
 }
 
-/// Writes the sample conversations into the profile, as a window saves one,
-/// and tells the windows, which list them.
-fn write_sample_conversations(app: &AppHandle, data_dir: &Path) -> Result<(), String> {
+/// Writes the sample conversations and the sample run's into the profile, as a
+/// window saves one, and tells the windows, which list them.
+fn write_sample_conversations(
+    app: &AppHandle,
+    data_dir: &Path,
+    run: &SampleRun,
+) -> Result<(), String> {
     let store = ConversationStore::in_dir(data_dir);
-    for sample in sample_conversations()? {
+    let answer = ConversationMessage {
+        id: run.answer_id.clone(),
+        role: "assistant".to_string(),
+        content: String::new(),
+        timestamp: run.question.timestamp.clone(),
+        artifacts: None,
+        search_results: None,
+        metadata: None,
+        run: None,
+        transcript: Some(run.seed.clone()),
+    };
+    let run_conversation = SampleConversation {
+        id: run.id.clone(),
+        messages: vec![run.question.clone(), answer],
+    };
+    for sample in sample_conversations()?
+        .into_iter()
+        .chain([run_conversation])
+    {
         let writes = sample.messages.into_iter().map(TurnWrite::Whole).collect();
         store
             .write_turns(&sample.id, writes, &[], true)?
@@ -490,17 +565,25 @@ async fn views_tour(app: &AppHandle, data_dir: &Path) -> Result<(), String> {
     let to_main = || tauri::EventTarget::Webview {
         label: crate::background::MAIN_WINDOW.to_string(),
     };
-    write_sample_conversations(app, data_dir)?;
+    let run = sample_run()?;
+    write_sample_conversations(app, data_dir, &run)?;
     let mut clipped_total: u32 = 0;
     let mut chats_short: u32 = 0;
     for theme in TOUR_THEMES {
         for view in TOUR_VIEWS.iter().chain(TOUR_SCENES.iter()) {
             let scene = TOUR_SCENES.contains(view);
-            let conversation = scene.then_some(SAMPLE_CONVERSATION_ID);
+            let run_state = run_scene(&run, view)?;
+            let conversation = if !scene {
+                None
+            } else if run_state.is_null() {
+                Some(SAMPLE_CONVERSATION_ID)
+            } else {
+                Some(run.id.as_str())
+            };
             app.emit_to(
                 to_main(),
                 LAUNCH_PROBE_EVENT,
-                serde_json::json!({ "kind": "show", "view": view, "theme": theme, "conversation": conversation }),
+                serde_json::json!({ "kind": "show", "view": view, "theme": theme, "conversation": conversation, "run": run_state }),
             )
             .map_err(|e| format!("the {view} view could not be asked for: {e}"))?;
             tokio::time::sleep(TOUR_SETTLE).await;
@@ -1002,7 +1085,7 @@ mod tests {
         files.sort();
         files.dedup();
         assert_eq!(files.len(), count);
-        assert_eq!(count, 20);
+        assert_eq!(count, 26);
         // A scene is not a view of the app.
         assert!(TOUR_SCENES.iter().all(|scene| !TOUR_VIEWS.contains(scene)));
     }
@@ -1018,6 +1101,41 @@ mod tests {
         assert!(!room(2, 1));
         // None listed is no room shown, not room enough.
         assert!(!room(0, 0));
+    }
+
+    #[test]
+    fn the_sample_run_has_a_stage_for_each_run_scene() {
+        let run = sample_run().expect("the sample run parses");
+        let scenes: Vec<&str> = run
+            .stages
+            .iter()
+            .map(|stage| stage.scene.as_str())
+            .collect();
+        let run_scenes: Vec<&str> = TOUR_SCENES
+            .iter()
+            .copied()
+            .filter(|scene| scene.starts_with("run-"))
+            .collect();
+        assert_eq!(scenes, run_scenes);
+        // Each stage goes further into the run, the last to its end, opened.
+        let counts: Vec<usize> = run.stages.iter().map(|stage| stage.actions).collect();
+        assert!(counts.windows(2).all(|pair| pair[0] < pair[1]));
+        assert_eq!(counts.last().copied(), Some(run.actions.len()));
+        assert!(run.stages.last().is_some_and(|stage| stage.open));
+        // Its own conversation, apart from the column's.
+        assert_ne!(run.id, SAMPLE_CONVERSATION_ID);
+        assert_eq!(run.question.role, "user");
+        // A run scene is sent its slice; any other view nothing.
+        let progress = run_scene(&run, "run-progress").expect("the progress stage");
+        assert_eq!(progress["answerId"], run.answer_id.as_str());
+        assert_eq!(
+            progress["actions"].as_array().map(Vec::len),
+            Some(run.stages[1].actions)
+        );
+        assert!(run_scene(&run, "conversation")
+            .expect("not a run")
+            .is_null());
+        assert!(run_scene(&run, "library").expect("not a run").is_null());
     }
 
     #[test]

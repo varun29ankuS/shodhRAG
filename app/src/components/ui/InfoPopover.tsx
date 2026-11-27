@@ -101,7 +101,7 @@ export function InfoPopover({
                 aria-label="Close"
                 title={withShortcut('Close', 'close', IS_MAC_PLATFORM)}
                 className={cn(
-                  '-mt-1 -mr-1 w-6 h-6 inline-flex items-center justify-center rounded-md text-shodh-text-muted hover:text-shodh-text hover:bg-shodh-raised',
+                  '-mt-1 -me-1 w-6 h-6 inline-flex items-center justify-center rounded-md text-shodh-text-muted hover:text-shodh-text hover:bg-shodh-raised',
                   FOCUS_RING,
                 )}
               >

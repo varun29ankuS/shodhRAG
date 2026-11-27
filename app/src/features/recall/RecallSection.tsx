@@ -18,6 +18,7 @@ import {
   withProject,
   withTool,
 } from './recallModel';
+import { InfoPopover } from '../../components/ui/InfoPopover';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-ground';
@@ -121,9 +122,7 @@ export function RecallSection({ onOpenReceipt }: RecallSectionProps) {
           AI coding sessions
         </h2>
         <p className="text-small text-shodh-text-muted">
-          What you did in Claude Code and Codex, searchable here and by the assistant. Shodh reads the transcripts where
-          they are, on this computer.
-        </p>
+          Claude Code and Codex sessions, read on this computer.</p>
       </div>
       <div className="rounded-xl border border-shodh-border bg-shodh-surface p-4 flex flex-col gap-4">
         {!status ? (
@@ -145,10 +144,11 @@ function PrivacyNote({ status }: { status: RecallStatus }) {
       </li>
       <li className="flex items-start gap-2">
         <ShieldCheck className="w-3.5 h-3.5 mt-0.5 shrink-0 text-shodh-text-muted" aria-hidden="true" />
-        <span>
+        <span>Secrets{status.settings.keepEmails ? '' : ', emails'} and hidden words are removed first.</span>
+        <InfoPopover label="What is removed" title="What is removed">
           Keys, tokens, passwords, private keys{status.settings.keepEmails ? '' : ', email addresses'} and your hidden words are removed
           before anything is indexed or shown. Long random ids, such as request ids and hashes, are hidden too.
-        </span>
+        </InfoPopover>
       </li>
       <li className="flex items-start gap-2">
         <Bot className="w-3.5 h-3.5 mt-0.5 shrink-0 text-shodh-text-muted" aria-hidden="true" />
@@ -429,8 +429,8 @@ function PatternChoice({ settings, saving, onSave }: { settings: RecallSettings;
         Your own hidden words
       </label>
       <p className="m-0 text-caption text-shodh-text-muted">
-        One a line: a word, a name or a code to hide like a key, in any case (a client&apos;s name, an internal host). To hide a
-        family of codes, write a pattern between slashes, like /ACME-[0-9]{'{6}'}/. Changing them indexes every session again.
+        One per line; /pattern/ for codes.{' '}<InfoPopover label="Hidden words" title="Hidden words">One a line: a word, a name or a code to hide like a key, in any case (a client&apos;s name, an internal host). To hide a
+        family of codes, write a pattern between slashes, like /ACME-[0-9]</InfoPopover>{'{6}'}/. Changing them indexes every session again.
       </p>
       <textarea
         id={fieldId}
@@ -530,7 +530,7 @@ function RecallSearch({ onOpenReceipt }: { onOpenReceipt: (receipt: string) => v
                       <button
                         type="button"
                         onClick={() => onOpenReceipt(r.id)}
-                        className={cn('w-full text-left rounded-md px-2 py-1 hover:bg-shodh-raised flex flex-col', FOCUS_RING)}
+                        className={cn('w-full text-start rounded-md px-2 py-1 hover:bg-shodh-raised flex flex-col', FOCUS_RING)}
                       >
                         <span className="text-caption font-medium text-shodh-text-secondary">{r.heading}</span>
                         {r.snippet && <span className="text-caption text-shodh-text-muted line-clamp-2 break-words">{r.snippet}</span>}
@@ -553,7 +553,7 @@ function RecallSearch({ onOpenReceipt }: { onOpenReceipt: (receipt: string) => v
                   type="button"
                   disabled={!s.first}
                   onClick={() => s.first && onOpenReceipt(s.first)}
-                  className={cn('w-full text-left rounded-md px-2 py-1 hover:bg-shodh-raised flex flex-col disabled:opacity-60', FOCUS_RING)}
+                  className={cn('w-full text-start rounded-md px-2 py-1 hover:bg-shodh-raised flex flex-col disabled:opacity-60', FOCUS_RING)}
                 >
                   <span className="text-small text-shodh-text truncate">{s.title}</span>
                   <span className="text-caption text-shodh-text-muted">

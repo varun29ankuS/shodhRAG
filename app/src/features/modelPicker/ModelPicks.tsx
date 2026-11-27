@@ -62,7 +62,7 @@ export function ModelPicks({ picker }: { picker: ModelPickerHandle }) {
               disabled={!available || busy !== null}
               onClick={() => void run(option.pick, false)}
               className={cn(
-                'flex items-start gap-2.5 p-3 rounded-xl border text-left transition-colors duration-micro active:scale-[0.99]',
+                'flex items-start gap-2.5 p-3 rounded-xl border text-start transition-colors duration-micro active:scale-[0.99]',
                 selected ? 'border-shodh-accent bg-shodh-accent-soft' : 'border-shodh-border bg-shodh-ground hover:bg-shodh-raised',
                 !available && 'opacity-60 cursor-not-allowed hover:bg-shodh-ground',
                 FOCUS_RING,
@@ -101,7 +101,7 @@ export function ModelPicks({ picker }: { picker: ModelPickerHandle }) {
         <div role="alert" className="flex flex-wrap items-center gap-2 text-small text-shodh-text-secondary">
           <span className="flex-1 min-w-[14rem]">
             {refusal.code === 'environment_set'
-              ? 'The environment sets the model for this computer. Use this pick for this session only? The environment returns when Shodh restarts.'
+              ? 'Set by the environment. Use this pick until restart?'
               : refusal.message}
           </span>
           {refusal.code === 'environment_set' && (

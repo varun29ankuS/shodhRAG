@@ -438,7 +438,7 @@ export function ChipInput({
       >
         <ul className="contents" aria-label={`${label}: ${tags.length === 0 ? 'none' : tags.join(', ')}`}>
           {tags.map(tag => (
-            <li key={tag} className="inline-flex items-center gap-1 h-6 pl-2 pr-1 rounded-md bg-shodh-raised-2 text-caption text-shodh-text-secondary">
+            <li key={tag} className="inline-flex items-center gap-1 h-6 ps-2 pe-1 rounded-md bg-shodh-raised-2 text-caption text-shodh-text-secondary">
               {tag}
               <button
                 type="button"

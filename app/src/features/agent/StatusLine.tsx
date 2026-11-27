@@ -96,7 +96,7 @@ export function StatusLine({ transcript, fallbackModel, compact = false, sendKey
           {summary.line}
           {summary.tokens && <span className="sr-only">{`, ${summary.tokens}`}</span>}
         </span>
-        {hint && <span className="ml-auto pl-2 shrink-0 text-shodh-text-faint">{hint}</span>}
+        {hint && <span className="ms-auto ps-2 shrink-0 text-shodh-text-faint">{hint}</span>}
       </div>
     </div>
   );

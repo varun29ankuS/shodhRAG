@@ -44,7 +44,7 @@ function WorkspaceCard({
         type="button"
         onClick={onOpen}
         className={cn(
-          'w-full h-full flex flex-col gap-2 p-4 rounded-xl border border-shodh-border bg-shodh-surface text-left hover:bg-shodh-raised hover:border-shodh-border-strong transition-colors duration-micro',
+          'w-full h-full flex flex-col gap-2 p-4 rounded-xl border border-shodh-border bg-shodh-surface text-start hover:bg-shodh-raised hover:border-shodh-border-strong transition-colors duration-micro',
           FOCUS_RING,
         )}
       >
@@ -52,8 +52,8 @@ function WorkspaceCard({
           <WorkspaceIcon icon={workspace.icon} color={workspace.color} className="w-4 h-4" />
           <span className="text-body font-semibold text-shodh-text truncate">{workspace.name}</span>
           <SlackAnswersBadge source={slack} workspaceId={workspace.id} />
-          {workspace.pinned && <Pin className="w-3 h-3 ml-auto shrink-0 text-shodh-text-faint" aria-label="Pinned" />}
-          {workspace.archived && <Archive className="w-3 h-3 ml-auto shrink-0 text-shodh-text-faint" aria-label="Archived" />}
+          {workspace.pinned && <Pin className="w-3 h-3 ms-auto shrink-0 text-shodh-text-faint" aria-label="Pinned" />}
+          {workspace.archived && <Archive className="w-3 h-3 ms-auto shrink-0 text-shodh-text-faint" aria-label="Archived" />}
         </span>
         <span className="text-small text-shodh-text-secondary line-clamp-2 min-h-[2.6em]">
           {workspace.description || 'No description'}
@@ -180,17 +180,14 @@ export default function WorkspacesView({
               <section aria-labelledby="ws-empty" className="flex flex-col gap-3 rounded-xl border border-dashed border-shodh-border p-6">
                 <Layers className="w-6 h-6 text-shodh-text-muted" aria-hidden="true" />
                 <h3 id="ws-empty" className="m-0 text-body-lg font-semibold text-shodh-text">No workspaces yet</h3>
-                <p className="m-0 text-small text-shodh-text-secondary max-w-[600px]">
-                  Start one for a literature review, a grant, a paper or a client. Add its folders, files, snippets and
-                  papers; chats in it answer only from them, following the workspace’s instructions.
-                </p>
+                <p className="m-0 text-small text-shodh-text-secondary">Chats here answer from its sources only.</p>
                 <ul className="m-0 p-0 list-none grid grid-cols-1 sm:grid-cols-2 gap-2">
                   {templates.map(t => (
                     <li key={t.id}>
                       <button
                         type="button"
                         onClick={() => startCreate(t.id)}
-                        className={cn('w-full flex items-start gap-2.5 p-3 rounded-xl border border-shodh-border bg-shodh-surface text-left hover:bg-shodh-raised transition-colors duration-micro', FOCUS_RING)}
+                        className={cn('w-full flex items-start gap-2.5 p-3 rounded-xl border border-shodh-border bg-shodh-surface text-start hover:bg-shodh-raised transition-colors duration-micro', FOCUS_RING)}
                       >
                         <WorkspaceIcon icon={t.icon} color={t.color} className="w-4 h-4 mt-0.5" />
                         <span className="min-w-0">

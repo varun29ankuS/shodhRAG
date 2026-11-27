@@ -65,7 +65,7 @@ function AddTask({ workspaceId, workspaceName }: { workspaceId: string; workspac
   };
 
   return (
-    <form onSubmit={submit} aria-label={`Add a task to ${workspaceName}`} className="flex flex-wrap items-center gap-2 p-1.5 pl-3 rounded-xl border border-shodh-border bg-shodh-raised">
+    <form onSubmit={submit} aria-label={`Add a task to ${workspaceName}`} className="flex flex-wrap items-center gap-2 p-1.5 ps-3 rounded-xl border border-shodh-border bg-shodh-raised">
       <Plus className="w-4 h-4 shrink-0 text-shodh-text-faint" aria-hidden="true" />
       <label htmlFor={inputId} className="sr-only">New task in {workspaceName}</label>
       <input
@@ -139,14 +139,14 @@ function Card({
         aria-keyshortcuts="Alt+ArrowLeft Alt+ArrowRight"
         aria-label={`${task.title}. ${STATUS_LABELS[status] ?? status}${overdue ? ', overdue' : ''}. Open the task; Alt+Arrow keys move it between columns.`}
         className={cn(
-          'text-left text-small font-medium rounded-md -mx-1 px-1 break-words',
+          'text-start text-small font-medium rounded-md -mx-1 px-1 break-words',
           done ? 'line-through text-shodh-text-faint' : 'text-shodh-text hover:underline',
           FOCUS_RING,
         )}
       >
         {task.title}
       </button>
-      <div className="flex items-center gap-1 flex-wrap -ml-1.5">
+      <div className="flex items-center gap-1 flex-wrap -ms-1.5">
         <StatusMenu
           status={status}
           taskTitle={task.title}

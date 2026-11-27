@@ -51,15 +51,13 @@ function ChatsTab({ workspace, onNewChat, onOpenChat }: { workspace: WorkspaceDe
         <h3 className={SECTION_TITLE}>
           Chats <span className="font-normal text-shodh-text-muted">({chats.length})</span>
         </h3>
-        <button type="button" className={cn(PRIMARY_BUTTON, 'ml-auto h-8')} onClick={onNewChat}>
+        <button type="button" className={cn(PRIMARY_BUTTON, 'ms-auto h-8')} onClick={onNewChat}>
           <MessageSquarePlus className="w-4 h-4" aria-hidden="true" /> New chat
         </button>
       </div>
       {chats.length === 0 ? (
         <p className="m-0 text-small text-shodh-text-muted">
-          No chats yet. A chat started here searches only this workspace’s sources and follows its instructions. Move
-          an existing chat here from its menu in the sidebar.
-        </p>
+          No chats yet.</p>
       ) : (
         <ul className="m-0 p-0 list-none divide-y divide-shodh-border-subtle">
           {chats.map(c => (
@@ -67,7 +65,7 @@ function ChatsTab({ workspace, onNewChat, onOpenChat }: { workspace: WorkspaceDe
               <button
                 type="button"
                 onClick={() => onOpenChat(c.id)}
-                className={cn('w-full flex items-center gap-3 py-2 px-1 text-left rounded-md hover:bg-shodh-raised/60', FOCUS_RING)}
+                className={cn('w-full flex items-center gap-3 py-2 px-1 text-start rounded-md hover:bg-shodh-raised/60', FOCUS_RING)}
               >
                 {c.pinned && <Pin className="w-3 h-3 text-shodh-text-faint shrink-0" aria-label="Pinned" />}
                 <span className="flex-1 min-w-0 text-small text-shodh-text truncate">{c.title}</span>
@@ -248,11 +246,11 @@ export function WorkspacePage({
     tabRefs.current[next]?.focus();
   };
 
-  const menuItem = 'w-full flex items-center gap-2 px-3 py-1.5 text-small text-left hover:bg-shodh-raised-2 focus-visible:bg-shodh-raised-2 focus-visible:outline-none';
+  const menuItem = 'w-full flex items-center gap-2 px-3 py-1.5 text-small text-start hover:bg-shodh-raised-2 focus-visible:bg-shodh-raised-2 focus-visible:outline-none';
 
   return (
     <div className="flex flex-col gap-5">
-      <button type="button" className={cn(QUIET_BUTTON, 'self-start -ml-2')} onClick={onBack}>
+      <button type="button" className={cn(QUIET_BUTTON, 'self-start -ms-2')} onClick={onBack}>
         <ArrowLeft className="w-3.5 h-3.5" aria-hidden="true" /> All workspaces
       </button>
       <header className="flex items-start gap-3">
@@ -260,8 +258,8 @@ export function WorkspacePage({
         <div className="flex-1 min-w-0">
           <h2 className="m-0 text-title font-semibold text-shodh-text truncate">
             {detail.name}
-            {detail.archived && <span className="ml-2 align-middle text-caption font-medium px-1.5 py-0.5 rounded-full bg-shodh-raised text-shodh-text-muted">Archived</span>}
-            <span className="ml-2 align-middle"><SlackAnswersBadge source={slack} workspaceId={detail.id} /></span>
+            {detail.archived && <span className="ms-2 align-middle text-caption font-medium px-1.5 py-0.5 rounded-full bg-shodh-raised text-shodh-text-muted">Archived</span>}
+            <span className="ms-2 align-middle"><SlackAnswersBadge source={slack} workspaceId={detail.id} /></span>
           </h2>
           {detail.description && <p className="m-0 mt-0.5 text-small text-shodh-text-secondary">{detail.description}</p>}
           <p className="m-0 mt-1 text-caption text-shodh-text-muted">
@@ -288,7 +286,7 @@ export function WorkspacePage({
             <div
               role="menu"
               aria-label="Workspace options"
-              className="shell-pop absolute right-0 top-10 z-50 min-w-[180px] py-1 rounded-lg border border-shodh-border-strong bg-shodh-raised shadow-lg"
+              className="shell-pop absolute end-0 top-10 z-50 min-w-[180px] py-1 rounded-lg border border-shodh-border-strong bg-shodh-raised shadow-lg"
               onKeyDown={e => {
                 const items = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'));
                 const index = items.indexOf(document.activeElement as HTMLButtonElement);
@@ -367,7 +365,7 @@ export function WorkspacePage({
           <VisualGallery
             conversationId={null}
             conversationIds={chatIds}
-            emptyText="No visuals in this workspace’s chats yet. Diagrams, charts, plots, equations and tables from its answers appear here."
+            emptyText={'No visuals yet.'}
           />
         )}
         {tab === 'results' && <ResultsTab workspace={detail} />}

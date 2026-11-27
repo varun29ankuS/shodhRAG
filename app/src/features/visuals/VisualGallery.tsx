@@ -31,7 +31,7 @@ import type { VisualTarget } from '../agent/events';
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
 const MENU_ITEM =
-  'w-full h-8 px-2.5 rounded-lg inline-flex items-center gap-2 text-left text-small text-shodh-text hover:bg-shodh-raised focus:bg-shodh-raised focus:outline-none disabled:opacity-40';
+  'w-full h-8 px-2.5 rounded-lg inline-flex items-center gap-2 text-start text-small text-shodh-text hover:bg-shodh-raised focus:bg-shodh-raised focus:outline-none disabled:opacity-40';
 
 /** Cards loaded at once (search narrows beyond that). */
 const PAGE = 500;
@@ -111,7 +111,7 @@ function CardMenu({
       // Esc closes this menu only (dialogs around the gallery skip it).
       data-esc-local=""
       onKeyDown={onKeyDown}
-      className="absolute right-2 top-10 z-20 min-w-[200px] rounded-xl border border-shodh-border-strong bg-shodh-surface p-1 shadow-[0_12px_36px_rgba(0,0,0,0.32)] shell-pop"
+      className="absolute end-2 top-10 z-20 min-w-[200px] rounded-xl border border-shodh-border-strong bg-shodh-surface p-1 shadow-[0_12px_36px_rgba(0,0,0,0.32)] shell-pop"
     >
       <button type="button" role="menuitem" tabIndex={-1} className={MENU_ITEM} onClick={act(onPin)}>
         {card.pinned ? <PinOff className="w-3.5 h-3.5" aria-hidden="true" /> : <Pin className="w-3.5 h-3.5" aria-hidden="true" />}
@@ -193,14 +193,14 @@ function VisualCard({
           type="button"
           onClick={e => onOpen(card, e.currentTarget)}
           aria-label={`Open ${noun.toLowerCase()} ${card.title}`}
-          className={cn('text-left flex flex-col', FOCUS_RING, 'focus-visible:ring-offset-0 rounded-[14px]')}
+          className={cn('text-start flex flex-col', FOCUS_RING, 'focus-visible:ring-offset-0 rounded-[14px]')}
         >
           <div ref={thumbRef}>
             <VisualThumb record={card} theme={theme} className="border-b border-shodh-border-subtle" />
           </div>
           <div className="px-3 pt-2.5 pb-1 flex flex-col gap-0.5 min-w-0">
             <h3 id={titleId} className="text-small font-semibold text-shodh-text truncate" title={card.title}>
-              {card.pinned && <Pin className="inline w-3 h-3 mr-1 -mt-0.5 text-shodh-accent-text" aria-label="Pinned" />}
+              {card.pinned && <Pin className="inline w-3 h-3 me-1 -mt-0.5 text-shodh-accent-text" aria-label="Pinned" />}
               {card.title}
             </h3>
             <p className="text-caption text-shodh-text-muted truncate">
@@ -234,7 +234,7 @@ function VisualCard({
           aria-label={`Actions for ${card.title}`}
           onClick={() => setMenuOpen(o => !o)}
           className={cn(
-            'absolute right-2 top-2 w-7 h-7 inline-flex items-center justify-center rounded-lg bg-shodh-surface/90 border border-shodh-border text-shodh-text-muted hover:text-shodh-text',
+            'absolute end-2 top-2 w-7 h-7 inline-flex items-center justify-center rounded-lg bg-shodh-surface/90 border border-shodh-border text-shodh-text-muted hover:text-shodh-text',
             'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 aria-expanded:opacity-100 transition-opacity duration-micro',
             FOCUS_RING,
           )}
@@ -460,7 +460,7 @@ export function VisualGallery({
     <div className="flex flex-col gap-3 min-h-0">
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative flex-1 min-w-[200px] max-w-[360px]">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-shodh-text-faint" aria-hidden="true" />
+          <Search className="absolute start-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-shodh-text-faint" aria-hidden="true" />
           <label htmlFor={searchId} className="sr-only">Search visuals</label>
           <input
             id={searchId}
@@ -469,7 +469,7 @@ export function VisualGallery({
             onChange={e => setQuery(e.target.value)}
             placeholder="Search titles, notes and content"
             autoFocus={autoFocusSearch}
-            className="w-full h-8 pl-8 pr-2.5 rounded-lg border border-shodh-border bg-shodh-surface-2 text-small text-shodh-text placeholder:text-shodh-text-faint focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="w-full h-8 ps-8 pe-2.5 rounded-lg border border-shodh-border bg-shodh-surface-2 text-small text-shodh-text placeholder:text-shodh-text-faint focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           />
         </div>
         <div role="radiogroup" aria-label="Kind" className="flex flex-wrap items-center gap-1.5">
@@ -500,7 +500,7 @@ export function VisualGallery({
         <p className="py-8 text-center text-small text-shodh-text-muted">
           {debounced || kind !== 'all'
             ? 'No visual matches.'
-            : emptyText ?? 'Diagrams, charts, sketches, plots, simulations, equations and tables from answers appear here.'}
+            : emptyText ?? 'Nothing yet'}
         </p>
       ) : (
         <>
@@ -519,7 +519,7 @@ export function VisualGallery({
               ref={windowed.virtualizer.measureElement}
               data-index={row.index}
               role="none"
-              className="absolute left-0 right-0 grid gap-3"
+              className="absolute start-0 end-0 grid gap-3"
               style={{ top: row.top, gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
             >
             {shown.slice(first, last + 1).map((entry, offset) => (

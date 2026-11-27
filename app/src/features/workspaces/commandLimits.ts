@@ -1,3 +1,4 @@
+import { formatNumber } from '../../i18n/format.ts';
 /**
  * The limits a Code-mode command runs under, as the workspace's Code settings
  * edit them. Pure, so it is unit-tested directly with Node
@@ -41,7 +42,7 @@ export type ParsedLimit = { ok: true; value: number } | { ok: false; error: stri
 
 export function parseCommandLimit(spec: CommandLimitSpec, text: string): ParsedLimit {
   const trimmed = text.trim();
-  const range = `${spec.min.toLocaleString('en-US')} to ${spec.max.toLocaleString('en-US')} ${spec.unit}`;
+  const range = `${formatNumber(spec.min)} to ${formatNumber(spec.max)} ${spec.unit}`;
   if (!/^\d+$/.test(trimmed)) return { ok: false, error: `Enter a whole number from ${range}.` };
   const value = Number(trimmed);
   if (!Number.isSafeInteger(value) || value < spec.min || value > spec.max) {

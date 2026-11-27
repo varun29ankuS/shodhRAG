@@ -156,7 +156,7 @@ export default function DataManagement({ sources, onRemoveSource, onSourcesClear
           <label className="text-caption font-medium block mb-1.5" style={{ color: colors.textSecondary }}>
             Indexed Sources ({sources.length})
           </label>
-          <div className="space-y-1 max-h-40 overflow-y-auto pr-1">
+          <div className="space-y-1 max-h-40 overflow-y-auto pe-1">
             {sources.map(source => (
               <div
                 key={source.id}
@@ -198,20 +198,20 @@ export default function DataManagement({ sources, onRemoveSource, onSourcesClear
       <div>
         <button
           onClick={handleToggleIndexed}
-          className="w-full text-left text-caption px-3 py-2 rounded-md border transition-colors flex items-center gap-2"
+          className="w-full text-start text-caption px-3 py-2 rounded-md border transition-colors flex items-center gap-2"
           style={{ borderColor: colors.border, color: colors.text }}
         >
           <FileText className="w-3 h-3" style={{ color: colors.primary }} />
           {showIndexed ? 'Hide' : 'Show'} Actual Indexed Files
           {indexedSources.length > 0 && (
-            <span className="ml-auto text-caption" style={{ color: colors.textMuted }}>
+            <span className="ms-auto text-caption" style={{ color: colors.textMuted }}>
               {countOf(indexedSources.length, 'file')}
             </span>
           )}
         </button>
 
         {showIndexed && (
-          <div className="mt-1.5 space-y-1 max-h-60 overflow-y-auto pr-1">
+          <div className="mt-1.5 space-y-1 max-h-60 overflow-y-auto pe-1">
             {indexedSources.length === 0 ? (
               <div className="text-caption text-center py-2" style={{ color: colors.textMuted }}>
                 No files found in vector store
@@ -245,7 +245,7 @@ export default function DataManagement({ sources, onRemoveSource, onSourcesClear
         <button
           onClick={() => setConfirmAction('clear_docs')}
           disabled={loading}
-          className="w-full text-left text-caption px-3 py-2 rounded-md border transition-colors flex items-center gap-2"
+          className="w-full text-start text-caption px-3 py-2 rounded-md border transition-colors flex items-center gap-2"
           style={{
             borderColor: colors.border,
             color: colors.text,
@@ -254,13 +254,13 @@ export default function DataManagement({ sources, onRemoveSource, onSourcesClear
         >
           <Trash2 className="w-3 h-3 text-shodh-warning" />
           Clear All Documents
-          <span className="ml-auto text-caption text-shodh-warning">Keeps spaces</span>
+          <span className="ms-auto text-caption text-shodh-warning">Keeps spaces</span>
         </button>
 
         <button
           onClick={() => setConfirmAction('reset')}
           disabled={loading}
-          className="w-full text-left text-caption px-3 py-2 rounded-md border transition-colors flex items-center gap-2"
+          className="w-full text-start text-caption px-3 py-2 rounded-md border transition-colors flex items-center gap-2"
           style={{
             borderColor: colors.border,
             color: colors.text,
@@ -269,7 +269,7 @@ export default function DataManagement({ sources, onRemoveSource, onSourcesClear
         >
           <AlertTriangle className="w-3 h-3 text-shodh-error" />
           Reset Entire Database
-          <span className="ml-auto text-caption text-shodh-error">Destructive</span>
+          <span className="ms-auto text-caption text-shodh-error">Destructive</span>
         </button>
       </div>
 
@@ -281,7 +281,7 @@ export default function DataManagement({ sources, onRemoveSource, onSourcesClear
           <p className="text-caption font-medium text-shodh-text">
             {confirmAction === 'clear_docs'
               ? 'This will permanently delete all indexed documents from the vector store and text index. Spaces will be preserved. This cannot be undone.'
-              : 'This will delete everything — all documents, vectors, and spaces. The app will need a restart. This cannot be undone.'}
+              : 'Deletes everything and needs a restart. Can’t be undone.'}
           </p>
           <div className="flex gap-2">
             <button

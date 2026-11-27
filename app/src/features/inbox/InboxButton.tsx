@@ -412,7 +412,7 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
         {counts.bell !== null && (
           <span
             aria-hidden="true"
-            className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-shodh-warning-soft text-shodh-text ring-1 ring-shodh-warning text-caption font-bold leading-[18px] text-center tabular-nums whitespace-nowrap"
+            className="absolute -top-1.5 -end-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-shodh-warning-soft text-shodh-text ring-1 ring-shodh-warning text-caption font-bold leading-[18px] text-center tabular-nums whitespace-nowrap"
           >
             {counts.bell}
           </span>
@@ -425,7 +425,7 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
           id={panelId}
           aria-labelledby={headingId}
           onKeyDown={onKeyDown}
-          className="absolute right-0 top-9 z-50 w-[400px] max-w-[calc(100vw-24px)] rounded-xl border border-shodh-border bg-shodh-surface shadow-lg overflow-hidden flex flex-col"
+          className="absolute end-0 top-9 z-50 w-[400px] max-w-[calc(100vw-24px)] rounded-xl border border-shodh-border bg-shodh-surface shadow-lg overflow-hidden flex flex-col"
         >
           <header className="flex items-center justify-between gap-2 px-3.5 pt-2.5">
             <h2 id={headingId} className="m-0 text-small font-semibold text-shodh-text">Inbox</h2>
@@ -537,7 +537,7 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
                       key={row.key}
                       ref={windowed.virtualizer.measureElement}
                       data-index={index}
-                      className={cn('absolute left-1 right-1 rounded-lg px-2.5 py-2 flex flex-col gap-1.5', isSelected && 'bg-shodh-raised')}
+                      className={cn('absolute start-1 end-1 rounded-lg px-2.5 py-2 flex flex-col gap-1.5', isSelected && 'bg-shodh-raised')}
                       style={{ top: row.top }}
                     >
                       <button
@@ -551,7 +551,7 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
                         aria-current={isSelected ? 'true' : undefined}
                         onFocus={() => setSelected(prev => (prev[tab] === index ? prev : { ...prev, [tab]: index }))}
                         onClick={() => openItem(item)}
-                        className={cn('text-left flex items-start gap-2 rounded-md min-w-0', FOCUS_RING)}
+                        className={cn('text-start flex items-start gap-2 rounded-md min-w-0', FOCUS_RING)}
                       >
                         <span className={cn('mt-1 w-2 h-2 rounded-full shrink-0', tone.dot)} aria-hidden="true" />
                         <span className="min-w-0 flex-1 flex flex-col gap-0.5">
@@ -564,7 +564,7 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
                         </span>
                       </button>
                       {(actions.primary || actions.secondary || actions.choices || showOpen) && (
-                        <div className="flex flex-nowrap items-center gap-1.5 pl-4 min-w-0">
+                        <div className="flex flex-nowrap items-center gap-1.5 ps-4 min-w-0">
                           {actions.choices?.map((choice, i) => (
                             <button
                               key={choice}

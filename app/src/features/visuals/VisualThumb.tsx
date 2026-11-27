@@ -138,7 +138,7 @@ function SimulationThumb({ source, record }: { source: string; record: Pick<Visu
       <SimulationPlayer model={result.model} initial={paramValuesOf(record.params)} maxHeight={THUMB_HEIGHT - 12} autoPlay={false} />
       <span className="absolute inset-0 flex items-center justify-center" aria-hidden="true">
         <span className="w-10 h-10 rounded-full bg-shodh-surface/90 border border-shodh-border flex items-center justify-center shadow-sm">
-          <Play className="w-4 h-4 ml-0.5 text-shodh-text" />
+          <Play className="w-4 h-4 ms-0.5 text-shodh-text" />
         </span>
       </span>
     </div>
@@ -161,7 +161,7 @@ function TableThumb({ source }: { source: string }) {
     <div className="h-full overflow-hidden p-2">
       <table className="w-full text-caption border-collapse">
         <thead>
-          <tr>{header.map((c, i) => <th key={i} className="px-1.5 py-1 text-left font-semibold text-shodh-text border-b border-shodh-border truncate max-w-[120px]">{c}</th>)}</tr>
+          <tr>{header.map((c, i) => <th key={i} className="px-1.5 py-1 text-start font-semibold text-shodh-text border-b border-shodh-border truncate max-w-[120px]">{c}</th>)}</tr>
         </thead>
         <tbody>
           {body.map((row, r) => (

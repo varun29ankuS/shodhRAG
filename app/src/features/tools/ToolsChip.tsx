@@ -110,7 +110,7 @@ export function ToolsChip({ workspaceId, mode, answerRunning, onOpenSettings }: 
           id={popoverId}
           role="dialog"
           aria-labelledby={headingId}
-          className="absolute top-full right-0 mt-2 z-40 w-[340px] max-w-[calc(100vw-32px)] max-h-[420px] overflow-y-auto scrollbar-thin rounded-[14px] border border-shodh-border bg-shodh-raised p-3.5 shadow-[0_12px_40px_rgba(0,0,0,0.35)] flex flex-col gap-3"
+          className="absolute top-full end-0 mt-2 z-40 w-[340px] max-w-[calc(100vw-32px)] max-h-[420px] overflow-y-auto scrollbar-thin rounded-[14px] border border-shodh-border bg-shodh-raised p-3.5 shadow-[0_12px_40px_rgba(0,0,0,0.35)] flex flex-col gap-3"
         >
           <h2 id={headingId} className="m-0 text-small font-semibold text-shodh-text">
             This chat can use
@@ -120,9 +120,7 @@ export function ToolsChip({ workspaceId, mode, answerRunning, onOpenSettings }: 
             <>
               {view.many && (
                 <p className="m-0 text-caption text-shodh-text-secondary bg-shodh-warning-soft rounded-lg px-2.5 py-2">
-                  This chat has many tools in every answer; models choose less well with more than 40. Turn off
-                  servers or tools you do not need here.
-                </p>
+                  Over 40 tools: turn some off.</p>
               )}
               <p className="m-0 text-small text-shodh-text-secondary">
                 {view.builtin} built-in {mode === 'code' ? 'Code mode' : 'Research'} {nounFor(view.builtin, 'tool')}

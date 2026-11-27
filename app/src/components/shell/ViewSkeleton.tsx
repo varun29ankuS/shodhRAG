@@ -1,6 +1,7 @@
 import React from 'react';
 import { Skeleton } from '../ui/skeleton';
 import type { ViewTab } from '../../lib/viewTabs';
+import { tr } from '../../i18n/tr';
 
 /**
  * Placeholder with the rough shape of a view while its code or data loads,
@@ -8,7 +9,7 @@ import type { ViewTab } from '../../lib/viewTabs';
  */
 export function ViewSkeleton({ view }: { view: ViewTab }) {
   return (
-    <div className="h-full overflow-hidden" role="status" aria-label="Loading">
+    <div className="h-full overflow-hidden" role="status" aria-label={tr('shell.viewSkeleton.loading')}>
       {view === 'settings' ? (
         <div className="h-full flex">
           <div className="w-[220px] shrink-0 border-e border-shodh-border-subtle px-8 py-7 flex flex-col gap-3">
@@ -42,7 +43,7 @@ export function ViewSkeleton({ view }: { view: ViewTab }) {
           </div>
         </div>
       )}
-      <span className="sr-only">Loading…</span>
+      <span className="sr-only">{tr('shell.viewSkeleton.loading2')}</span>
     </div>
   );
 }

@@ -102,7 +102,7 @@ export function VisualsDialog({ open, onOpenChange, conversationId, conversation
           <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin px-5 py-4">
             {open && (
               <Suspense fallback={<p className="m-0 text-small text-shodh-text-muted" role="status">Loading visuals…</p>}>
-                <VisualGallery conversationId={conversationId} autoFocusSearch emptyText="No visuals in this conversation yet. Diagrams, charts, sketches, plots, simulations, equations and tables in its answers appear here." />
+                <VisualGallery conversationId={conversationId} autoFocusSearch emptyText="No visuals yet" />
               </Suspense>
             )}
           </div>

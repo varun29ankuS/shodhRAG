@@ -404,7 +404,7 @@ function TextBlock({
         <ChevronRight className="w-3.5 h-3.5 transition-transform duration-micro group-open/draft:rotate-90 motion-reduce:transition-none" aria-hidden="true" />
         {afterAnswer ? 'Follow-up reply; the answer above was kept' : 'Earlier draft, replaced after the grounding check'}
       </summary>
-      <div className="mt-2 pl-3 border-l border-shodh-border-subtle opacity-80">{body}</div>
+      <div className="mt-2 ps-3 border-s border-shodh-border-subtle opacity-80">{body}</div>
     </details>
   );
 }

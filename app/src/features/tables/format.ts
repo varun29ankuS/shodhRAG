@@ -6,6 +6,7 @@
  */
 
 import type { Cell, FillCancel, FillStart, FillStatus, HandFill, JobView, PauseReason } from './types.ts';
+import { isoDate } from '../../i18n/format.ts';
 
 /** How an empty answer is worded, always: the model saw only some passages. */
 export const NOT_FOUND_TEXT = 'Not found in the passages searched';
@@ -119,7 +120,7 @@ export interface TimeOptions {
 }
 
 function dateKey(ms: number, options: TimeOptions): string {
-  return new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone: options.timeZone }).format(new Date(ms));
+  return isoDate(ms, options.timeZone);
 }
 
 /** The calendar day after a `YYYY-MM-DD` key: by the calendar, not by adding 24 hours, which a DST change breaks. */

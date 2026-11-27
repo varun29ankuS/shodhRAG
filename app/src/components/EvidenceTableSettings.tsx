@@ -6,6 +6,7 @@ import { SwitchRow } from './PrivacySettings';
 import { tableError, tablesApi } from '../features/tables/api';
 import type { TablesSettings } from '../features/tables/types';
 import { localTime, nextUtcMidnight } from '../features/tables/format';
+import { tr } from '../i18n/tr';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
@@ -45,10 +46,10 @@ export default function EvidenceTableSettings() {
   }, []);
 
   if (loadError && !settings) {
-    return <p role="alert" className="m-0 text-small text-shodh-error">The tables settings could not be loaded: {loadError}</p>;
+    return <p role="alert" className="m-0 text-small text-shodh-error">{tr('settings.evidenceTableSettings.theTablesSettingsCouldNot')}{loadError}</p>;
   }
   if (!settings) {
-    return <p className="m-0 text-small text-shodh-text-muted">Loading…</p>;
+    return <p className="m-0 text-small text-shodh-text-muted">{tr('settings.evidenceTableSettings.loading')}</p>;
   }
 
   const cap = Number(capInput);
@@ -78,16 +79,13 @@ export default function EvidenceTableSettings() {
         }}
       >
         <div className="min-w-0">
-          <label htmlFor={capId} className="m-0 text-body font-semibold text-shodh-text">Model calls tables may make per day</label>
+          <label htmlFor={capId} className="m-0 text-body font-semibold text-shodh-text">{tr('settings.evidenceTableSettings.modelCallsTablesMayMake')}</label>
           <p id={capHelpId} className="m-0 mt-0.5 text-small text-shodh-text-muted">
-            Filling a paper takes one or two calls, and one more when a reply cannot be read. A fill that reaches the
-            cap pauses and goes on when the day's count resets, next at {localTime(nextUtcMidnight(Date.now()), Date.now())} (midnight UTC,
-            in your time). Raising the cap lets paused fills go on
-            at once. {settings.minDailyCallCap} to {settings.maxDailyCallCap}.
+            {tr('settings.evidenceTableSettings.fillingAPaperTakesOne')}{localTime(nextUtcMidnight(Date.now()), Date.now())}{tr('settings.evidenceTableSettings.midnightUtcInYourTime')}{settings.minDailyCallCap}{tr('settings.evidenceTableSettings.to')}{settings.maxDailyCallCap}.
           </p>
           {!capValid && capInput.trim() !== '' && (
             <p role="alert" className="m-0 mt-1 text-small text-shodh-error">
-              Enter a whole number from {settings.minDailyCallCap} to {settings.maxDailyCallCap}.
+              {tr('settings.evidenceTableSettings.enterAWholeNumberFrom')}{settings.minDailyCallCap}{tr('settings.evidenceTableSettings.to')}{settings.maxDailyCallCap}.
             </p>
           )}
         </div>
@@ -111,13 +109,13 @@ export default function EvidenceTableSettings() {
             disabled={!capChanged || saving}
             className={cn('h-8 px-3 rounded-lg border border-shodh-border text-small text-shodh-text-secondary hover:bg-shodh-raised disabled:opacity-50 disabled:cursor-not-allowed', FOCUS_RING)}
           >
-            Save
+            {tr('settings.evidenceTableSettings.save')}
           </button>
         </div>
       </form>
       <SwitchRow
         label="Table diagnostics"
-        description="Adds “Run quality check on this paper” to a table's papers: it fills one paper and keeps every model call it made (prompts with the paper's passages, and the raw replies) in Shodh's database, so you can export them from the table to compare models or report a problem. The kept calls stay on this computer."
+        description={'Keeps each model call for export, on this computer.'}
         checked={settings.diagnostics}
         disabled={saving}
         onChange={on => void save(settings.dailyCallCap, on)}

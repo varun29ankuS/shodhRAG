@@ -297,7 +297,7 @@ export default function TaskDetailSheet({ task, onClose }: { task: TodoItem | nu
       kindLabel="Task"
       footer={
         <>
-          <span className="mr-auto text-caption text-shodh-text-faint">
+          <span className="me-auto text-caption text-shodh-text-faint">
             Created {formatStamp(shown.createdAt)}
             {shown.updatedAt !== shown.createdAt && <> · Edited {formatStamp(shown.updatedAt)}</>}
           </span>

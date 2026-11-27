@@ -85,7 +85,7 @@ function HeaderMenu({ onDisconnect }: { onDisconnect: () => void }) {
         <div
           role="menu"
           aria-label="Slack options"
-          className="shell-pop absolute right-0 top-10 z-50 min-w-[200px] py-1 rounded-lg border border-shodh-border-strong bg-shodh-raised shadow-lg"
+          className="shell-pop absolute end-0 top-10 z-50 min-w-[200px] py-1 rounded-lg border border-shodh-border-strong bg-shodh-raised shadow-lg"
           onKeyDown={e => {
             if (e.key === 'Escape') {
               e.preventDefault();
@@ -100,7 +100,7 @@ function HeaderMenu({ onDisconnect }: { onDisconnect: () => void }) {
             type="button"
             role="menuitem"
             autoFocus
-            className="w-full flex items-center gap-2 px-3 py-1.5 text-small text-left text-shodh-error hover:bg-shodh-raised-2 focus-visible:bg-shodh-raised-2 focus-visible:outline-none"
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-small text-start text-shodh-error hover:bg-shodh-raised-2 focus-visible:bg-shodh-raised-2 focus-visible:outline-none"
             onClick={() => {
               setOpen(false);
               onDisconnect();
@@ -117,7 +117,7 @@ function HeaderMenu({ onDisconnect }: { onDisconnect: () => void }) {
 function Breadcrumb({ onBack }: { onBack: () => void }) {
   return (
     <nav aria-label="Breadcrumb" className="flex items-center gap-1 text-small">
-      <button type="button" className={cn(QUIET_BUTTON, '-ml-2.5')} onClick={onBack} aria-label="Back to all connectors">
+      <button type="button" className={cn(QUIET_BUTTON, '-ms-2.5')} onClick={onBack} aria-label="Back to all connectors">
         <ArrowLeft className="w-3.5 h-3.5" aria-hidden="true" />
         Connectors
       </button>
@@ -262,9 +262,7 @@ export function SlackPage({
               Connected to {status.installation?.teamName} as @{status.installation?.botName}
             </h3>
             <p className="m-0 mt-1 text-small text-shodh-text-secondary max-w-[60ch]">
-              Next, pick the workspace Slack answers from and the channels it answers in. Until then the bot replies that it
-              isn’t set up yet.
-            </p>
+              Next: pick a workspace and channels.</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <button

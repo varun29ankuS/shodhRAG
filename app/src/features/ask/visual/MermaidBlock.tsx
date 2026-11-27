@@ -385,8 +385,8 @@ function VersionStepper({ record, onChoose }: { record: DiagramRecord; onChoose:
         <ChevronRight className="w-3.5 h-3.5" aria-hidden="true" />
       </button>
       {record.chosen > 0 && (
-        <button type="button" onClick={() => onChoose(0)} className={cn(TEXT_BUTTON, 'ml-1')}>
-          <RotateCcw className="w-3 h-3 mr-1" aria-hidden="true" />
+        <button type="button" onClick={() => onChoose(0)} className={cn(TEXT_BUTTON, 'ms-1')}>
+          <RotateCcw className="w-3 h-3 me-1" aria-hidden="true" />
           Use original
         </button>
       )}
@@ -519,7 +519,7 @@ function HintField({ label, placeholder, submitLabel, required, busy, attempt, s
             {s}
           </button>
         ))}
-        <span id={metaId} className="ml-auto text-caption text-shodh-text-muted tabular-nums">
+        <span id={metaId} className="ms-auto text-caption text-shodh-text-muted tabular-nums">
           Attempt {attempt} of {MAX_ATTEMPTS}
         </span>
       </div>
@@ -634,7 +634,7 @@ function MermaidFailure({ source, error, record, offer, list, live, notice, elig
     <FocusFrame noun="diagram" getTarget={getTarget} doubleClick={false} className="my-4">
       <figure className="m-0 rounded-xl border border-shodh-border bg-shodh-surface overflow-hidden">
         {/* Right padding keeps the text clear of the "Expand & ask" button. */}
-        <figcaption className="flex items-start gap-2 pl-3 pr-32 py-2 text-small text-shodh-text-secondary border-b border-shodh-border-subtle">
+        <figcaption className="flex items-start gap-2 ps-3 pe-32 py-2 text-small text-shodh-text-secondary border-b border-shodh-border-subtle">
           <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0 text-shodh-warning" aria-hidden="true" />
           <span>Diagram not drawn: {short}</span>
         </figcaption>
@@ -681,13 +681,13 @@ function ListTree({ list, renderInline, depth }: { list: DiagramList; renderInli
   return (
     <Tag
       className={cn(
-        'm-0 pl-5 space-y-1 marker:text-shodh-text-muted',
+        'm-0 ps-5 space-y-1 marker:text-shodh-text-muted',
         list.ordered ? 'list-decimal' : depth === 0 ? 'list-disc' : 'list-[circle]',
         depth > 0 && 'mt-1',
       )}
     >
       {list.items.map((item, i) => (
-        <li key={i} className="pl-0.5">
+        <li key={i} className="ps-0.5">
           {renderInline(item.text)}
           {item.children && <ListTree list={item.children} renderInline={renderInline} depth={depth + 1} />}
         </li>
@@ -704,7 +704,7 @@ function DiagramListView({ written, error, list, renderInline }: { written: stri
     <FocusFrame noun="diagram" getTarget={getTarget} doubleClick={false} className="my-4">
       <figure className="m-0 rounded-xl border border-shodh-border bg-shodh-surface overflow-hidden">
         {/* Right padding keeps the first item clear of the "Expand & ask" button. */}
-        <div className="pl-4 pr-32 py-3 text-body leading-relaxed text-shodh-text-secondary">
+        <div className="ps-4 pe-32 py-3 text-body leading-relaxed text-shodh-text-secondary">
           <ListTree list={list} renderInline={renderInline} depth={0} />
         </div>
         <figcaption className="flex items-center gap-1.5 px-3 py-2 border-t border-shodh-border-subtle text-caption text-shodh-text-muted">

@@ -49,7 +49,7 @@ export default function StayAvailable() {
       ) : (
         <SwitchRow
           label="Stay available for my phone"
-          description="Keeps this computer awake while it is plugged in, so your phone can ask it anything. On battery it sleeps as usual."
+          description={'Keeps this computer awake on power.'}
           checked={status?.enabled ?? false}
           disabled={saving || status === null || !status.supported}
           onChange={change}

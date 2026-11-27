@@ -107,7 +107,7 @@ export function ColumnDialog({
               <Dialog.Title className="text-body-lg font-semibold">{column ? 'Edit column' : 'New column'}</Dialog.Title>
               <Dialog.Description id={ids.desc} className="text-small text-shodh-text-muted">
                 {column
-                  ? 'Changing the question, kind, options or instructions asks this column again for every paper on the next fill. Cells you edited keep your values.'
+                  ? 'Asks every paper again on the next fill. Your edits stay.'
                   : 'A question asked of every paper in the table. Each answer comes with the quote it rests on.'}
               </Dialog.Description>
             </div>

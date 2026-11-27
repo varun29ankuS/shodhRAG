@@ -4,6 +4,7 @@ import { agentItemKey } from '../../lib/agentHighlight';
 import { SwitchRow } from '../../components/PrivacySettings';
 import { codeIntelApi, errorText } from './api';
 import type { CodeSkill } from './api';
+import { tr } from '../../i18n/tr';
 
 /** "obra/superpowers (MIT) · google/elephant-goldfish-model (Apache-2.0)". */
 function sourcesLine(skill: CodeSkill): string {
@@ -70,11 +71,9 @@ export default function CodeSkillsSettings() {
   return (
     <div className="flex flex-col gap-5">
       <div className="flex flex-col gap-1">
-        <h3 className="m-0 text-body font-semibold text-shodh-text">Building skills</h3>
+        <h3 className="m-0 text-body font-semibold text-shodh-text">{tr('settings.codeSkillsSettings.buildingSkills')}</h3>
         <p className="m-0 text-small text-shodh-text-muted">
-          Instructions the assistant follows in Code mode when a task calls for one: plan first, test first, find the
-          cause of a failure, check the work before calling it done, and have it reviewed. They never change the mode
-          or what needs your approval. A skill you turn off is not followed.
+          {tr('settings.codeSkillsSettings.instructionsTheAssistantFollowsIn')}
         </p>
       </div>
       {error && (
@@ -93,7 +92,7 @@ export default function CodeSkillsSettings() {
                 disabled={saving !== null}
                 onChange={enabled => toggle(skill, enabled)}
               />
-              <p className="m-0 text-caption text-shodh-text-faint">Written from {sourcesLine(skill)}</p>
+              <p className="m-0 text-caption text-shodh-text-faint">{tr('settings.codeSkillsSettings.writtenFrom')}{sourcesLine(skill)}</p>
             </li>
           ))}
         </ul>
@@ -101,12 +100,12 @@ export default function CodeSkillsSettings() {
       <div className="flex flex-col gap-3 border-t border-shodh-border-subtle pt-4">
         <SwitchRow
           label="Shorten command output"
-          description="In Code conversations the model reads command output without passing-test lines, and, after a successful run, without build progress. Errors, warnings and failing tests are kept, the model can read the full output, and you always see it. Each conversation can change this from its message box; this is what new ones start with."
+          description={'Trims passing tests and build progress for the model.'}
           checked={shortenByDefault ?? true}
           disabled={saving !== null || shortenByDefault === null}
           onChange={toggleDefault}
         />
-        <p className="m-0 text-small text-shodh-text-muted">The tokens saved show in each Code conversation and, in total, in Activity.</p>
+        <p className="m-0 text-small text-shodh-text-muted">{tr('settings.codeSkillsSettings.theTokensSavedShowIn')}</p>
       </div>
     </div>
   );

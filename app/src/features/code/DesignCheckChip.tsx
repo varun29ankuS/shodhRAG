@@ -109,7 +109,7 @@ export function DesignCheckChip({ conversationId, workspaceId, creates, answerRu
         ? `${badgeDetail(check)} Click to see the findings.`
         : creates
           ? 'Check this conversation’s creation with Shodh’s design rules. No model is used.'
-          : 'Check the UI files this conversation’s agent changed (before it has written any, the project’s changes since its branch started) with Shodh’s design rules. No model is used.'}
+          : 'Design rules check of this chat’s UI changes. No model.'}
       aria-label={check ? `${badgeText(check)}${errorWords}. Show the findings` : 'Run a design check'}
       className={cn(
         'inline-flex items-center gap-1 h-[26px] px-2 rounded-full text-caption font-medium border shrink-0 whitespace-nowrap tabular-nums transition-colors duration-micro',

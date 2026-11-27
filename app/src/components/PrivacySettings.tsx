@@ -8,6 +8,7 @@ import { MODE_ICONS } from '../features/agent/ModePicker';
 import type { Policy } from '../lib/appSettings';
 import { checkForUpdate, getUpdateStatus, setUpdateChecks } from '../lib/updates';
 import type { UpdateStatus } from '../lib/updates';
+import { tr } from '../i18n/tr';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
@@ -53,7 +54,7 @@ export function SwitchRow({ label, description, checked, disabled = false, onCha
           aria-hidden="true"
           className={cn(
             'absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-[left] duration-micro',
-            checked ? 'left-[18px]' : 'left-0.5',
+            checked ? 'start-[18px]' : 'start-0.5',
           )}
         />
       </button>
@@ -96,21 +97,21 @@ export default function PrivacySettings() {
   };
 
   if (!policy) {
-    return <p className="m-0 text-small text-shodh-text-muted">Loading…</p>;
+    return <p className="m-0 text-small text-shodh-text-muted">{tr('settings.privacySettings.loading')}</p>;
   }
 
   return (
     <div className="flex flex-col gap-5">
       <SwitchRow
         label="Local-only mode"
-        description="Nothing leaves this computer: the assistant cannot use the web, and only a local model (Ollama) may answer. Applies to the assistant in Ask."
+        description={'Ask’s assistant: nothing leaves this computer; local models only.'}
         checked={policy.localOnly}
         disabled={saving}
         onChange={localOnly => void change({ ...policy, localOnly })}
       />
       <SwitchRow
         label="Let the assistant use the web"
-        description="Allows web search, reading web pages, searching papers and downloading open files into your source folders. Every request is recorded in Usage & Audit."
+        description={'Web search, pages and papers. Every request is logged.'}
         checked={policy.webAccess && !policy.localOnly}
         disabled={saving || policy.localOnly}
         onChange={webAccess => void change({ ...policy, webAccess })}
@@ -162,10 +163,9 @@ function DefaultModeSettings() {
   return (
     <div role="radiogroup" aria-labelledby={titleId} aria-describedby={helpId} className="flex flex-col gap-2 pt-5 border-t border-shodh-border">
       <div>
-        <p id={titleId} className="m-0 text-body font-semibold text-shodh-text">Default mode</p>
+        <p id={titleId} className="m-0 text-body font-semibold text-shodh-text">{tr('settings.privacySettings.defaultMode')}</p>
         <p id={helpId} className="m-0 mt-0.5 text-small text-shodh-text-muted">
-          The mode a new conversation starts in; a conversation keeps its mode, and a change here never changes one that
-          has started. You can change a conversation&apos;s mode in the message box at any time. {MODE_FLOOR}
+          {tr('settings.privacySettings.theModeANewConversation')}{MODE_FLOOR}
         </p>
       </div>
       <div className="flex flex-col gap-1">
@@ -246,26 +246,23 @@ function CodeModeSettings() {
     <div className="flex flex-col gap-3 pt-5 border-t border-shodh-border">
       <SwitchRow
         label="Code mode"
-        description="Off: answers only read your files. On: a conversation in a workspace with one code folder can switch to Code, where the assistant edits files and runs commands in that folder."
+        description={'Lets a workspace chat edit files and run commands.'}
         checked={enabled}
         disabled={saving || confirming}
         onChange={next => (next ? setConfirming(true) : void save(false))}
       />
       {confirming && (
         <div role="group" aria-labelledby={explainId} className="flex flex-col gap-2 p-3 rounded-xl border border-shodh-border bg-shodh-raised">
-          <p id={explainId} className="m-0 text-small font-semibold text-shodh-text">Turn on Code mode?</p>
+          <p id={explainId} className="m-0 text-small font-semibold text-shodh-text">{tr('settings.privacySettings.turnOnCodeMode')}</p>
           <p className="m-0 text-small text-shodh-text-secondary">
-            In Code mode the assistant can change files in the workspace&apos;s code folder and run commands on this
-            computer, such as builds and tests. Each change and command asks you first unless the conversation&apos;s
-            mode lets it run (Accept edits, Auto), and the work goes on a separate branch you can discard. Only turn it on for code
-            you are happy to have changed.
+            {tr('settings.privacySettings.inCodeModeTheAssistant')}
           </p>
           <div className="flex flex-wrap items-center gap-2">
             <button type="button" className={BUTTON} onClick={() => void save(true)} disabled={saving}>
-              Turn on Code mode
+              {tr('settings.privacySettings.turnOnCodeMode2')}
             </button>
             <button type="button" className={BUTTON} onClick={() => setConfirming(false)} disabled={saving}>
-              Cancel
+              {tr('settings.privacySettings.cancel')}
             </button>
           </div>
         </div>
@@ -338,16 +335,16 @@ function UpdateSettings() {
     <div className="flex flex-col gap-3 pt-5 border-t border-shodh-border">
       <SwitchRow
         label="Check for updates"
-        description="A few minutes after start and then once a day, Shodh asks GitHub whether a newer version exists. Nothing about you or your documents is sent, and nothing is installed until you choose to. Never in Local-only mode."
+        description={'Checks GitHub daily, never in Local-only mode. Sends nothing about you; installs only when you choose.'}
         checked={status.checkAutomatically && !blocked}
         disabled={busy || blocked}
         onChange={enabled => void toggle(enabled)}
       />
       <div className="flex flex-wrap items-center gap-3">
         <button type="button" className={BUTTON} onClick={() => void checkNow()} disabled={busy || blocked}>
-          Check now
+          {tr('settings.privacySettings.checkNow')}
         </button>
-        <span className="text-small text-shodh-text-muted">Version {status.currentVersion}</span>
+        <span className="text-small text-shodh-text-muted">{tr('settings.privacySettings.version')}{status.currentVersion}</span>
       </div>
       {blocked ? (
         <p className="m-0 text-small text-shodh-text-muted">{status.blockedReason}</p>

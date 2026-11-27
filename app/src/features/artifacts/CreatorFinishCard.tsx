@@ -106,7 +106,7 @@ export function CreatorFinishCard({ conversationId, card, onChange, disabled }: 
       {card.choices.length > 0 && (
         <div className="flex flex-col gap-1">
           <p className="m-0 text-caption font-semibold text-shodh-text-secondary">Here&apos;s what I chose</p>
-          <ul className="m-0 pl-5 flex flex-col gap-0.5 text-small text-shodh-text-secondary list-disc">
+          <ul className="m-0 ps-5 flex flex-col gap-0.5 text-small text-shodh-text-secondary list-disc">
             {card.choices.map(choice => (
               <li key={choice}>{choice}</li>
             ))}

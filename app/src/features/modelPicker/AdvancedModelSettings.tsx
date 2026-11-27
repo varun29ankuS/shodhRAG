@@ -28,7 +28,7 @@ export function AdvancedModelSettings({ picker }: { picker: ModelPickerHandle })
           aria-expanded={open}
           aria-controls={panelId}
           onClick={() => setOpen(o => !o)}
-          className={cn('w-full flex items-center gap-2 px-5 py-4 text-left text-body-lg font-semibold text-shodh-text rounded-[14px]', FOCUS_RING)}
+          className={cn('w-full flex items-center gap-2 px-5 py-4 text-start text-body-lg font-semibold text-shodh-text rounded-[14px]', FOCUS_RING)}
         >
           <ChevronRight className={cn('w-4 h-4 text-shodh-text-muted transition-transform duration-micro', open && 'rotate-90')} aria-hidden="true" />
           Advanced

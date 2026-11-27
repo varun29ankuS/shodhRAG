@@ -1,3 +1,4 @@
+import { formatNumber } from '../../i18n/format.ts';
 /**
  * Words for Code mode's tokens-saved counter (per conversation, never per
  * answer) and its running total in Activity. Every number is an estimate, so
@@ -15,11 +16,11 @@ export interface SavingsCounts {
 /** 41200 → "≈41,200". */
 export function approxTokens(n: number): string {
   const whole = Math.max(0, Math.round(n));
-  return `≈${whole.toLocaleString('en-US')}`;
+  return `≈${formatNumber(whole)}`;
 }
 
 function plural(n: number, word: string): string {
-  return `${n.toLocaleString('en-US')} ${word}${n === 1 ? '' : 's'}`;
+  return `${formatNumber(n)} ${word}${n === 1 ? '' : 's'}`;
 }
 
 /** The status line's chip: "≈41,200 tokens saved", or whether shortening is on before a command ran. */

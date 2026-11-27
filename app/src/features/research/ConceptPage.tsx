@@ -91,7 +91,7 @@ export function ConceptPage({
         <ul className="flex flex-col divide-y divide-shodh-border-subtle rounded-xl border border-shodh-border">
           {v.papers.map(p => (
             <li key={p.id}>
-              <button type="button" onClick={() => onOpenPaper(p.id)} className={cn('w-full text-left px-3 py-2 hover:bg-shodh-raised', FOCUS_RING)}>
+              <button type="button" onClick={() => onOpenPaper(p.id)} className={cn('w-full text-start px-3 py-2 hover:bg-shodh-raised', FOCUS_RING)}>
                 <span className="block text-small text-shodh-text truncate">{title(p)}</span>
                 <span className="block text-caption text-shodh-text-muted">{[p.year, p.inLibrary ? 'in your library' : null].filter(Boolean).join(' · ')}</span>
               </button>

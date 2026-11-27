@@ -225,9 +225,7 @@ function InstructionsEditor({ workspace, onSaved }: { workspace: WorkspaceDetail
         <div>
           <h3 id={`${ids.text}-title`} className={SECTION_TITLE}>Instructions</h3>
           <p id={ids.help} className="m-0 text-small text-shodh-text-muted">
-            Sent with every question in this workspace, marked as your instructions. They say how to answer; sources
-            still decide what is true. The assistant can propose changes, which you approve and can see as a diff.
-          </p>
+            Sent with every question here. Sources decide what is true.</p>
         </div>
       </div>
       {stale && (
@@ -236,7 +234,7 @@ function InstructionsEditor({ workspace, onSaved }: { workspace: WorkspaceDetail
           the next version; the history keeps both.
           <button
             type="button"
-            className={cn(QUIET_BUTTON, 'ml-2 h-7')}
+            className={cn(QUIET_BUTTON, 'ms-2 h-7')}
             onClick={() => {
               setText(workspace.instructions);
               setStale(false);
@@ -267,7 +265,7 @@ function InstructionsEditor({ workspace, onSaved }: { workspace: WorkspaceDetail
             <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" /> Undo changes
           </button>
         )}
-        <span id={ids.count} className={cn('ml-auto text-caption', tooLong ? 'text-shodh-error' : 'text-shodh-text-muted')}>
+        <span id={ids.count} className={cn('ms-auto text-caption', tooLong ? 'text-shodh-error' : 'text-shodh-text-muted')}>
           {`${count.toLocaleString()} / ${MAX_INSTRUCTIONS_CHARS.toLocaleString()} characters`}
           {workspace.instructionsVersion > 0 ? ` · version ${workspace.instructionsVersion}` : ''}
         </span>
@@ -301,7 +299,7 @@ function InstructionsEditor({ workspace, onSaved }: { workspace: WorkspaceDetail
                       {v.version === workspace.instructionsVersion && (
                         <span className="text-caption px-1.5 py-0.5 rounded-full bg-shodh-accent-soft text-shodh-accent-text">Current</span>
                       )}
-                      <span className="ml-auto flex items-center gap-1">
+                      <span className="ms-auto flex items-center gap-1">
                         <button
                           type="button"
                           className={cn(QUIET_BUTTON, 'h-7')}

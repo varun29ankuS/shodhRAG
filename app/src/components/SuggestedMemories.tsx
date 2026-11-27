@@ -388,7 +388,7 @@ function SuggestionItem({
           </div>
         </form>
       ) : pending ? (
-        <div className="flex flex-wrap gap-1 -ml-2">
+        <div className="flex flex-wrap gap-1 -ms-2">
           <button type="button" className={ICON_BUTTON} onClick={() => void accept()} disabled={busy}>
             <Check aria-hidden="true" className="w-3.5 h-3.5" /> Accept
           </button>
@@ -407,7 +407,7 @@ function SuggestionItem({
           </button>
         </div>
       ) : suggestion.undoable ? (
-        <div className="flex flex-wrap gap-1 -ml-2">
+        <div className="flex flex-wrap gap-1 -ms-2">
           <button
             type="button"
             className={ICON_BUTTON}

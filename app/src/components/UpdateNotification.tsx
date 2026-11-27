@@ -26,7 +26,7 @@ export function UpdateNotification() {
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
         exit={{ opacity: 0, y: -20 }}
-        className="fixed top-4 right-4 z-50 w-96"
+        className="fixed top-4 end-4 z-50 w-96"
       >
         <div
           className="rounded-xl shadow-2xl border-2 overflow-hidden"
@@ -134,12 +134,12 @@ export function UpdateNotification() {
               >
                 {downloading ? (
                   <>
-                    <RefreshCw className="w-4 h-4 mr-2 animate-spin motion-reduce:animate-none" />
+                    <RefreshCw className="w-4 h-4 me-2 animate-spin motion-reduce:animate-none" />
                     {installing ? 'Installing…' : 'Downloading…'}
                   </>
                 ) : (
                   <>
-                    <Download className="w-4 h-4 mr-2" />
+                    <Download className="w-4 h-4 me-2" />
                     Update now
                   </>
                 )}

@@ -126,9 +126,7 @@ export function FillDialog({
             <div className="flex-1 min-w-0">
               <Dialog.Title className="text-body-lg font-semibold">Fill the table</Dialog.Title>
               <Dialog.Description id={descriptionId} className="text-small text-shodh-text-muted">
-                The model reads each paper's best passages for your columns and answers with a quote, which Shodh
-                checks word for word against the paper. Cells you edited are never overwritten.
-              </Dialog.Description>
+                Answers with quotes, checked against the paper. Edits stay.</Dialog.Description>
             </div>
             <Dialog.Close aria-label="Close" className={cn(CLOSE_BUTTON, FOCUS_RING)}>
               <X className="w-4 h-4" aria-hidden="true" />

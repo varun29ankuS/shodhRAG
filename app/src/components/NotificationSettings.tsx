@@ -15,6 +15,7 @@ import {
   withSwitch,
 } from '../features/notifications/notificationPrefs';
 import type { NotificationKey, NotificationPrefs } from '../features/notifications/notificationPrefs';
+import { tr } from '../i18n/tr';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
@@ -83,23 +84,22 @@ export default function NotificationSettings() {
   };
 
   if (!prefs) {
-    return <p className="m-0 text-small text-shodh-text-muted">Loading…</p>;
+    return <p className="m-0 text-small text-shodh-text-muted">{tr('settings.notificationSettings.loading')}</p>;
   }
 
   return (
     <div className="flex flex-col gap-5">
       <div className="flex items-center gap-1">
-        <p className="m-0 text-small text-shodh-text-muted">Shown only while Shodh&apos;s window is out of sight.</p>
-        <InfoPopover label="About notifications" title="When notifications show">
+        <p className="m-0 text-small text-shodh-text-muted">{tr('settings.notificationSettings.shownOnlyWhileShodhS')}</p>
+        <InfoPopover label="About notifications" title={tr('settings.notificationSettings.whenNotificationsShow')}>
           <p className="m-0">
-            Shodh shows a desktop notification only while its window is minimised, in the tray or behind another window.
-            While you look at it, the Inbox and the messages in the window say the same.
+            {tr('settings.notificationSettings.shodhShowsADesktopNotification')}
           </p>
-          <p className="m-0">Notifications name a task, a folder, a paper or a conversation, never what your documents or answers say.</p>
+          <p className="m-0">{tr('settings.notificationSettings.notificationsNameATaskA')}</p>
         </InfoPopover>
       </div>
       {notificationRows(prefs, saving).map(row => (
-        <div key={row.key} className={cn(row.nested && 'pl-6')}>
+        <div key={row.key} className={cn(row.nested && 'ps-6')}>
           <SwitchRow
             label={row.label}
             description={row.description}
@@ -118,10 +118,10 @@ export default function NotificationSettings() {
             aria-disabled={testing}
             aria-describedby={helpId}
           >
-            Send a test notification
+            {tr('settings.notificationSettings.sendATestNotification')}
           </button>
           <button type="button" className={BUTTON} onClick={openSystemSettings} aria-describedby={helpId}>
-            Open system notification settings
+            {tr('settings.notificationSettings.openSystemNotificationSettings')}
           </button>
         </div>
         <p id={helpId} className="m-0 text-small text-shodh-text-muted">{TEST_HELP}</p>

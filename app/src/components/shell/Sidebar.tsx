@@ -48,6 +48,7 @@ import {
   opensNewMenu,
 } from '../../lib/newMenu';
 import type { NewMenuItemId } from '../../lib/newMenu';
+import { tr } from '../../i18n/tr';
 
 export interface SidebarSource {
   id: string;
@@ -270,7 +271,7 @@ export default function Sidebar({
         'shrink-0 inline-flex items-center justify-center transition-colors duration-micro',
         collapsed
           ? 'w-10 h-6 rounded-md text-shodh-text-muted hover:bg-shodh-raised-2/60 hover:text-shodh-text'
-          : 'w-8 h-9 short:h-8 rounded-r-[9px] border-l border-shodh-accent-hover hover:bg-shodh-accent-hover',
+          : 'w-8 h-9 short:h-8 rounded-e-[9px] border-s border-shodh-accent-hover hover:bg-shodh-accent-hover',
         FOCUS_RING
       )}
     >
@@ -282,8 +283,8 @@ export default function Sidebar({
 
   return (
     <nav
-      aria-label="Primary"
-      className="h-full shrink-0 flex flex-col border-r border-shodh-border bg-shodh-sidebar text-shodh-text select-none overflow-hidden transition-[width] duration-panel ease-standard"
+      aria-label={tr('shell.sidebar.primary')}
+      className="h-full shrink-0 flex flex-col border-e border-shodh-border bg-shodh-sidebar text-shodh-text select-none overflow-hidden transition-[width] duration-panel ease-standard"
       style={{ width: collapsed ? COLLAPSED_WIDTH : EXPANDED_WIDTH }}
     >
       {/* Brand */}
@@ -301,7 +302,7 @@ export default function Sidebar({
         />
         {!collapsed && (
           <div className="flex flex-col min-w-0 flex-1 leading-tight">
-            <span className="text-body-lg font-bold tracking-[0.02em]">Shodh</span>
+            <span className="text-body-lg font-bold tracking-[0.02em]">{tr('shell.sidebar.shodh')}</span>
             <span className="text-caption text-shodh-text-faint" lang="hi">शोध</span>
           </div>
         )}
@@ -334,15 +335,15 @@ export default function Sidebar({
               'flex items-center gap-2 h-9 short:h-8 text-small font-semibold transition-colors duration-micro',
               collapsed
                 ? 'w-10 justify-center rounded-[9px] bg-shodh-accent text-shodh-on-accent hover:bg-shodh-accent-hover'
-                : 'flex-1 min-w-0 px-3 rounded-l-[9px] hover:bg-shodh-accent-hover',
+                : 'flex-1 min-w-0 px-3 rounded-s-[9px] hover:bg-shodh-accent-hover',
               FOCUS_RING
             )}
           >
             <Plus className="w-[15px] h-[15px] shrink-0" strokeWidth={2.2} aria-hidden="true" />
             {!collapsed && (
               <>
-                <span>New chat</span>
-                <Kbd shortcut="newChat" onAccent className="ml-auto" />
+                <span>{tr('shell.sidebar.newChat')}</span>
+                <Kbd shortcut="newChat" onAccent className="ms-auto" />
               </>
             )}
           </button>
@@ -353,7 +354,7 @@ export default function Sidebar({
             ref={newMenuRef}
             id={newMenuId}
             role="menu"
-            aria-label="New"
+            aria-label={tr('shell.sidebar.new')}
             onKeyDown={onNewMenuKeyDown}
             className={cn(POPOVER, 'min-w-[220px]')}
             style={newMenu.pos ? { left: newMenu.pos.left, top: newMenu.pos.top } : { opacity: 0, left: 0, top: 0 }}

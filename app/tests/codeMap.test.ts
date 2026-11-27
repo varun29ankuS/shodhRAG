@@ -68,7 +68,8 @@ test('the details say what is indexed, when, and what the last check did', () =>
 test('times read in plain words', () => {
   assert.equal(sinceText('2026-11-08T11:59:50Z', NOW), 'just now');
   assert.equal(sinceText('2026-11-08T10:00:00Z', NOW), '2 hours ago');
-  assert.equal(sinceText('2026-11-04T10:00:00Z', NOW), 'on 4 Nov');
+  // The date as the user's locale writes a day and a month ("4 Nov", "Nov 4").
+  assert.equal(sinceText('2026-11-04T10:00:00Z', NOW), `on ${new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short' }).format(new Date('2026-11-04T10:00:00Z'))}`);
   assert.equal(sinceText('nonsense', NOW), null);
   assert.equal(sinceText(null, NOW), null);
 });

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type React from 'react';
 import { cn } from '../../lib/utils';
 import { HTML_PREVIEW_HEIGHT_CLASS, HTML_PREVIEW_SANDBOX, previewDocument } from './htmlPreview';
+import { tr } from '../../i18n/tr';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-shodh-surface';
@@ -54,12 +55,12 @@ export function HtmlPreviewBlock({ code, language, actions, raw, codeRef }: Html
 
   return (
     <div data-testid="html-preview">
-      <div className="flex items-center justify-between gap-2 pl-3 pr-1.5 h-8 border-b border-shodh-border-subtle bg-shodh-raised">
+      <div className="flex items-center justify-between gap-2 ps-3 pe-1.5 h-8 border-b border-shodh-border-subtle bg-shodh-raised">
         <span className="font-mono text-caption uppercase tracking-wider text-shodh-text-muted" data-answer-ui="">{language}</span>
         <span className="inline-flex items-center gap-1" data-answer-ui="">
           <span
             role="radiogroup"
-            aria-label="Show"
+            aria-label={tr('ask.htmlPreviewBlock.show')}
             className="inline-flex items-center gap-0.5 p-0.5 rounded-lg bg-shodh-raised-2"
             onKeyDown={e => {
               if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
@@ -77,7 +78,7 @@ export function HtmlPreviewBlock({ code, language, actions, raw, codeRef }: Html
       </div>
       {view === 'preview' ? (
         <iframe
-          title="HTML preview"
+          title={tr('ask.htmlPreviewBlock.htmlPreview')}
           sandbox={HTML_PREVIEW_SANDBOX}
           referrerPolicy="no-referrer"
           srcDoc={previewDocument(shown)}

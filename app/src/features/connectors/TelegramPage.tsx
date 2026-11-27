@@ -47,6 +47,7 @@ import {
   tabClass,
 } from './ui';
 import type { TelegramStatusState } from './useTelegramStatus';
+import { InfoPopover } from '../../components/ui/InfoPopover';
 
 interface TabProps {
   status: TelegramStatus;
@@ -132,7 +133,7 @@ function OverviewTab({ status, now, onTab }: TabProps & { onTab: (tab: TelegramT
             {status.groups.filter(g => g.allowed).length === 1 ? 'group' : 'groups'}
             {waitingGroups(status).length > 0 && `, ${waitingGroups(status).length} waiting`}
           </p>
-          <button type="button" className={cn(QUIET_BUTTON, 'self-start -ml-2.5')} onClick={() => onTab('people')}>
+          <button type="button" className={cn(QUIET_BUTTON, 'self-start -ms-2.5')} onClick={() => onTab('people')}>
             Open People & groups
           </button>
         </Panel>
@@ -178,14 +179,14 @@ function OwnerSection(props: TabProps) {
   return (
     <Section
       title="You"
-      description="Your own chat with the bot is your Shodh: all your workspaces and memories, the model you chose, with sources. It can’t change anything."
+      description={'Your Shodh in Telegram. It can’t change anything.'}
     >
       {status.owner ? (
         <div className="flex flex-wrap items-center gap-3 rounded-lg border border-shodh-border-subtle bg-shodh-surface px-4 py-3">
           <CheckCircle2 className="w-4 h-4 text-shodh-success shrink-0" aria-hidden="true" />
           <span className="text-small font-medium text-shodh-text">{ownerLine(status)}</span>
           {confirm ? (
-            <span role="alertdialog" aria-label="Unlink your account" className="ml-auto flex items-center gap-2">
+            <span role="alertdialog" aria-label="Unlink your account" className="ms-auto flex items-center gap-2">
               <span className="text-small text-shodh-text-secondary">The bot will refuse this account.</span>
               <button
                 type="button"
@@ -202,7 +203,7 @@ function OwnerSection(props: TabProps) {
               <button type="button" className={QUIET_BUTTON} onClick={() => setConfirm(false)}>Cancel</button>
             </span>
           ) : (
-            <button type="button" className={cn(QUIET_BUTTON, 'ml-auto')} disabled={busy} onClick={() => setConfirm(true)}>
+            <button type="button" className={cn(QUIET_BUTTON, 'ms-auto')} disabled={busy} onClick={() => setConfirm(true)}>
               Unlink
             </button>
           )}
@@ -339,8 +340,7 @@ function GroupsSection(props: TabProps) {
     <Section title="Groups" description={groupPrivacyLine(status)}>
       {status.groups.length === 0 ? (
         <p className="m-0 text-small text-shodh-text-muted">
-          Add the bot to a Telegram group and it appears here, waiting for you. Nobody there gets an answer until you allow it.
-        </p>
+          Groups wait here until you allow them.</p>
       ) : (
         <ul className="m-0 p-0 list-none flex flex-col divide-y divide-shodh-border-subtle rounded-lg border border-shodh-border-subtle bg-shodh-surface">
           {[...waiting, ...allowed].map(g => (
@@ -490,9 +490,8 @@ function DisconnectConfirm({ status, busy, onDone, run }: { status: TelegramStat
       <div>
         <p className="m-0 text-body font-semibold text-shodh-text">Disconnect {bot}?</p>
         <p className="m-0 mt-0.5 text-small text-shodh-text-secondary max-w-[68ch]">
-          The token is deleted from this computer and the bot stops answering, you and everyone you allowed. Keep the Telegram
-          conversations in Shodh’s sidebar, or remove them too? Messages already in Telegram stay there.
-        </p>
+          Deletes the token; the bot stops. Keep its chats in Shodh?{' '}<InfoPopover label="What happens" title="What happens">The token is deleted from this computer and the bot stops answering, you and everyone you allowed. Keep the Telegram
+          conversations in Shodh’s sidebar, or remove them too? Messages already in Telegram stay there.</InfoPopover></p>
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <button type="button" className={OUTLINE_BUTTON} disabled={busy} autoFocus onClick={() => run(false)}>
@@ -519,7 +518,7 @@ function HeaderMenu({ onDisconnect, link }: { onDisconnect: () => void; link: st
     document.addEventListener('mousedown', onDown);
     return () => document.removeEventListener('mousedown', onDown);
   }, [open]);
-  const item = 'w-full flex items-center gap-2 px-3 py-1.5 text-small text-left hover:bg-shodh-raised-2 focus-visible:bg-shodh-raised-2 focus-visible:outline-none';
+  const item = 'w-full flex items-center gap-2 px-3 py-1.5 text-small text-start hover:bg-shodh-raised-2 focus-visible:bg-shodh-raised-2 focus-visible:outline-none';
   return (
     <div ref={menuRef} className="relative shrink-0">
       <button ref={buttonRef} type="button" className={cn(QUIET_BUTTON, 'w-9 h-9 justify-center px-0')} aria-label="Telegram options" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(o => !o)}>
@@ -529,7 +528,7 @@ function HeaderMenu({ onDisconnect, link }: { onDisconnect: () => void; link: st
         <div
           role="menu"
           aria-label="Telegram options"
-          className="shell-pop absolute right-0 top-10 z-50 min-w-[200px] py-1 rounded-lg border border-shodh-border-strong bg-shodh-raised shadow-lg"
+          className="shell-pop absolute end-0 top-10 z-50 min-w-[200px] py-1 rounded-lg border border-shodh-border-strong bg-shodh-raised shadow-lg"
           onKeyDown={e => {
             if (e.key === 'Escape') {
               e.preventDefault();
@@ -575,7 +574,7 @@ function HeaderMenu({ onDisconnect, link }: { onDisconnect: () => void; link: st
 function Breadcrumb({ onBack }: { onBack: () => void }) {
   return (
     <nav aria-label="Breadcrumb" className="flex items-center gap-1 text-small">
-      <button type="button" className={cn(QUIET_BUTTON, '-ml-2.5')} onClick={onBack} aria-label="Back to all connectors">
+      <button type="button" className={cn(QUIET_BUTTON, '-ms-2.5')} onClick={onBack} aria-label="Back to all connectors">
         <ArrowLeft className="w-3.5 h-3.5" aria-hidden="true" />
         Connectors
       </button>
@@ -713,9 +712,7 @@ export function TelegramPage({
           <div>
             <h3 id="telegram-linked" className="m-0 text-body-lg font-semibold text-shodh-text">{ownerLine(status)}</h3>
             <p className="m-0 mt-1 text-small text-shodh-text-secondary max-w-[60ch]">
-              Ask anything in that chat: Shodh answers from all your workspaces and memories, with sources. Send /new for a fresh
-              conversation. Your Telegram conversations appear in Shodh’s sidebar too.
-            </p>
+              Ask in that chat. /new starts fresh.</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <button type="button" className={PRIMARY_BUTTON} autoFocus onClick={() => { setJustLinked(false); onTab('overview'); }}>

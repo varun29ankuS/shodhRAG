@@ -349,7 +349,7 @@ export function SimulationPlayer({
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="min-h-[28px] flex items-baseline pr-28">
+      <div className="min-h-[28px] flex items-baseline pe-28">
         {model.title && <h4 className="m-0 text-body font-semibold text-shodh-text">{model.title}</h4>}
       </div>
       <div ref={hostRef} className="w-full flex justify-center">
@@ -396,7 +396,7 @@ export function SimulationPlayer({
           <Square className="w-3.5 h-3.5" aria-hidden="true" />
           Stop
         </button>
-        <span className="ml-auto font-mono text-caption tabular-nums text-shodh-text-muted" aria-hidden="true">
+        <span className="ms-auto font-mono text-caption tabular-nums text-shodh-text-muted" aria-hidden="true">
           {`t = ${formatNumber(t, 3)} s`}
         </span>
       </div>

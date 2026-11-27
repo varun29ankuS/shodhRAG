@@ -113,8 +113,7 @@ export function TelegramSetup({
     <div className="flex flex-col gap-5">
       {localOnly && (
         <Callout tone="neutral" role="status">
-          Local-only mode is on, so Shodh does not connect to Telegram. Turn it off in Settings → Privacy to set Telegram up.
-        </Callout>
+          Off in Local-only mode.</Callout>
       )}
 
       <nav aria-label="Setup progress" className="flex flex-col gap-2">
@@ -135,7 +134,7 @@ export function TelegramSetup({
                   disabled={!reachable || busy || here}
                   aria-current={here ? 'step' : undefined}
                   onClick={() => go(s.step)}
-                  className={cn('w-full flex flex-col gap-1.5 text-left rounded-md disabled:cursor-default', FOCUS_RING)}
+                  className={cn('w-full flex flex-col gap-1.5 text-start rounded-md disabled:cursor-default', FOCUS_RING)}
                 >
                   <span
                     aria-hidden="true"
@@ -145,7 +144,7 @@ export function TelegramSetup({
                     )}
                   />
                   <span className={cn('hidden sm:block truncate text-caption', here ? 'text-shodh-text font-medium' : 'text-shodh-text-muted')}>
-                    {done && <Check className="inline w-3 h-3 mr-1 -mt-0.5" aria-hidden="true" />}
+                    {done && <Check className="inline w-3 h-3 me-1 -mt-0.5" aria-hidden="true" />}
                     {s.title}
                     <span className="sr-only">{done ? ' (done)' : here ? ' (current)' : ''}</span>
                   </span>
@@ -176,7 +175,7 @@ export function TelegramSetup({
               </button>
               <span aria-live="polite" className="sr-only">{copied ? 'The link to @BotFather was copied.' : ''}</span>
             </div>
-            <ol className="m-0 pl-5 list-decimal flex flex-col gap-1 text-small text-shodh-text-secondary max-w-[64ch]">
+            <ol className="m-0 ps-5 list-decimal flex flex-col gap-1 text-small text-shodh-text-secondary max-w-[64ch]">
               <li>Send <code className="font-mono text-shodh-text">/newbot</code> to @BotFather.</li>
               <li>Name it (for example “Shodh”), then choose a username ending in “bot”.</li>
               <li>Keep the reply open: it holds the token for the next step.</li>
@@ -202,9 +201,9 @@ export function TelegramSetup({
                   aria-invalid={check.problem !== null}
                   aria-describedby={hintId}
                   onChange={e => onWizard({ ...wizard, token: e.target.value, error: null })}
-                  className={cn(INPUT, 'font-mono pr-9', check.problem && 'border-shodh-error')}
+                  className={cn(INPUT, 'font-mono pe-9', check.problem && 'border-shodh-error')}
                 />
-                {check.ok && <Check className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-shodh-success" aria-label="Looks right" />}
+                {check.ok && <Check className="absolute end-3 top-1/2 -translate-y-1/2 w-4 h-4 text-shodh-success" aria-label="Looks right" />}
               </div>
               {check.problem ? (
                 <p id={hintId} role="alert" className="m-0 text-caption text-shodh-error">{check.problem}</p>
@@ -242,12 +241,12 @@ export function TelegramSetup({
               <p className="m-0 text-caption text-shodh-text-muted" role="status" aria-live="polite">
                 Waiting for you to press Start in Telegram…
               </p>
-              <button type="button" className={cn(QUIET_BUTTON, 'ml-auto')} onClick={onLater}>
+              <button type="button" className={cn(QUIET_BUTTON, 'ms-auto')} onClick={onLater}>
                 Link later
               </button>
             </>
           ) : (
-            <button type="submit" className={cn(PRIMARY_BUTTON, 'ml-auto')} disabled={busy || localOnly || (step === 2 && !check.ok)}>
+            <button type="submit" className={cn(PRIMARY_BUTTON, 'ms-auto')} disabled={busy || localOnly || (step === 2 && !check.ok)}>
               {busy && <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />}
               {step === 2 ? (busy ? 'Checking with Telegram…' : 'Connect') : 'I have the token'}
             </button>

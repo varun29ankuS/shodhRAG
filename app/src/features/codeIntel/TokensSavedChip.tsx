@@ -8,6 +8,7 @@ import type { AgentEventEnvelope } from '../agent/events';
 import { codeIntelApi, errorText } from './api';
 import type { ConversationSavings } from './api';
 import { chipLabel, sessionDetail, sessionSentence, showsChip } from './format';
+import { InfoPopover } from '../../components/ui/InfoPopover';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-shodh-surface';
@@ -130,17 +131,16 @@ export function TokensSavedChip({ conversationId, answerRunning, onOpenActivity 
           id={popoverId}
           role="dialog"
           aria-labelledby={headingId}
-          className="absolute bottom-full left-0 mb-2 z-40 w-[340px] max-w-[calc(100vw-32px)] rounded-[14px] border border-shodh-border bg-shodh-raised p-3.5 shadow-[0_12px_40px_rgba(0,0,0,0.35)] flex flex-col gap-3"
+          className="absolute bottom-full start-0 mb-2 z-40 w-[340px] max-w-[calc(100vw-32px)] rounded-[14px] border border-shodh-border bg-shodh-raised p-3.5 shadow-[0_12px_40px_rgba(0,0,0,0.35)] flex flex-col gap-3"
         >
           <h2 id={headingId} className="m-0 text-small font-semibold text-shodh-text tabular-nums">
             {sessionSentence(view)}
           </h2>
           <p className="m-0 text-small text-shodh-text-secondary tabular-nums">{sessionDetail(view)}</p>
           <p className="m-0 text-small text-shodh-text-muted">
-            Shodh removes passing-test lines, and after a successful run build progress, from what the model reads of a
+            Passing tests and build progress trimmed for the model.{' '}<InfoPopover label="What is trimmed" title="What is trimmed">Shodh removes passing-test lines, and after a successful run build progress, from what the model reads of a
             command&apos;s output. Errors, warnings and failing tests are kept, and the model can read the full output.
-            You always see it.
-          </p>
+            You always see it.</InfoPopover></p>
           <p className="m-0 text-caption text-shodh-text-faint">{view.method}</p>
           <SwitchRow
             label="Shorten command output"

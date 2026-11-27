@@ -56,7 +56,7 @@ export function WebSources({ sources, provider }: WebSourcesProps) {
               type="button"
               onClick={() => void openExternal(s.url, effects.openUrl)}
               title={s.url}
-              className={cn('flex items-baseline gap-1.5 min-w-0 text-left rounded-sm hover:underline', FOCUS_RING)}
+              className={cn('flex items-baseline gap-1.5 min-w-0 text-start rounded-sm hover:underline', FOCUS_RING)}
             >
               <span className="shrink-0 px-1 rounded-[4px] border border-dashed border-shodh-info text-shodh-info text-caption font-bold tabular-nums">
                 {s.n}
@@ -66,7 +66,7 @@ export function WebSources({ sources, provider }: WebSourcesProps) {
               <span className="sr-only">(opens in your browser)</span>
             </button>
             {s.snippet && (
-              <p className="ml-7 text-caption text-shodh-text-muted line-clamp-2 whitespace-normal">{s.snippet}</p>
+              <p className="ms-7 text-caption text-shodh-text-muted line-clamp-2 whitespace-normal">{s.snippet}</p>
             )}
           </li>
         ))}
@@ -88,7 +88,7 @@ export function AttributionFrame({ html }: { html: string }) {
       sandbox=""
       referrerPolicy="no-referrer"
       srcDoc={html}
-      className="mt-1 ml-4.5 w-[calc(100%-18px)] h-[56px] rounded-md border border-shodh-border-subtle bg-white"
+      className="mt-1 ms-4.5 w-[calc(100%-18px)] h-[56px] rounded-md border border-shodh-border-subtle bg-white"
     />
   );
 }

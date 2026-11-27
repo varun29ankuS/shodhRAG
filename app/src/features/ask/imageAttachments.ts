@@ -1,3 +1,4 @@
+import { formatNumber } from '../../i18n/format.ts';
 /**
  * Text read from an image (pasted into the composer, added with the image button, or
  * dropped on the window) waits as an attachment of the conversation's next question:
@@ -48,9 +49,9 @@ const MESSAGE_LEAD: Record<ImageTextOrigin, string> = {
 export function attachmentLabel(attachment: AttachedContext): string {
   const count = attachment.text.length;
   if (attachment.origin === 'connector') {
-    return `Continued conversation · ${count.toLocaleString('en-US')} ${count === 1 ? 'character' : 'characters'}`;
+    return `Continued conversation · ${formatNumber(count)} ${count === 1 ? 'character' : 'characters'}`;
   }
-  return `Text from ${CHIP_NOUN[attachment.origin]} · ${count.toLocaleString('en-US')} ${count === 1 ? 'character' : 'characters'}`;
+  return `Text from ${CHIP_NOUN[attachment.origin]} · ${formatNumber(count)} ${count === 1 ? 'character' : 'characters'}`;
 }
 
 /** What goes out with a question: the attachments with text, without their chip ids. */

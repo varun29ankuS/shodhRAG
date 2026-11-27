@@ -232,7 +232,7 @@ export function LibraryView({
       }
     >
 
-        <SetupCard />
+        <SetupCard brief />
 
         <CpuSearchNotice />
 
@@ -362,7 +362,7 @@ function UnlistedFilesCard({
           </li>
         ))}
         {rest.length > 0 && (
-          <li className="text-small text-shodh-text-muted pl-6">
+          <li className="text-small text-shodh-text-muted ps-6">
             {`and ${countOf(rest.length, 'more folder')} (${restFiles.toLocaleString()})`}
           </li>
         )}
@@ -642,7 +642,7 @@ function FolderCard({ source, focused, browseDisabled, onBrowse, onReindex, onTo
           onClick={onRemove}
           aria-label={`Remove ${source.name} from the Library`}
           title="Remove from Library"
-          className={cn(QUIET_BUTTON, 'ml-auto text-shodh-error hover:text-shodh-error')}
+          className={cn(QUIET_BUTTON, 'ms-auto text-shodh-error hover:text-shodh-error')}
         >
           <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
         </button>

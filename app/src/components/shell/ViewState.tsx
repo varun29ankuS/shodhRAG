@@ -2,6 +2,7 @@ import type React from 'react';
 import { AlertTriangle, Inbox, Loader2, RotateCcw, WifiOff } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { cn } from '../../lib/utils';
+import { tr } from '../../i18n/tr';
 
 /** What a view shows in place of its content. */
 export type ViewStateKind = 'empty' | 'loading' | 'error' | 'offline';
@@ -64,7 +65,7 @@ export function ViewState({ kind, title, detail = null, action, onRetry, icon, c
           className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border border-shodh-border bg-shodh-surface text-small font-medium text-shodh-text hover:bg-shodh-raised transition-colors duration-micro focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
-          Try again
+          {tr('shell.viewState.tryAgain')}
         </button>
       )}
     </div>

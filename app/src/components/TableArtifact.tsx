@@ -34,7 +34,7 @@ export function TableArtifact({ artifact }: TableArtifactProps) {
               {headers.map((header, i) => (
                 <th
                   key={i}
-                  className="px-4 py-3 text-left font-semibold border-b-2"
+                  className="px-4 py-3 text-start font-semibold border-b-2"
                   style={{
                     borderColor: 'var(--c-border-strong)',
                     backgroundColor: 'var(--c-raised)',

@@ -8,6 +8,7 @@ import { codeMapApi, errorText } from './api';
 import type { CodeMapView } from './api';
 import { codeMapChipLabel, codeMapDetails, codeMapTone, readCodeMapView } from './codeMapFormat';
 import type { CodeMapTone } from './codeMapFormat';
+import { InfoPopover } from '../../components/ui/InfoPopover';
 
 /** Emitted by `code_map_commands.rs` when a map's state or progress changes. */
 const CODE_MAP_EVENT = 'code-map-status';
@@ -152,7 +153,7 @@ export function CodeMapChip({ workspaceId }: CodeMapChipProps) {
           id={popoverId}
           role="dialog"
           aria-labelledby={headingId}
-          className="absolute top-full right-0 mt-2 z-40 w-[360px] max-w-[calc(100vw-32px)] rounded-[14px] border border-shodh-border bg-shodh-raised p-3.5 shadow-[0_12px_40px_rgba(0,0,0,0.35)] flex flex-col gap-3"
+          className="absolute top-full end-0 mt-2 z-40 w-[360px] max-w-[calc(100vw-32px)] rounded-[14px] border border-shodh-border bg-shodh-raised p-3.5 shadow-[0_12px_40px_rgba(0,0,0,0.35)] flex flex-col gap-3"
         >
           <h2 id={headingId} className="m-0 text-small font-semibold text-shodh-text tabular-nums">
             {label}
@@ -164,11 +165,14 @@ export function CodeMapChip({ workspaceId }: CodeMapChipProps) {
               </li>
             ))}
           </ul>
-          <p className="m-0 text-small text-shodh-text-muted">
-            Shodh keeps a map of {view.name}&apos;s Rust, TypeScript, JavaScript, Python and Go code on this computer, and
-            updates it when files change and after the assistant edits or runs commands. The assistant uses it to find
-            where things are defined and who uses them, and shows you each place. Ignored files, build folders, .env files
-            and keys are never read.
+          <p className="m-0 flex items-center gap-1 text-small text-shodh-text-muted">
+            Kept on this computer. Never reads .env files or keys.
+            <InfoPopover label="About the code map" title="Code map">
+              Shodh keeps a map of {view.name}&apos;s Rust, TypeScript, JavaScript, Python and Go code on this computer, and
+              updates it when files change and after the assistant edits or runs commands. The assistant uses it to find
+              where things are defined and who uses them, and shows you each place. Ignored files, build folders, .env files
+              and keys are never read.
+            </InfoPopover>
           </p>
           <div className="flex flex-wrap gap-1.5">
             {building ? (

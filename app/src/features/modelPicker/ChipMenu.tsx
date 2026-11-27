@@ -9,7 +9,7 @@ import type { PickerError } from './modelTypes';
 import { sameModel } from './modelTypes';
 
 const ITEM =
-  'w-full flex items-start gap-2 px-2.5 py-2 rounded-lg text-left hover:bg-shodh-raised focus-visible:outline-none focus-visible:bg-shodh-raised focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50';
+  'w-full flex items-start gap-2 px-2.5 py-2 rounded-lg text-start hover:bg-shodh-raised focus-visible:outline-none focus-visible:bg-shodh-raised focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50';
 
 interface ChipMenuProps {
   picker: ModelPickerHandle;

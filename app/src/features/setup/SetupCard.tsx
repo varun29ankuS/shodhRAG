@@ -21,6 +21,11 @@ const QUIET_BUTTON =
 
 interface SetupCardProps {
   compact?: boolean;
+  /**
+   * One line and its button, what is downloaded behind an info button (the empty Ask and
+   * Library). First-run setup shows it all. `compact` is brief too.
+   */
+  brief?: boolean;
   className?: string;
   /** A question is waiting for setup: say so, and offer not to send it. */
   waiting?: boolean;
@@ -35,7 +40,7 @@ interface SetupCardProps {
  * behind "Technical details". Renders nothing once everything is ready, unless
  * a download just finished (then it confirms it until dismissed).
  */
-export function SetupCard({ compact = false, className, waiting = false, onCancelWaiting }: SetupCardProps) {
+export function SetupCard({ compact = false, brief = false, className, waiting = false, onCancelWaiting }: SetupCardProps) {
   const state = useReadiness();
   const search = useSearchModels();
   const runtime = useRuntimeSetup();
@@ -114,7 +119,7 @@ export function SetupCard({ compact = false, className, waiting = false, onCance
   // Over a conversation (above its message box): one line and the button, so it covers
   // as little of the answers as it can. What is downloaded is one click away; a failure
   // keeps the whole card, with its errors.
-  if (compact && !failed) {
+  if ((compact || brief) && !failed && (compact || state.phase === 'needed')) {
     return (
       <section aria-label="Shodh setup" className={shell}>
         <div className="flex items-center gap-2.5">
@@ -226,7 +231,7 @@ function PartRow({ part }: { part: PartView }) {
           {icon}
           {part.label}
         </span>
-        <span className="text-caption text-shodh-text-muted tabular-nums text-right">{part.detail}</span>
+        <span className="text-caption text-shodh-text-muted tabular-nums text-end">{part.detail}</span>
       </div>
       {part.state === 'installing' && (
         <div

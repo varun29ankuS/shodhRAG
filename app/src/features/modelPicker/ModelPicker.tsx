@@ -175,7 +175,7 @@ export function ModelPickerPanel({ picker, answerRunning, onSelected, onOpenSett
       <div className="flex items-center gap-2 px-3 pt-3 pb-2">
         <label className="relative flex-1 min-w-0">
           <span className="sr-only">Search models</span>
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-shodh-text-faint pointer-events-none" aria-hidden="true" />
+          <Search className="absolute start-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-shodh-text-faint pointer-events-none" aria-hidden="true" />
           <input
             ref={searchRef}
             type="search"
@@ -189,7 +189,7 @@ export function ModelPickerPanel({ picker, answerRunning, onSelected, onOpenSett
             aria-activedescendant={flat.length > 0 ? optionId(clampedIndex) : undefined}
             aria-describedby={notice ? noticeId : undefined}
             className={cn(
-              'w-full h-8 pl-8 pr-2 rounded-lg border border-shodh-border bg-shodh-ground text-small text-shodh-text placeholder:text-shodh-text-faint',
+              'w-full h-8 ps-8 pe-2 rounded-lg border border-shodh-border bg-shodh-ground text-small text-shodh-text placeholder:text-shodh-text-faint',
               FOCUS_RING,
             )}
           />
@@ -340,9 +340,7 @@ export function ModelPickerPanel({ picker, answerRunning, onSelected, onOpenSett
           <div className="mx-1 mt-2 px-2.5 py-2 rounded-lg border border-dashed border-shodh-border flex items-start gap-2 text-caption text-shodh-text-muted">
             <Cpu className="w-3.5 h-3.5 mt-0.5 shrink-0" aria-hidden="true" />
             <span>
-              <span className="font-medium text-shodh-text-secondary">{view.llamaCppFile}</span> (llama.cpp) is not listed: the
-              agent needs tool calling, which in-process models do not provide. Serve a local model with LM Studio to answer on this computer.
-            </span>
+              <span className="font-medium text-shodh-text-secondary">{view.llamaCppFile}</span> llama.cpp isn’t listed: it can’t use tools.</span>
           </div>
         )}
       </div>

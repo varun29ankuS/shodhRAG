@@ -92,7 +92,7 @@ test('the shell: skip link, then the sidebar, then the view', () => {
 
 test('the sidebar: collapse, New chat, the views, history, Settings, the model', () => {
   const sidebar = withoutComments(source('components/shell/Sidebar.tsx'));
-  const body = sidebar.slice(sidebar.indexOf('aria-label="Primary"'));
+  const body = sidebar.slice(sidebar.indexOf("aria-label={tr('shell.sidebar.primary')}"));
   inOrder(
     body,
     ['onClick={toggleSidebar}', 'onClick={onNewConversation}', '{PRIMARY_VIEWS.map(', '<ConversationHistory', 'view="settings"', '<ConnectionStatusChip'],
@@ -111,7 +111,7 @@ test('Ask: the conversation, the question rail, then the message box', () => {
 
 test('the question rail is one Tab stop, walked by the menus\' arrows', () => {
   const rail = withoutComments(source('features/ask/QuestionRail.tsx'));
-  assert.match(rail, /<nav[\s\S]*?aria-label="Questions"/);
+  assert.match(rail, /<nav[\s\S]*?aria-label=\{tr\('ask\.questionRail\.questions'\)\}/);
   // One dot takes Tab (the one in view, or the one the arrows moved to); the rest -1.
   assert.match(rail, /tabIndex=\{at === tabStop \? 0 : -1\}/);
   assert.match(rail, /const tabStop = focusAt \?\? Math\.max\(0, current\);/);
@@ -203,7 +203,7 @@ test('arrows walk every item of a menu and wrap; Home and End jump', () => {
 test('Settings: the sections, then the open section', () => {
   const settings = withoutComments(source('components/shell/SettingsView.tsx'));
   const body = settings.slice(settings.indexOf('<PageFrame'));
-  inOrder(body, ['aria-label="Settings sections"', '{SECTIONS.map(', 'aria-current=', '</nav>', 'aria-labelledby="settings-section-heading"'], 'SettingsView.tsx');
+  inOrder(body, ["aria-label={tr('shell.settingsView.settingsSections')}", '{SECTIONS.map(', 'aria-current=', '</nav>', 'aria-labelledby="settings-section-heading"'], 'SettingsView.tsx');
   const section = openingTags(body, ['button'])[0];
   assert.match(section.tag, /aria-current=/);
   assert.ok(FOCUS_STYLE.test(resolvedClasses(section.tag, settings)), 'a section button draws a ring');

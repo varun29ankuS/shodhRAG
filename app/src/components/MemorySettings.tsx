@@ -37,6 +37,7 @@ import { OPEN_MEMORY_EDIT, peekRequestedMemoryEdit, takeRequestedMemoryEdit } fr
 import { coreHeading, shortScope } from '../features/memory/usedMemories';
 import { agentItemKey } from '../lib/agentHighlight';
 import { useNavigationTarget } from '../features/agent/useNavigationTarget';
+import { tr } from '../i18n/tr';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
@@ -80,7 +81,7 @@ function StrengthBar({ memory }: { memory: MemoryRecord }) {
     <div className="flex items-center gap-2 min-w-[150px]">
       <div
         role="meter"
-        aria-label="Memory strength"
+        aria-label={tr('settings.memorySettings.memoryStrength')}
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={display.percent}
@@ -213,16 +214,16 @@ function MemoryItem({
       </div>
 
       <p className="m-0 text-caption text-shodh-text-muted flex flex-wrap gap-x-2 gap-y-0.5">
-        <span>Since {formatDate(memory.validFrom)}</span>
+        <span>{tr('settings.memorySettings.since')}{formatDate(memory.validFrom)}</span>
         <span aria-hidden="true">·</span>
         <span>
-          Last used {relativeTime(memory.lastUsedAt, now)}
+          {tr('settings.memorySettings.lastUsed')}{relativeTime(memory.lastUsedAt, now)}
           {memory.useCount > 0 ? ` (${memory.useCount} ${memory.useCount === 1 ? 'time' : 'times'})` : ''}
         </span>
         {memory.expiresAt && (
           <>
             <span aria-hidden="true">·</span>
-            <span>Expires {formatDate(memory.expiresAt)}</span>
+            <span>{tr('settings.memorySettings.expires')}{formatDate(memory.expiresAt)}</span>
           </>
         )}
         <span aria-hidden="true">·</span>
@@ -234,12 +235,12 @@ function MemoryItem({
             className={cn('underline underline-offset-2 text-shodh-accent-text hover:text-shodh-accent-hover rounded-sm', FOCUS_RING)}
             onClick={() => onOpenConversation(fromConversation)}
           >
-            From “{conversationName ?? 'a deleted conversation'}”
+            {tr('settings.memorySettings.from')}{conversationName ?? 'a deleted conversation'}”
           </button>
         ) : memoryOrigin(memory) === 'slack' ? (
-          <span>From Slack</span>
+          <span>{tr('settings.memorySettings.fromSlack')}</span>
         ) : (
-          <span>Added in Settings</span>
+          <span>{tr('settings.memorySettings.addedInSettings')}</span>
         )}
       </p>
 
@@ -254,7 +255,7 @@ function MemoryItem({
         >
           {fields.length === 0 ? (
             <p className="m-0 text-small text-shodh-text-muted">
-              This memory has no text to edit. Forget it and ask Shodh to remember the corrected fact.
+              {tr('settings.memorySettings.thisMemoryHasNoText')}
             </p>
           ) : (
             fields.map(field => {
@@ -282,18 +283,18 @@ function MemoryItem({
           )}
           <div className="flex gap-2 justify-end">
             <button type="button" className={BUTTON} onClick={() => { setEditing(false); setDraft({}); }} disabled={busy}>
-              Cancel
+              {tr('settings.memorySettings.cancel')}
             </button>
             <button type="submit" className={BUTTON} disabled={busy || edit === null}>
-              Save as new version
+              {tr('settings.memorySettings.saveAsNewVersion')}
             </button>
           </div>
         </form>
       ) : (
-        <div className="flex flex-wrap gap-1 -ml-2">
+        <div className="flex flex-wrap gap-1 -ms-2">
           {memory.current && (
             <button type="button" className={ICON_BUTTON} onClick={() => { setDraft({}); setEditing(true); }} disabled={busy}>
-              <Pencil aria-hidden="true" className="w-3.5 h-3.5" /> Edit
+              <Pencil aria-hidden="true" className="w-3.5 h-3.5" />{tr('settings.memorySettings.edit')}
             </button>
           )}
           <button type="button" className={ICON_BUTTON} onClick={togglePin} disabled={busy} aria-pressed={memory.pinned}>
@@ -307,10 +308,10 @@ function MemoryItem({
             aria-expanded={historyOpen}
             aria-controls={historyId}
           >
-            <History aria-hidden="true" className="w-3.5 h-3.5" /> History
+            <History aria-hidden="true" className="w-3.5 h-3.5" />{tr('settings.memorySettings.history')}
           </button>
           <button type="button" className={cn(ICON_BUTTON, 'hover:text-shodh-error')} onClick={() => void forget()} disabled={busy}>
-            <Trash2 aria-hidden="true" className="w-3.5 h-3.5" /> Forget
+            <Trash2 aria-hidden="true" className="w-3.5 h-3.5" />{tr('settings.memorySettings.forget')}
           </button>
         </div>
       )}
@@ -318,11 +319,11 @@ function MemoryItem({
       {historyOpen && (
         <div id={historyId} className="rounded-lg border border-shodh-border-subtle bg-shodh-ground p-3">
           {history === null ? (
-            <p className="m-0 text-small text-shodh-text-muted">Loading…</p>
+            <p className="m-0 text-small text-shodh-text-muted">{tr('settings.memorySettings.loading')}</p>
           ) : history.length <= 1 ? (
-            <p className="m-0 text-small text-shodh-text-muted">No earlier versions: this fact has not changed.</p>
+            <p className="m-0 text-small text-shodh-text-muted">{tr('settings.memorySettings.noEarlierVersionsThisFact')}</p>
           ) : (
-            <ol className="m-0 p-0 list-none flex flex-col gap-1.5" aria-label="Versions, oldest first">
+            <ol className="m-0 p-0 list-none flex flex-col gap-1.5" aria-label={tr('settings.memorySettings.versionsOldestFirst')}>
               {history.map(version => (
                 <li key={version.id} className="text-small">
                   <span className={cn('text-shodh-text', !version.current && 'line-through decoration-shodh-text-faint')}>
@@ -330,7 +331,7 @@ function MemoryItem({
                   </span>
                   <span className="text-shodh-text-muted">
                     {' '}
-                    — {formatDate(version.validFrom)} to {version.validTo ? formatDate(version.validTo) : 'now'}
+                    — {formatDate(version.validFrom)}{tr('settings.memorySettings.to')}{version.validTo ? formatDate(version.validTo) : 'now'}
                     {version.current ? ' (current)' : ''}
                   </span>
                 </li>
@@ -492,7 +493,7 @@ export default function MemorySettings(props: MemorySettingsProps) {
       {scope === null && (
       <SwitchRow
         label="Use memories in answers"
-        description="Before each answer, Shodh recalls what it remembers that is relevant to your question and tells the model, marked as possibly outdated. Turn off to answer without them; your memories are kept."
+        description={'Recalls relevant memories before each answer.'}
         checked={prefs?.injectMemories ?? true}
         disabled={prefs === null || savingPrefs}
         onChange={next => prefs && void changePrefs({ ...prefs, injectMemories: next })}
@@ -523,16 +524,16 @@ export default function MemorySettings(props: MemorySettingsProps) {
 
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative flex-1 min-w-[200px]">
-          <label htmlFor={searchId} className="sr-only">Search memories</label>
-          <Search aria-hidden="true" className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-shodh-text-muted" />
+          <label htmlFor={searchId} className="sr-only">{tr('settings.memorySettings.searchMemories')}</label>
+          <Search aria-hidden="true" className="absolute start-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-shodh-text-muted" />
           <input
             id={searchId}
             type="search"
             value={filter}
             onChange={e => setFilter(e.target.value)}
-            placeholder="Search memories"
+            placeholder={tr('settings.memorySettings.searchMemories')}
             className={cn(
-              'w-full h-8 pl-8 pr-2.5 rounded-lg border border-shodh-border bg-shodh-surface text-small text-shodh-text placeholder:text-shodh-text-faint',
+              'w-full h-8 ps-8 pe-2.5 rounded-lg border border-shodh-border bg-shodh-surface text-small text-shodh-text placeholder:text-shodh-text-faint',
               FOCUS_RING,
             )}
           />
@@ -540,44 +541,39 @@ export default function MemorySettings(props: MemorySettingsProps) {
         {scope === null && (
           <button type="button" className={BUTTON} onClick={() => void runExport()} disabled={exporting || !memories?.length}>
             <Download aria-hidden="true" className="w-3.5 h-3.5" />
-            Export JSON
+            {tr('settings.memorySettings.exportJson')}
           </button>
         )}
-        <button type="button" className={BUTTON} onClick={() => void refresh()} aria-label="Refresh memories">
+        <button type="button" className={BUTTON} onClick={() => void refresh()} aria-label={tr('settings.memorySettings.refreshMemories')}>
           <RefreshCw aria-hidden="true" className="w-3.5 h-3.5" />
         </button>
       </div>
 
       {loadError ? (
         <p role="alert" className="m-0 rounded-lg border border-shodh-error/40 bg-shodh-surface px-3 py-2 text-small text-shodh-error">
-          Memories could not be loaded: {loadError}
+          {tr('settings.memorySettings.memoriesCouldNotBeLoaded')}{loadError}
         </p>
       ) : scoped === null ? (
-        <p className="m-0 text-small text-shodh-text-muted">Loading…</p>
+        <p className="m-0 text-small text-shodh-text-muted">{tr('settings.memorySettings.loading')}</p>
       ) : scoped.length === 0 && scope !== null ? (
         <div className="rounded-lg border border-dashed border-shodh-border px-4 py-5 flex flex-col gap-2">
-          <p className="m-0 text-body font-semibold text-shodh-text">Nothing remembered in this workspace yet</p>
+          <p className="m-0 text-body font-semibold text-shodh-text">{tr('settings.memorySettings.nothingRememberedInThisWorkspace')}</p>
           <p className="m-0 text-small text-shodh-text-muted">
-            What Shodh learns from this workspace’s chats, and what you ask it to remember in them, is kept here and
-            used only in this workspace’s chats (memories about you in general apply everywhere). Settings → Memory
-            controls learning and shows every memory.
+            {tr('settings.memorySettings.whatShodhLearnsFromThis')}
           </p>
         </div>
       ) : scoped.length === 0 ? (
         <div className="rounded-lg border border-dashed border-shodh-border px-4 py-5 flex flex-col gap-2">
-          <p className="m-0 text-body font-semibold text-shodh-text">Shodh doesn’t remember anything about you yet</p>
+          <p className="m-0 text-body font-semibold text-shodh-text">{tr('settings.memorySettings.shodhDoesnTRememberAnything')}</p>
           <p className="m-0 text-small text-shodh-text-muted">
-            Ask in a conversation — for example “Remember that I prefer reports as PDF” or “Remember that Priya is
-            my accountant”. Shodh shows you exactly what it will save and saves it only if you approve. It never
-            saves anything from your documents or the web on its own.
+            {tr('settings.memorySettings.askInAConversationFor')}
           </p>
           <p className="m-0 text-small text-shodh-text-muted">
-            Memories strengthen each time they help an answer and fade when they go unused. When a fact changes,
-            the new version replaces the old one, which stays in its history.
+            {tr('settings.memorySettings.memoriesStrengthenEachTimeThey')}
           </p>
         </div>
       ) : groups.length === 0 ? (
-        <p className="m-0 text-small text-shodh-text-muted">No memories match “{filter.trim()}”.</p>
+        <p className="m-0 text-small text-shodh-text-muted">{tr('settings.memorySettings.noMemoriesMatch')}{filter.trim()}”.</p>
       ) : (
         groups.map(group => (
           <section key={group.classId} aria-labelledby={`memory-group-${group.classId}`} className="flex flex-col">
@@ -633,29 +629,27 @@ function CoreMemories({ core, error, injecting, workspaceName, onOutdated }: Cor
         <h3 id={headingId} className="m-0 text-small font-bold text-shodh-text-secondary">
           {coreHeading(injecting ? (core?.length ?? 0) : 0)}
         </h3>
-        <InfoPopover label="About the memories sent with every question" title="Sent with every question">
+        <InfoPopover label="About the memories sent with every question" title={tr('settings.memorySettings.sentWithEveryQuestion')}>
           <p className="m-0">
-            These go with every question, marked as possibly outdated: who you are, your projects, your preferences and
-            the notes you ask Shodh to keep.
+            {tr('settings.memorySettings.theseGoWithEveryQuestion')}
           </p>
           <p className="m-0">
-            Only your strongest notes stay here. Ones you do not use fade and can drop out, so pin a note to keep it.
-            “Not relevant” under an answer makes a note weigh less.
+            {tr('settings.memorySettings.onlyYourStrongestNotesStay')}
           </p>
         </InfoPopover>
       </div>
       {!injecting ? (
         <p className="m-0 text-small text-shodh-text-muted">
-          Nothing is sent while “Use memories in answers” is off.
+          {tr('settings.memorySettings.nothingIsSentWhileUse')}
         </p>
       ) : error ? (
         <p role="alert" className="m-0 text-small text-shodh-error break-words">
-          They could not be read: {error}
+          {tr('settings.memorySettings.theyCouldNotBeRead')}{error}
         </p>
       ) : core === null ? (
-        <p className="m-0 text-small text-shodh-text-muted">Loading…</p>
+        <p className="m-0 text-small text-shodh-text-muted">{tr('settings.memorySettings.loading')}</p>
       ) : core.length === 0 ? (
-        <p className="m-0 text-small text-shodh-text-muted">None yet.</p>
+        <p className="m-0 text-small text-shodh-text-muted">{tr('settings.memorySettings.noneYet')}</p>
       ) : (
         <>
           <ul className="m-0 p-0 list-none flex flex-col divide-y divide-shodh-border-subtle">
@@ -676,7 +670,7 @@ function CoreMemories({ core, error, injecting, workspaceName, onOutdated }: Cor
                   onClick={() => onOutdated(memory.id)}
                   aria-label={`Outdated: edit “${memory.text}”`}
                 >
-                  <Pencil aria-hidden="true" className="w-3.5 h-3.5" /> Outdated
+                  <Pencil aria-hidden="true" className="w-3.5 h-3.5" />{tr('settings.memorySettings.outdated')}
                 </button>
               </li>
             ))}

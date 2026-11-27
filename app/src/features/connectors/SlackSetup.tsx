@@ -70,9 +70,9 @@ function TokenField({
           aria-invalid={hint !== null}
           aria-describedby={hint ? hintId : helpId}
           onChange={e => onChange(e.target.value)}
-          className={cn(INPUT, 'font-mono pr-9', hint && 'border-shodh-error')}
+          className={cn(INPUT, 'font-mono pe-9', hint && 'border-shodh-error')}
         />
-        {ok && <Check className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-shodh-success" aria-label="Looks right" />}
+        {ok && <Check className="absolute end-3 top-1/2 -translate-y-1/2 w-4 h-4 text-shodh-success" aria-label="Looks right" />}
       </div>
       {hint ? (
         <p id={hintId} role="alert" className="m-0 text-caption text-shodh-error">{hint}</p>
@@ -94,16 +94,15 @@ function Permissions({ status }: { status: SlackStatus }) {
         aria-expanded={open}
         aria-controls={id}
         onClick={() => setOpen(o => !o)}
-        className={cn('w-full flex items-center gap-2 px-3.5 h-10 text-left text-small font-medium text-shodh-text-secondary rounded-lg hover:text-shodh-text', FOCUS_RING)}
+        className={cn('w-full flex items-center gap-2 px-3.5 h-10 text-start text-small font-medium text-shodh-text-secondary rounded-lg hover:text-shodh-text', FOCUS_RING)}
       >
         What Shodh will be allowed to do
-        <ChevronDown className={cn('ml-auto w-3.5 h-3.5 transition-transform duration-micro motion-reduce:transition-none', open && 'rotate-180')} aria-hidden="true" />
+        <ChevronDown className={cn('ms-auto w-3.5 h-3.5 transition-transform duration-micro motion-reduce:transition-none', open && 'rotate-180')} aria-hidden="true" />
       </button>
       <div id={id} hidden={!open} className="px-3.5 pb-3 flex flex-col gap-2">
         <p className="m-0 text-caption text-shodh-text-muted">
-          No public URL: Shodh connects out from this computer (Socket Mode). It never reads a channel it is not added to.
-        </p>
-        <ul className="m-0 pl-4 list-disc flex flex-col gap-0.5 text-small text-shodh-text-secondary">
+          Connects out from here. Reads only channels it is in.</p>
+        <ul className="m-0 ps-4 list-disc flex flex-col gap-0.5 text-small text-shodh-text-secondary">
           {status.botScopes.map(scope => (
             <li key={scope}>{scopeWords(scope)}</li>
           ))}
@@ -223,7 +222,7 @@ export function SlackSetup({
                   disabled={!reachable || busy || here}
                   aria-current={here ? 'step' : undefined}
                   onClick={() => go(s.step)}
-                  className={cn('w-full flex flex-col gap-1.5 text-left rounded-md disabled:cursor-default', FOCUS_RING)}
+                  className={cn('w-full flex flex-col gap-1.5 text-start rounded-md disabled:cursor-default', FOCUS_RING)}
                 >
                   <span
                     aria-hidden="true"
@@ -238,7 +237,7 @@ export function SlackSetup({
                       broken ? 'text-shodh-error font-medium' : here ? 'text-shodh-text font-medium' : 'text-shodh-text-muted',
                     )}
                   >
-                    {done && !broken && <Check className="inline w-3 h-3 mr-1 -mt-0.5" aria-hidden="true" />}
+                    {done && !broken && <Check className="inline w-3 h-3 me-1 -mt-0.5" aria-hidden="true" />}
                     {s.title}
                     <span className="sr-only">{done ? ' (done)' : here ? ' (current)' : ''}{broken ? ' (needs fixing)' : ''}</span>
                   </span>
@@ -333,7 +332,7 @@ export function SlackSetup({
             <p className="m-0 text-shodh-error font-medium">Slack did not accept the connection.</p>
             <p className="m-0 mt-0.5 break-words">{wizard.error}</p>
             {wizard.errorStep !== null && wizard.errorStep !== step && (
-              <button type="button" className={cn(QUIET_BUTTON, '-ml-2.5 mt-1')} onClick={() => go(wizard.errorStep as WizardStep)}>
+              <button type="button" className={cn(QUIET_BUTTON, '-ms-2.5 mt-1')} onClick={() => go(wizard.errorStep as WizardStep)}>
                 Go to step {wizard.errorStep}: {steps[wizard.errorStep - 1].title}
               </button>
             )}
@@ -346,7 +345,7 @@ export function SlackSetup({
               Back
             </button>
           )}
-          <button type="submit" className={cn(PRIMARY_BUTTON, 'ml-auto')} disabled={!canLeave || busy || localOnly}>
+          <button type="submit" className={cn(PRIMARY_BUTTON, 'ms-auto')} disabled={!canLeave || busy || localOnly}>
             {busy && <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />}
             {step === 4 ? (busy ? 'Checking with Slack…' : 'Connect') : step === 1 ? 'I created the app' : 'Next'}
           </button>

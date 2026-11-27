@@ -359,7 +359,7 @@ export function ArtifactPage({ selection, onBack, onOpenChat, onChange, onDelete
     <div ref={setRoot} data-compact={compact} className="group/artifact h-full flex flex-col min-h-0">
       <div className="flex-1 min-h-0 flex flex-col gap-2 px-5 pt-3 pb-3">
         <header className="flex items-center gap-2 flex-nowrap min-w-0">
-          <button type="button" onClick={onBack} aria-label="All artifacts" title="All artifacts" className={cn(QUIET_BUTTON, 'px-2 -ml-2')}>
+          <button type="button" onClick={onBack} aria-label="All artifacts" title="All artifacts" className={cn(QUIET_BUTTON, 'px-2 -ms-2')}>
             <ArrowLeft className="w-4 h-4" aria-hidden="true" />
           </button>
           <h1 className="m-0 min-w-[6rem] shrink truncate text-subhead font-bold text-shodh-text" title={creation.title}>{creation.title}</h1>
@@ -367,7 +367,7 @@ export function ArtifactPage({ selection, onBack, onOpenChat, onChange, onDelete
             {running && <Loader2 className="w-3.5 h-3.5 shrink-0 animate-spin motion-reduce:animate-none" aria-hidden="true" />}
             <span className="truncate">{statusText}</span>
           </p>
-          <div className="ml-auto flex items-center gap-1.5 shrink-0">
+          <div className="ms-auto flex items-center gap-1.5 shrink-0">
             <DesignBadge design={design} />
             <button
               type="button"
@@ -398,7 +398,7 @@ export function ArtifactPage({ selection, onBack, onOpenChat, onChange, onDelete
                   icon: Palette,
                   onSelect: () => void design.run(),
                   disabled: design.busy,
-                  title: "Check this artifact's HTML, CSS and components with Shodh's design rules (no model): contrast, text size, labels, alt text, focus, generated-UI tells.",
+                  title: 'Design rules check. No model.',
                 },
                 {
                   label: 'Delete it',
@@ -436,7 +436,7 @@ export function ArtifactPage({ selection, onBack, onOpenChat, onChange, onDelete
             <div className="flex-1 min-h-0 flex flex-col gap-2">
               <div className="flex items-center gap-2 flex-nowrap min-w-0">
                 {panesAndVersion}
-                <div className="ml-auto">{networkControl}</div>
+                <div className="ms-auto">{networkControl}</div>
               </div>
               <div className="flex-1 min-h-0 flex items-center justify-center rounded-xl border border-dashed border-shodh-border text-small text-shodh-text-muted px-6 text-center">
                 {files === null
@@ -488,7 +488,7 @@ export function ArtifactPage({ selection, onBack, onOpenChat, onChange, onDelete
                         onClick={() => showFile(row.key)}
                         aria-current={openFile?.path === row.key}
                         className={cn(
-                          'w-full flex items-center gap-1.5 h-7 pr-3 text-left text-small rounded-md hover:bg-shodh-raised',
+                          'w-full flex items-center gap-1.5 h-7 pe-3 text-start text-small rounded-md hover:bg-shodh-raised',
                           openFile?.path === row.key ? 'bg-shodh-raised text-shodh-text' : 'text-shodh-text-secondary',
                           FOCUS_RING,
                         )}
@@ -536,7 +536,7 @@ export function ArtifactPage({ selection, onBack, onOpenChat, onChange, onDelete
                       onClick={() => setVersion(v.number)}
                       aria-current={shownVersion === v.number}
                       className={cn(
-                        'w-full text-left flex flex-col gap-0.5 rounded-lg border px-3 py-2',
+                        'w-full text-start flex flex-col gap-0.5 rounded-lg border px-3 py-2',
                         shownVersion === v.number ? 'border-shodh-border-strong bg-shodh-raised' : 'border-transparent hover:bg-shodh-raised',
                         FOCUS_RING,
                       )}
@@ -587,7 +587,7 @@ export function FinishSummary({ summary, choices }: { summary: string | null; ch
           {summary ?? 'Here’s what I chose'}
         </span>
         {choices.length > 0 && (
-          <span className="ml-auto shrink-0 text-caption text-shodh-text-muted whitespace-nowrap">
+          <span className="ms-auto shrink-0 text-caption text-shodh-text-muted whitespace-nowrap">
             {choices.length} {choices.length === 1 ? 'choice' : 'choices'}
           </span>
         )}
@@ -597,7 +597,7 @@ export function FinishSummary({ summary, choices }: { summary: string | null; ch
         {choices.length > 0 && (
           <>
             <p className="m-0 text-caption font-semibold text-shodh-text-secondary">Here&apos;s what I chose</p>
-            <ul className="m-0 pl-5 flex flex-col gap-0.5 text-small text-shodh-text-secondary list-disc">
+            <ul className="m-0 ps-5 flex flex-col gap-0.5 text-small text-shodh-text-secondary list-disc">
               {choices.map(choice => (
                 <li key={choice}>{choice}</li>
               ))}
@@ -753,7 +753,7 @@ interface ActionItem {
 }
 
 const MENU_ITEM =
-  'w-full flex items-center gap-2 px-3 py-1.5 text-small text-left text-shodh-text-secondary whitespace-nowrap hover:bg-shodh-raised-2 focus-visible:bg-shodh-raised-2 focus-visible:outline-none disabled:opacity-40 disabled:hover:bg-transparent';
+  'w-full flex items-center gap-2 px-3 py-1.5 text-small text-start text-shodh-text-secondary whitespace-nowrap hover:bg-shodh-raised-2 focus-visible:bg-shodh-raised-2 focus-visible:outline-none disabled:opacity-40 disabled:hover:bg-transparent';
 
 /** "⋯" at the header's end: the artifact's other actions, so the header stays one row. */
 function ArtifactActionsMenu({ items }: { items: readonly ActionItem[] }) {
@@ -815,7 +815,7 @@ function ArtifactActionsMenu({ items }: { items: readonly ActionItem[] }) {
         <MoreHorizontal className="w-4 h-4" aria-hidden="true" />
       </button>
       {open && (
-        <div className="shell-pop absolute right-0 top-9 z-50 min-w-[220px] rounded-lg border border-shodh-border-strong bg-shodh-raised shadow-lg overflow-hidden">
+        <div className="shell-pop absolute end-0 top-9 z-50 min-w-[220px] rounded-lg border border-shodh-border-strong bg-shodh-raised shadow-lg overflow-hidden">
           <div id={menuId} ref={menuRef} role="menu" aria-label="More actions" onKeyDown={onMenuKeyDown} className="py-1">
             {items.map(({ label, icon: Icon, onSelect, disabled, title }) => (
               <button

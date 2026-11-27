@@ -428,7 +428,7 @@ export function PaperGraphView({
         <p id={`${ids.online}-help`} className="text-caption text-shodh-text-muted basis-full">
           {st && !st.onlineAllowed
             ? `${st.onlineBlockedReason ?? 'Web access is off.'} The graph is built from your PDFs only.`
-            : 'Only reference identifiers (DOI, arXiv id) and reference titles are sent — never your documents’ text or your own papers’ titles. Answers are cached on this computer.'}
+            : 'Sends only DOIs and reference titles, never your text.'}
         </p>
       </div>
 
@@ -493,7 +493,7 @@ export function PaperGraphView({
                 </select>
               </div>
             )}
-            <div role="group" aria-label="Show as" className="ml-auto inline-flex gap-1">
+            <div role="group" aria-label="Show as" className="ms-auto inline-flex gap-1">
               <button type="button" aria-pressed={mode === 'map'} onClick={() => setMode('map')} className={cn(BUTTON, mode === 'map' && 'bg-shodh-raised text-shodh-text')}>
                 <Network className="w-3.5 h-3.5" aria-hidden="true" />
                 Map
@@ -594,7 +594,7 @@ export function PaperGraphView({
                     })}
                   </g>
                 </svg>
-                <div role="toolbar" aria-label="Zoom" className="absolute right-3 top-3 flex flex-col gap-1 rounded-lg border border-shodh-border bg-shodh-surface/95 p-1 shadow-sm">
+                <div role="toolbar" aria-label="Zoom" className="absolute end-3 top-3 flex flex-col gap-1 rounded-lg border border-shodh-border bg-shodh-surface/95 p-1 shadow-sm">
                   <button type="button" onClick={() => zoomStep(1)} aria-label="Zoom in" title="Zoom in (+)" className={ICON_BUTTON}>
                     <Plus className="w-4 h-4" aria-hidden="true" />
                   </button>
@@ -609,7 +609,7 @@ export function PaperGraphView({
                   </button>
                 </div>
                 {hoveredNode && (
-                  <div role="tooltip" className="absolute left-3 top-3 max-w-[60%] rounded-lg border border-shodh-border bg-shodh-raised px-3 py-2 text-caption text-shodh-text shadow-sm pointer-events-none">
+                  <div role="tooltip" className="absolute start-3 top-3 max-w-[60%] rounded-lg border border-shodh-border bg-shodh-raised px-3 py-2 text-caption text-shodh-text shadow-sm pointer-events-none">
                     <p className="font-medium">{shortLabel(hoveredNode.label, 120)}</p>
                     <p className="text-shodh-text-muted">
                       {hoveredNode.kind === 'cluster'
@@ -620,7 +620,7 @@ export function PaperGraphView({
                 )}
               </div>
               <figcaption className="flex flex-wrap items-center gap-4 text-caption text-shodh-text-muted">
-                <span id={ids.help} className="basis-full">Drag a paper to move it, drag the background to pan, scroll or pinch to zoom. With the drawing focused: + and − zoom, 0 shows actual size, F fits, arrow keys pan.</span>
+                <span id={ids.help} className="basis-full">Drag, pan, zoom. Keys: + − 0 F and arrows.</span>
                 <span className="inline-flex items-center gap-1.5"><svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="5" fill="var(--c-accent)" /></svg>In your library (labelled)</span>
                 <span className="inline-flex items-center gap-1.5"><svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="3" fill="var(--c-text-faint)" fillOpacity={0.55} /></svg>Cited work</span>
                 <span className="inline-flex items-center gap-1.5"><svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="5" fill="var(--c-raised-2)" stroke="var(--c-border-strong)" /></svg>More references (not drawn)</span>
@@ -634,7 +634,7 @@ export function PaperGraphView({
               <ul className="flex flex-col divide-y divide-shodh-border-subtle rounded-xl border border-shodh-border max-h-[520px] overflow-y-auto scrollbar-thin">
                 {rows.map(row => (
                   <li key={row.node.id}>
-                    <button type="button" onClick={() => onOpenPaper(row.node.id)} className={cn('w-full text-left px-3 py-2 flex items-start gap-3 hover:bg-shodh-raised', FOCUS_RING)}>
+                    <button type="button" onClick={() => onOpenPaper(row.node.id)} className={cn('w-full text-start px-3 py-2 flex items-start gap-3 hover:bg-shodh-raised', FOCUS_RING)}>
                       <span className={cn('mt-1 w-2 h-2 rounded-full shrink-0', row.node.inLibrary ? 'bg-shodh-accent' : 'bg-shodh-text-faint')} aria-hidden="true" />
                       <span className="flex-1 min-w-0">
                         <span className={cn('block text-small truncate', row.node.inLibrary ? 'text-shodh-text font-medium' : 'text-shodh-text-secondary')}>{row.node.label}</span>

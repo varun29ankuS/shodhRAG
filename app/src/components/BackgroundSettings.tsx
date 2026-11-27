@@ -5,6 +5,7 @@ import { onAppSettingsChanged } from '../lib/appSettings';
 import { SwitchRow } from './PrivacySettings';
 import { cn } from '../lib/utils';
 import { desktopPlatform, startupText } from '../lib/startupText';
+import { tr } from '../i18n/tr';
 
 /** The start-at-login switch's wording on this system. */
 const STARTUP_TEXT = startupText(desktopPlatform(typeof navigator !== 'undefined' ? navigator.platform : ''));
@@ -75,14 +76,14 @@ export default function BackgroundSettings() {
   };
 
   if (!status) {
-    return <p className="m-0 text-small text-shodh-text-muted">Loading…</p>;
+    return <p className="m-0 text-small text-shodh-text-muted">{tr('settings.backgroundSettings.loading')}</p>;
   }
 
   return (
     <div className="flex flex-col gap-5">
       <SwitchRow
         label="Keep running in the tray when the window is closed"
-        description="Task reminders ring only while Shodh runs. With this on, closing the window hides it to the tray; quit from the tray icon's menu."
+        description={'Closing hides to the tray, so reminders still ring.'}
         checked={status.closeToTray}
         disabled={saving}
         onChange={enabled => void save(() => invoke('set_close_to_tray', { enabled }), 'The setting was not saved')}
@@ -96,10 +97,9 @@ export default function BackgroundSettings() {
       />
       <div className="flex items-start justify-between gap-6">
         <div className="min-w-0">
-          <label htmlFor={idleId} className="m-0 text-body font-semibold text-shodh-text">Stop the assistant's runtime when idle for</label>
+          <label htmlFor={idleId} className="m-0 text-body font-semibold text-shodh-text">{tr('settings.backgroundSettings.stopTheAssistantSRuntime')}</label>
           <p className="m-0 mt-0.5 text-small text-shodh-text-muted">
-            The runtime that answers questions uses several hundred megabytes of memory. It starts when you ask and
-            stops after this long without use; the next question starts it again, with the conversation's recent turns.
+            {tr('settings.backgroundSettings.theRuntimeThatAnswersQuestions')}
           </p>
         </div>
         <select
@@ -122,7 +122,7 @@ export default function BackgroundSettings() {
       </div>
       {status.paused && (
         <p className="m-0 text-small text-shodh-warning" role="status">
-          Background work is paused from the tray: indexing the assistant starts waits until you resume it there.
+          {tr('settings.backgroundSettings.backgroundWorkIsPausedFrom')}
         </p>
       )}
     </div>

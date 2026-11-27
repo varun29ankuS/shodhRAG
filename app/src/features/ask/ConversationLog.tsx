@@ -12,6 +12,7 @@ import type { ChatMessage } from './types';
 
 import { CONVERSATION_TOP_PX, MESSAGE_INDEX_ATTR } from './windowLayout';
 import { TEXT_COLUMN_PX } from './wideBlock';
+import { tr } from '../../i18n/tr';
 
 /** Messages rendered beyond the visible ones, above and below. */
 const OVERSCAN_MESSAGES = 3;
@@ -143,7 +144,7 @@ export const ConversationLog = forwardRef<ConversationLogHandle, ConversationLog
       className="relative mx-auto"
       style={{ height: totalSize, maxWidth: TEXT_COLUMN_PX }}
       role="log"
-      aria-label="Conversation"
+      aria-label={tr('ask.conversationLog.conversation')}
       aria-live="off"
     >
       {virtualizer.getVirtualItems().map(item => {
@@ -154,7 +155,7 @@ export const ConversationLog = forwardRef<ConversationLogHandle, ConversationLog
             key={item.key}
             {...{ [MESSAGE_INDEX_ATTR]: index }}
             ref={virtualizer.measureElement}
-            className="absolute left-0 right-0 top-0 px-7"
+            className="absolute start-0 end-0 top-0 px-7"
             style={{
               transform: `translateY(${item.start - CONVERSATION_TOP_PX}px)`,
               paddingBottom: index === messages.length - 1 ? 0 : MESSAGE_GAP_PX,

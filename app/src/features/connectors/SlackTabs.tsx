@@ -194,7 +194,7 @@ function UpdateSlackApp({
         </button>
         <span aria-live="polite" className="sr-only">{copied ? 'The updated manifest was copied.' : ''}</span>
       </div>
-      <ol id={stepsId} className="m-0 pl-5 list-decimal flex flex-col gap-1 text-small text-shodh-text-secondary max-w-[64ch]">
+      <ol id={stepsId} className="m-0 ps-5 list-decimal flex flex-col gap-1 text-small text-shodh-text-secondary max-w-[64ch]">
         {UPDATE_APP_STEPS.map(step => (
           <li key={step}>{step}</li>
         ))}
@@ -451,7 +451,7 @@ export function AnsweringTab(props: TabProps & { workspaces: WorkspaceListing[] 
     <div className="flex flex-col gap-8">
       <SwitchRow
         label="Answer in Slack"
-        description="Shodh keeps a connection to Slack and answers mentions in the channels below, and direct messages from your members."
+        description={'Answers mentions here and members’ direct messages.'}
         checked={on}
         disabled={busy || status.state === 'local_only'}
         onChange={next => void run(() => slackApi.setEnabled(next), 'The Slack connector could not be switched')}
@@ -615,7 +615,7 @@ function ChannelRow({
           )}
           {line.detail && <p className={cn('m-0 text-caption break-words', TONE_TEXT[line.tone])}>{line.detail}</p>}
         </div>
-        <p className="m-0 text-small text-shodh-text-secondary tabular-nums md:text-right">
+        <p className="m-0 text-small text-shodh-text-secondary tabular-nums md:text-end">
           {channel.threads}
           <span className="md:sr-only"> {channel.threads === 1 ? 'thread' : 'threads'}</span>
         </p>
@@ -808,7 +808,7 @@ export function IndexingTab(props: TabProps & { workspaces: WorkspaceListing[] |
               <span>Channel</span>
               <span>Workspace</span>
               <span>Status</span>
-              <span className="text-right">Threads</span>
+              <span className="text-end">Threads</span>
               <span />
             </div>
             <ul aria-label="Indexed channels" className="m-0 p-0 list-none divide-y divide-shodh-border-subtle">
@@ -983,7 +983,7 @@ function MemoriesList({ status, busy, setBusy }: TabProps) {
   return (
     <Section
       title="From Slack"
-      description="“@shodh remember: …” saves at once: yours into your memories, anyone else’s for their channel only, used only for Slack answers there."
+      description={'“@shodh remember” saves at once; others’ only for their channel.'}
     >
       {!available ? (
         <Callout tone="warning" role="alert">Memories from Slack need the app database, which could not be opened. The audit page says why.</Callout>
@@ -1002,9 +1002,7 @@ function MemoriesList({ status, busy, setBusy }: TabProps) {
         <div className="flex flex-col items-start gap-1 rounded-lg border border-dashed border-shodh-border px-4 py-6">
           <p className="m-0 text-small font-medium text-shodh-text">Nothing saved from Slack yet</p>
           <p className="m-0 text-small text-shodh-text-muted max-w-[60ch]">
-            In a channel Shodh answers in, anyone can write “@shodh remember: the launch moved to May”. It shows up here,
-            with who saved it and where.
-          </p>
+            Saved with “@shodh remember”.</p>
         </div>
       ) : (
         <ul aria-label="Memories from Slack" className="m-0 p-0 list-none flex flex-col divide-y divide-shodh-border-subtle rounded-lg border border-shodh-border-subtle bg-shodh-surface">
@@ -1014,7 +1012,7 @@ function MemoriesList({ status, busy, setBusy }: TabProps) {
               <p className="m-0 text-caption text-shodh-text-muted">
                 {memoryProvenance(m)} · {memoryPlace(m)}
               </p>
-              <div className="flex flex-wrap items-center gap-1 -ml-2.5">
+              <div className="flex flex-wrap items-center gap-1 -ms-2.5">
                 {!m.inMemories && (
                   <button type="button" className={QUIET_BUTTON} disabled={busy} onClick={() => void act(() => slackApi.promoteMemory(m.id), 'The memory could not be added')}>
                     Add to my memories
@@ -1059,7 +1057,7 @@ export function SettingsTab({ status, busy, onDisconnect }: TabProps & { onDisco
   return (
     <div className="flex flex-col gap-8">
       <Section title="What Slack can see">
-        <ul className="m-0 pl-4 list-disc flex flex-col gap-1.5 text-small text-shodh-text-secondary max-w-[68ch]">
+        <ul className="m-0 ps-4 list-disc flex flex-col gap-1.5 text-small text-shodh-text-secondary max-w-[68ch]">
           <li className={cn(source.tone === 'warning' && 'text-shodh-warning')}>{source.text}</li>
           <li className={cn(places.tone === 'warning' && 'text-shodh-warning')}>{places.text}</li>
         </ul>

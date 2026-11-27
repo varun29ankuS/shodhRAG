@@ -139,20 +139,18 @@ export default function ArtifactsView({ onOpenChat, onChange }: ArtifactsViewPro
               <h2 id="artifacts-creations" className="text-caption font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">
                 Creations
               </h2>
-              <p className="m-0 text-small text-shodh-text-muted">
-                Apps, games and pages Creator mode built, each in its own folder in Documents/Shodh Creations.
-              </p>
+              <p className="m-0 text-small text-shodh-text-muted">Built in Creator mode</p>
             </div>
             <label htmlFor={searchId} className="relative">
               <span className="sr-only">Search creations</span>
-              <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-shodh-text-faint" aria-hidden="true" />
+              <Search className="w-3.5 h-3.5 absolute start-2.5 top-1/2 -translate-y-1/2 text-shodh-text-faint" aria-hidden="true" />
               <input
                 id={searchId}
                 type="search"
                 value={text}
                 onChange={e => setText(e.target.value)}
                 placeholder="Search creations"
-                className={cn('h-8 w-64 pl-8 pr-2.5 rounded-lg border border-shodh-border bg-shodh-surface text-small text-shodh-text placeholder:text-shodh-text-faint', FOCUS_RING)}
+                className={cn('h-8 w-64 ps-8 pe-2.5 rounded-lg border border-shodh-border bg-shodh-surface text-small text-shodh-text placeholder:text-shodh-text-faint', FOCUS_RING)}
               />
             </label>
           </div>
@@ -161,7 +159,7 @@ export default function ArtifactsView({ onOpenChat, onChange }: ArtifactsViewPro
           {creations === null && !error ? (
             <ViewState kind="loading" title="Loading creations" />
           ) : creations !== null && creations.length === 0 ? (
-            <ViewState kind="empty" icon={Hammer} title="Nothing built yet" detail="Ask for an app, a game or a page in Creator mode." />
+            <ViewState kind="empty" icon={Hammer} title="Nothing built yet" detail="Use Creator mode" />
           ) : shown.length === 0 ? (
             <p className="m-0 text-small text-shodh-text-muted">No creation matches “{text.trim()}”.</p>
           ) : (
@@ -181,7 +179,7 @@ export default function ArtifactsView({ onOpenChat, onChange }: ArtifactsViewPro
                 ref={windowed.virtualizer.measureElement}
                 data-index={row.index}
                 role="presentation"
-                className="absolute left-0 right-0 grid gap-3"
+                className="absolute start-0 end-0 grid gap-3"
                 style={{ top: row.top, gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
               >
               {shown.slice(first, last + 1).map((creation, offset) => (
@@ -190,7 +188,7 @@ export default function ArtifactsView({ onOpenChat, onChange }: ArtifactsViewPro
                     type="button"
                     onClick={() => setSelection(prev => ({ id: creation.id, version: null, pane: 'preview', showPreview: false, seq: (prev?.seq ?? 0) + 1 }))}
                     className={cn(
-                      'w-full h-full text-left flex flex-col gap-1.5 rounded-xl border border-shodh-border bg-shodh-surface px-4 py-3 hover:border-shodh-border-strong hover:bg-shodh-raised transition-colors duration-micro',
+                      'w-full h-full text-start flex flex-col gap-1.5 rounded-xl border border-shodh-border bg-shodh-surface px-4 py-3 hover:border-shodh-border-strong hover:bg-shodh-raised transition-colors duration-micro',
                       FOCUS_RING,
                     )}
                   >
@@ -221,9 +219,7 @@ export default function ArtifactsView({ onOpenChat, onChange }: ArtifactsViewPro
               <h2 id="artifacts-code" className="text-caption font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">
                 Code changes
               </h2>
-              <p className="m-0 text-small text-shodh-text-muted">
-                Code the assistant wrote in Code mode, each on its own branch of the workspace folder. Review or discard it in its chat.
-              </p>
+              <p className="m-0 text-small text-shodh-text-muted">Each on its own branch</p>
             </div>
             <ul className="list-none m-0 p-0 flex flex-col gap-1.5">
               {codeChanges.map(change => (
@@ -254,9 +250,7 @@ export default function ArtifactsView({ onOpenChat, onChange }: ArtifactsViewPro
             <h2 id="artifacts-generated" className="text-caption font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">
               Generated
             </h2>
-            <p className="m-0 text-small text-shodh-text-muted">
-              Diagrams, charts, sketches, plots, simulations, equations and tables from every conversation, with your snippets.
-            </p>
+            <p className="m-0 text-small text-shodh-text-muted">From every chat</p>
           </div>
           <VisualGallery conversationId={null} />
         </section>

@@ -83,14 +83,14 @@ function OverviewTab({ status, now, onTab, onSignIn }: TabProps & { onTab: (tab:
           </p>
           {line.detail && <p className={cn('m-0 text-small break-words', TONE_TEXT[line.tone])}>{line.detail}</p>}
           {status.account && (
-            <button type="button" className={cn(QUIET_BUTTON, 'self-start -ml-2.5')} onClick={() => openLink(status.account!.profileUrl)}>
+            <button type="button" className={cn(QUIET_BUTTON, 'self-start -ms-2.5')} onClick={() => openLink(status.account!.profileUrl)}>
               <ExternalLink className="w-3.5 h-3.5" aria-hidden="true" /> Open your GitHub profile
             </button>
           )}
         </Panel>
         <Panel title="Repositories">
           <p className="m-0 text-small text-shodh-text">{reposLine(status)}</p>
-          <button type="button" className={cn(QUIET_BUTTON, 'self-start -ml-2.5')} onClick={() => onTab('repositories')}>
+          <button type="button" className={cn(QUIET_BUTTON, 'self-start -ms-2.5')} onClick={() => onTab('repositories')}>
             Open Repositories
           </button>
         </Panel>
@@ -131,7 +131,7 @@ function OverviewTab({ status, now, onTab, onSignIn }: TabProps & { onTab: (tab:
       )}
 
       <Section title="What Shodh does on GitHub" description="Everything below needs the repository on your list. Every write waits for your yes, each time.">
-        <ul className="m-0 pl-5 list-disc flex flex-col gap-1 text-small text-shodh-text-secondary max-w-[70ch]">
+        <ul className="m-0 ps-5 list-disc flex flex-col gap-1 text-small text-shodh-text-secondary max-w-[70ch]">
           <li>{LEVEL_TEXT.read}</li>
           <li>{LEVEL_TEXT.write}</li>
           <li>{LEVEL_TEXT.merge}</li>
@@ -214,7 +214,7 @@ function RepositoriesTab({ status, busy, setBusy, onStatus, highlight }: TabProp
     <div className="flex flex-col gap-6">
       <Section
         title="On your list"
-        description="Shodh reaches only these repositories. Read is enough to fetch and read issues; write and merge always ask you first."
+        description={'Only these repositories. Write and merge ask first.'}
         actions={
           signedIn && !adding ? (
             <button type="button" className={OUTLINE_BUTTON} onClick={() => setAdding(true)}>
@@ -257,7 +257,7 @@ function RepositoriesTab({ status, busy, setBusy, onStatus, highlight }: TabProp
             <button type="button" className={QUIET_BUTTON} disabled={busy} onClick={() => { setAdding(false); setPicked([]); }}>
               Cancel
             </button>
-            <button type="button" className={cn(PRIMARY_BUTTON, 'ml-auto')} disabled={busy || picked.length === 0} onClick={() => void add()}>
+            <button type="button" className={cn(PRIMARY_BUTTON, 'ms-auto')} disabled={busy || picked.length === 0} onClick={() => void add()}>
               {picked.length === 1 ? 'Add 1 repository' : `Add ${picked.length} repositories`}
             </button>
           </div>
@@ -290,7 +290,7 @@ function ActivityTab({ now }: TabProps) {
   return (
     <Section
       title="Activity"
-      description="Everything Shodh did on GitHub and every change to this connector, newest first. The full record is in Activity → Audit log."
+      description={'Newest first. The full record is in Activity.'}
       actions={
         <button type="button" className={QUIET_BUTTON} disabled={loading} onClick={() => void load()}>
           <RefreshCw className={cn('w-3.5 h-3.5', loading && 'animate-spin motion-reduce:animate-none')} aria-hidden="true" /> Refresh
@@ -359,13 +359,13 @@ function SettingsTab({ status, busy, onSignOut, onSignIn }: TabProps & { onSignO
         </div>
       </Section>
       <Section title="Known limits" description="What these permissions do not cover yet, said plainly.">
-        <ul className="m-0 pl-5 list-disc flex flex-col gap-1 text-small text-shodh-text-secondary max-w-[70ch]">
+        <ul className="m-0 ps-5 list-disc flex flex-col gap-1 text-small text-shodh-text-secondary max-w-[70ch]">
           {status.commandsCanReadSignIn && <li>{WINDOWS_COMMANDS_NOTE}</li>}
           <li>{MACOS_NOTE}</li>
         </ul>
       </Section>
       <Section title="Never, whatever you allow">
-        <ul className="m-0 pl-5 list-disc flex flex-col gap-1 text-small text-shodh-text-secondary max-w-[70ch]">
+        <ul className="m-0 ps-5 list-disc flex flex-col gap-1 text-small text-shodh-text-secondary max-w-[70ch]">
           {HARD_LIMITS.map(limit => <li key={limit}>{limit}</li>)}
         </ul>
       </Section>
@@ -398,7 +398,7 @@ function SignOutConfirm({ status, busy, onCancel, onConfirm }: { status: GitHubS
 function Breadcrumb({ onBack }: { onBack: () => void }) {
   return (
     <nav aria-label="Breadcrumb" className="flex items-center gap-1 text-small">
-      <button type="button" className={cn(QUIET_BUTTON, '-ml-2.5')} onClick={onBack} aria-label="Back to all connectors">
+      <button type="button" className={cn(QUIET_BUTTON, '-ms-2.5')} onClick={onBack} aria-label="Back to all connectors">
         <ArrowLeft className="w-3.5 h-3.5" aria-hidden="true" />
         Connectors
       </button>

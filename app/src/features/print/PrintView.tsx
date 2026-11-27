@@ -154,8 +154,7 @@ export default function PrintView() {
       <main ref={rootRef} className="print-view mx-auto max-w-[700px] px-2 py-6 bg-shodh-ground text-shodh-text">
         {!native && (
           <p className="print-screen-only mb-6 rounded-lg border border-shodh-border bg-shodh-raised px-3 py-2 text-small text-shodh-text-secondary" role="note">
-            Choose “Save as PDF” (or “Microsoft Print to PDF”) as the printer in the print dialog to save this as a PDF. Close this window when you are done.
-          </p>
+            Print to PDF, then close this window.</p>
         )}
         <header className="mb-6 flex flex-col gap-1 border-b border-shodh-border pb-4">
           <h1 className="m-0 text-title font-bold leading-tight text-shodh-text">{doc.title}</h1>

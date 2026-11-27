@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { FileText, MessageSquare } from 'lucide-react';
 import { conversationPreview } from '../../lib/conversationPreview';
 import type { Conversation } from '../../hooks/useConversations';
+import { tr } from '../../i18n/tr';
 
 /** Hover must rest this long before the card shows (avoids flicker while scanning). */
 export const PREVIEW_DELAY_MS = 450;
@@ -61,18 +62,18 @@ export function ConversationPreviewCard({
     >
       <p className="text-small font-semibold text-shodh-text leading-snug">{conversation.title}</p>
       {empty ? (
-        <p className="text-small text-shodh-text-muted">No messages yet.</p>
+        <p className="text-small text-shodh-text-muted">{tr('shell.conversationPreviewCard.noMessagesYet')}</p>
       ) : (
         <>
           {preview.firstQuestion && (
             <div className="flex flex-col gap-0.5">
-              <span className="text-caption font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">Started with</span>
+              <span className="text-caption font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">{tr('shell.conversationPreviewCard.startedWith')}</span>
               <p className="text-small leading-snug text-shodh-text-secondary">{preview.firstQuestion}</p>
             </div>
           )}
           {preview.latestAnswer && (
             <div className="flex flex-col gap-0.5">
-              <span className="text-caption font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">Latest answer</span>
+              <span className="text-caption font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">{tr('shell.conversationPreviewCard.latestAnswer')}</span>
               <p className="text-small leading-snug text-shodh-text-secondary">{preview.latestAnswer}</p>
             </div>
           )}
@@ -91,8 +92,8 @@ export function ConversationPreviewCard({
       <p className="flex items-center gap-1.5 text-caption text-shodh-text-faint">
         <MessageSquare className="w-3 h-3" aria-hidden="true" />
         {preview.questionCount} {preview.questionCount === 1 ? 'question' : 'questions'}
-        {created && <> · started {created}</>}
-        {updated && updated !== created && <> · updated {updated}</>}
+        {created && <>{tr('shell.conversationPreviewCard.started')}{created}</>}
+        {updated && updated !== created && <>{tr('shell.conversationPreviewCard.updated')}{updated}</>}
       </p>
     </div>,
     document.body,

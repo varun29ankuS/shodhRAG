@@ -228,7 +228,7 @@ export function TableViewer({ filePath, passage, onLocate, onError }: TableViewe
             </colgroup>
             <thead className="sticky top-0 z-10">
               <tr aria-rowindex={1} style={{ height: ROW_HEIGHT }}>
-                <th scope="col" className="px-2 text-right font-medium text-shodh-text-muted bg-shodh-raised border-b border-r border-shodh-border">
+                <th scope="col" className="px-2 text-end font-medium text-shodh-text-muted bg-shodh-raised border-b border-e border-shodh-border">
                   #
                 </th>
                 {sheet.headers.map((header, i) => (
@@ -236,7 +236,7 @@ export function TableViewer({ filePath, passage, onLocate, onError }: TableViewe
                     key={i}
                     scope="col"
                     title={header}
-                    className="px-2.5 text-left font-semibold text-shodh-text bg-shodh-raised border-b border-r border-shodh-border truncate"
+                    className="px-2.5 text-start font-semibold text-shodh-text bg-shodh-raised border-b border-e border-shodh-border truncate"
                   >
                     {header}
                   </th>
@@ -255,14 +255,14 @@ export function TableViewer({ filePath, passage, onLocate, onError }: TableViewe
                     className={isCited ? 'source-row-cited' : undefined}
                     style={{ height: ROW_HEIGHT }}
                   >
-                    <th scope="row" className="px-2 text-right font-normal tabular-nums text-shodh-text-muted border-b border-r border-shodh-border-subtle">
+                    <th scope="row" className="px-2 text-end font-normal tabular-nums text-shodh-text-muted border-b border-e border-shodh-border-subtle">
                       {isCited && <span className="sr-only">Cited row </span>}
                       {index + 1}
                     </th>
                     {sheet.headers.map((_, col) => {
                       const value = row[col] ?? '';
                       return (
-                        <td key={col} title={value} className="px-2.5 border-b border-r border-shodh-border-subtle truncate">
+                        <td key={col} title={value} className="px-2.5 border-b border-e border-shodh-border-subtle truncate">
                           {value}
                         </td>
                       );

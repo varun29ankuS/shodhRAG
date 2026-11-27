@@ -100,7 +100,7 @@ export function ConnectorConversationView({
                   <span className="text-caption font-medium text-shodh-text-muted">
                     Shodh{when && <span className="font-normal text-shodh-text-faint">{`, ${when}`}</span>}
                   </span>
-                  <div className="text-body-lg leading-[1.6] text-shodh-text [&_p]:my-2 [&_ul]:my-2 [&_ul]:pl-5 [&_ol]:pl-5 [&_li]:my-0.5">
+                  <div className="text-body-lg leading-[1.6] text-shodh-text [&_p]:my-2 [&_ul]:my-2 [&_ul]:ps-5 [&_ol]:ps-5 [&_li]:my-0.5">
                     <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
                       {message.content}
                     </ReactMarkdown>

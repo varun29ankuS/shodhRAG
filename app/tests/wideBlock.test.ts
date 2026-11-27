@@ -101,7 +101,7 @@ test('a table\'s buttons sit in a row above it, never over a header cell', () =>
   assert.equal(tables.length, 2);
   for (const frame of tables) assert.match(frame, /placement="above"/);
   const frame = source('features/focus/FocusFrame.tsx');
-  assert.match(frame, /placement === 'over' \? 'absolute top-2 right-2 z-10 inline-flex' : 'flex justify-end mb-1\.5'/);
+  assert.match(frame, /placement === 'over' \? 'absolute top-2 end-2 z-10 inline-flex' : 'flex justify-end mb-1\.5'/);
   assert.match(frame, /\{placement === 'above' && children\}/);
 });
 

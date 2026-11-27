@@ -77,9 +77,7 @@ export function CreateWorkspaceDialog({
             <div className="flex-1 min-w-0">
               <Dialog.Title className="text-body-lg font-semibold">New workspace</Dialog.Title>
               <Dialog.Description id={ids.desc} className="text-small text-shodh-text-muted">
-                A workspace keeps the sources, instructions and chats of one piece of work together. Chats in it
-                search only its sources.
-              </Dialog.Description>
+                Sources, instructions and chats of one piece of work.</Dialog.Description>
             </div>
             <Dialog.Close
               aria-label="Close"
@@ -113,7 +111,7 @@ export function CreateWorkspaceDialog({
                         aria-checked={selected}
                         onClick={() => setTemplate(t.id)}
                         className={cn(
-                          'flex items-start gap-2.5 p-3 rounded-xl border text-left transition-colors duration-micro',
+                          'flex items-start gap-2.5 p-3 rounded-xl border text-start transition-colors duration-micro',
                           selected ? 'border-shodh-accent bg-shodh-accent-soft' : 'border-shodh-border hover:bg-shodh-raised',
                           FOCUS_RING,
                         )}

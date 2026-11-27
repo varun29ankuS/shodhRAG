@@ -8,6 +8,7 @@
  */
 
 import type { FileFailure } from './fileTree';
+import { formatNumber } from '../../i18n/format.ts';
 
 export type SourceStatus = 'ready' | 'indexing' | 'error' | 'interrupted';
 
@@ -148,7 +149,7 @@ export function scannedPagesStep(payload: ScannedPagesProgress): string | undefi
   const { scanned_page: page, scanned_pages: pages } = payload;
   if (typeof page !== 'number' || typeof pages !== 'number') return undefined;
   if (!Number.isInteger(page) || !Number.isInteger(pages) || pages < 1 || page < 1 || page > pages) return undefined;
-  return `Reading scanned pages: ${page.toLocaleString('en-US')} of ${pages.toLocaleString('en-US')}`;
+  return `Reading scanned pages: ${formatNumber(page)} of ${formatNumber(pages)}`;
 }
 
 /** A folder the backend keeps in sync (`sync_folder_sources`). */
@@ -223,7 +224,7 @@ export function applyFolderSyncProgress(source: LibrarySource, progress: FolderS
 
 /** "Updating index for improved text extraction · 120 of 400". */
 export function syncProgressLine(progress: SyncProgress): string {
-  return `Updating index for improved text extraction · ${progress.done.toLocaleString('en-US')} of ${progress.total.toLocaleString('en-US')}`;
+  return `Updating index for improved text extraction · ${formatNumber(progress.done)} of ${formatNumber(progress.total)}`;
 }
 
 /**

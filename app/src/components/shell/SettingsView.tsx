@@ -23,6 +23,7 @@ import { agentItemKey, revealAgentItem } from '../../lib/agentHighlight';
 
 import type { SettingsSection } from '../../features/memory/navigation';
 import { PageFrame } from './PageFrame';
+import { tr } from '../../i18n/tr';
 export type { SettingsSection } from '../../features/memory/navigation';
 
 const SECTIONS: { id: SettingsSection; label: string; description: string }[] = [
@@ -149,10 +150,10 @@ export default function SettingsView({
   const active = SECTIONS.find(s => s.id === section) ?? SECTIONS[0];
 
   return (
-    <PageFrame fill width="full" title="Settings">
+    <PageFrame fill width="full" title={tr('shell.settingsView.settings')}>
       <div className="flex-1 min-h-0 flex border-t border-shodh-border-subtle">
       <nav
-        aria-label="Settings sections"
+        aria-label={tr('shell.settingsView.settingsSections')}
         className="w-[220px] shrink-0 border-e border-shodh-border-subtle ps-5 pe-3 py-4 overflow-y-auto scrollbar-thin flex flex-col gap-0.5"
       >
         <ul className="flex flex-col gap-0.5">
@@ -165,7 +166,7 @@ export default function SettingsView({
                   onClick={() => setSection(s.id)}
                   aria-current={isActive ? 'page' : undefined}
                   className={cn(
-                    'w-full h-9 px-3 rounded-lg text-left text-body transition-colors duration-micro',
+                    'w-full h-9 px-3 rounded-lg text-start text-body transition-colors duration-micro',
                     isActive
                       ? 'bg-shodh-raised-2 text-shodh-text font-semibold'
                       : 'text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text',

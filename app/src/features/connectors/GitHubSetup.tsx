@@ -98,7 +98,7 @@ export function SignInCode({ status, now }: { status: GitHubStatus; now: number 
         <span aria-live="polite" className="sr-only">{copied ? 'The code was copied.' : ''}</span>
       </div>
       <p className="m-0 text-caption text-shodh-text-muted" role="status" aria-live="polite">
-        <Loader2 className="inline w-3.5 h-3.5 mr-1.5 -mt-0.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+        <Loader2 className="inline w-3.5 h-3.5 me-1.5 -mt-0.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />
         {left ? `Waiting for you on GitHub. The code works for ${left} more.` : 'The code expired. Start again.'}
       </p>
     </div>
@@ -176,14 +176,14 @@ export function RepoPicker({
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative flex-1 min-w-[220px] max-w-[420px]">
           <label htmlFor={searchId} className="sr-only">Search repositories</label>
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-shodh-text-muted" aria-hidden="true" />
+          <Search className="absolute start-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-shodh-text-muted" aria-hidden="true" />
           <input
             id={searchId}
             type="search"
             value={query}
             placeholder="Search by owner or name"
             onChange={e => setQuery(e.target.value)}
-            className={cn(INPUT, 'pl-8')}
+            className={cn(INPUT, 'ps-8')}
           />
         </div>
         <button type="button" className={QUIET_BUTTON} disabled={loading} onClick={onReload}>
@@ -318,8 +318,7 @@ export function GitHubSetup({
     <div className="flex flex-col gap-5">
       {localOnly && (
         <Callout tone="neutral" role="status">
-          Local-only mode is on, so Shodh does not connect to GitHub. Turn it off in Settings → Privacy to set GitHub up.
-        </Callout>
+          Off in Local-only mode.</Callout>
       )}
 
       <nav aria-label="Setup progress" className="flex flex-col gap-2">
@@ -338,11 +337,11 @@ export function GitHubSetup({
                   disabled={!reachable || busy || here}
                   aria-current={here ? 'step' : undefined}
                   onClick={() => onWizard({ ...wizard, step: s.step })}
-                  className={cn('w-full flex flex-col gap-1.5 text-left rounded-md disabled:cursor-default', FOCUS_RING)}
+                  className={cn('w-full flex flex-col gap-1.5 text-start rounded-md disabled:cursor-default', FOCUS_RING)}
                 >
                   <span aria-hidden="true" className={cn('block h-1 rounded-full', here || done ? 'bg-shodh-accent' : 'bg-shodh-raised-2')} />
                   <span className={cn('hidden sm:block truncate text-caption', here ? 'text-shodh-text font-medium' : 'text-shodh-text-muted')}>
-                    {done && <Check className="inline w-3 h-3 mr-1 -mt-0.5" aria-hidden="true" />}
+                    {done && <Check className="inline w-3 h-3 me-1 -mt-0.5" aria-hidden="true" />}
                     {s.title}
                     <span className="sr-only">{done ? ' (done)' : here ? ' (current)' : ''}</span>
                   </span>
@@ -387,7 +386,7 @@ export function GitHubSetup({
             <Callout tone="neutral">
               <LearnMore summary="What the Shodh GitHub app can and cannot do.">
                 <p className="m-0">{status.permissionsNote}</p>
-                <ul className="m-0 mt-2 pl-5 list-disc flex flex-col gap-0.5">
+                <ul className="m-0 mt-2 ps-5 list-disc flex flex-col gap-0.5">
                   {HARD_LIMITS.map(limit => <li key={limit}>{limit}</li>)}
                 </ul>
               </LearnMore>
@@ -436,7 +435,7 @@ export function GitHubSetup({
               <button type="button" className={QUIET_BUTTON} disabled={busy} onClick={() => onWizard({ ...wizard, step: 3 })}>
                 Skip
               </button>
-              <button type="button" className={cn(PRIMARY_BUTTON, 'ml-auto')} disabled={busy || wizard.picked.length === 0} onClick={() => void addPicked()}>
+              <button type="button" className={cn(PRIMARY_BUTTON, 'ms-auto')} disabled={busy || wizard.picked.length === 0} onClick={() => void addPicked()}>
                 {busy && <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />}
                 {wizard.picked.length === 1 ? 'Add 1 repository' : `Add ${wizard.picked.length} repositories`}
               </button>
@@ -447,7 +446,7 @@ export function GitHubSetup({
               <button type="button" className={QUIET_BUTTON} disabled={busy} onClick={() => onWizard({ ...wizard, step: 2 })}>
                 Back
               </button>
-              <button type="button" className={cn(PRIMARY_BUTTON, 'ml-auto')} disabled={busy} onClick={onDone}>
+              <button type="button" className={cn(PRIMARY_BUTTON, 'ms-auto')} disabled={busy} onClick={onDone}>
                 Done
               </button>
             </>

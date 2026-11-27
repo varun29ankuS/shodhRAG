@@ -296,7 +296,7 @@ export function EnhancedArtifactPanel({
                   }
                   <GroupIcon className="w-3.5 h-3.5" />
                   <span>{group.label}</span>
-                  <span className="ml-auto font-normal" style={{ color: colors.textTertiary }}>{group.items.length}</span>
+                  <span className="ms-auto font-normal" style={{ color: colors.textTertiary }}>{group.items.length}</span>
                 </button>
 
                 {/* Group items */}
@@ -317,7 +317,7 @@ export function EnhancedArtifactPanel({
                               setSelectedId(artifact.id);
                               setEditMode(false);
                             }}
-                            className="w-full text-left px-3 py-2 pl-7 text-caption transition-colors truncate"
+                            className="w-full text-start px-3 py-2 ps-7 text-caption transition-colors truncate"
                             style={{
                               backgroundColor: isSelected ? `${colors.primary}14` : 'transparent',
                               color: isSelected ? colors.primary : colors.textSecondary,

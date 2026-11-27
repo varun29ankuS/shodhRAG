@@ -3,6 +3,7 @@ import { Download, ShieldCheck } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { useSearchModels } from '../features/setup/SearchModelsContext';
 import { scanReaderSummary } from '../features/setup/searchModels';
+import { tr } from '../i18n/tr';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
@@ -56,7 +57,7 @@ export default function ScanReaderSettings() {
   return (
     <div className="mt-6 pt-6 border-t border-shodh-border-subtle flex items-start justify-between gap-6">
       <div className="min-w-0">
-        <h3 className="m-0 text-body-lg font-semibold text-shodh-text">Scan reader</h3>
+        <h3 className="m-0 text-body-lg font-semibold text-shodh-text">{tr('settings.scanReaderSettings.scanReader')}</h3>
         <p className="m-0 mt-0.5 text-small text-shodh-text-muted">{description}</p>
         {installing && status.ready && !summary.installed && (
           <p className="m-0 mt-1 text-caption text-shodh-text-secondary tabular-nums" role="status" aria-live="polite">
@@ -72,7 +73,7 @@ export default function ScanReaderSettings() {
       {summary.installed ? (
         <span className="shrink-0 inline-flex items-center gap-1.5 text-small text-shodh-success">
           <ShieldCheck className="w-4 h-4" aria-hidden="true" />
-          Ready
+          {tr('settings.scanReaderSettings.ready')}
         </span>
       ) : status.ready ? (
         <button

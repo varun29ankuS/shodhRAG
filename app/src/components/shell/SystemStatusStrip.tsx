@@ -38,6 +38,7 @@ import {
   searchSummary,
 } from '../../features/status/systemStatus';
 import type { SwitchAction, SystemStatus, Tone } from '../../features/status/systemStatus';
+import { tr } from '../../i18n/tr';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-sidebar';
@@ -148,7 +149,7 @@ function PartRow({
       <div className="flex items-center gap-2">
         <Icon className="w-4 h-4 shrink-0 text-shodh-text-muted" aria-hidden="true" />
         <span className="text-small font-semibold text-shodh-text">{name}</span>
-        <ToneDot tone={tone} className="ml-auto" />
+        <ToneDot tone={tone} className="ms-auto" />
       </div>
       <p className="m-0 text-small text-shodh-text-secondary break-words">{state}</p>
       {children}
@@ -162,39 +163,39 @@ function SearchDetails({ status }: { status: SystemStatus }) {
   const measured = report.calibratedAt ? new Date(report.calibratedAt) : null;
   return (
     <details className="text-caption text-shodh-text-muted">
-      <summary className={cn('cursor-pointer select-none w-fit rounded-sm', PANEL_FOCUS_RING)}>Details</summary>
+      <summary className={cn('cursor-pointer select-none w-fit rounded-sm', PANEL_FOCUS_RING)}>{tr('shell.systemStatusStrip.details')}</summary>
       <dl className="mt-1.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
-        <dt>Runs on</dt>
+        <dt>{tr('shell.systemStatusStrip.runsOn')}</dt>
         <dd className="m-0 text-shodh-text-secondary break-words">{runsOnText(report)}</dd>
         {report.threads !== null && (
           <>
-            <dt>Processor threads</dt>
+            <dt>{tr('shell.systemStatusStrip.processorThreads')}</dt>
             <dd className="m-0 text-shodh-text-secondary">{report.threads}</dd>
           </>
         )}
-        <dt>Measured speed</dt>
+        <dt>{tr('shell.systemStatusStrip.measuredSpeed')}</dt>
         <dd className="m-0 text-shodh-text-secondary">
           {report.pagesPerMinute === null ? 'Not measured' : pagesPerMinuteText(report.pagesPerMinute)}
         </dd>
         {cpuReasonDetail(report.cpuReason) && (
           <>
-            <dt>Error</dt>
+            <dt>{tr('shell.systemStatusStrip.error')}</dt>
             <dd className="m-0 text-shodh-text-secondary break-words">{cpuReasonDetail(report.cpuReason)}</dd>
           </>
         )}
         {report.recentPagesPerMinute !== null && (
           <>
-            <dt>Recent speed</dt>
+            <dt>{tr('shell.systemStatusStrip.recentSpeed')}</dt>
             <dd className="m-0 text-shodh-text-secondary">{pagesPerMinuteText(report.recentPagesPerMinute)}</dd>
           </>
         )}
         {measured && !Number.isNaN(measured.getTime()) && (
           <>
-            <dt>Measured on</dt>
+            <dt>{tr('shell.systemStatusStrip.measuredOn')}</dt>
             <dd className="m-0 text-shodh-text-secondary">{measured.toLocaleString()}</dd>
           </>
         )}
-        <dt>In memory</dt>
+        <dt>{tr('shell.systemStatusStrip.inMemory')}</dt>
         <dd className="m-0 text-shodh-text-secondary">{report.loaded ? 'Yes' : 'No (loads when search runs)'}</dd>
       </dl>
     </details>
@@ -250,14 +251,14 @@ function ModelSwitchBlock({ status, onAction }: { status: SystemStatus; onAction
       {view.detail && <p className="m-0 text-caption text-shodh-text-secondary tabular-nums">{view.detail}</p>}
       {view.technical && (
         <details className="text-caption text-shodh-text-muted">
-          <summary className={cn('cursor-pointer select-none w-fit rounded-sm', PANEL_FOCUS_RING)}>Show details</summary>
+          <summary className={cn('cursor-pointer select-none w-fit rounded-sm', PANEL_FOCUS_RING)}>{tr('shell.systemStatusStrip.showDetails')}</summary>
           <p className="m-0 mt-1 break-words">{view.technical}</p>
         </details>
       )}
       {s.phase === 'building' && s.total > 0 && bar(percent, view.title)}
       {s.phase === 'downloading' && s.downloadBytes > 0 && bar(downloadPercent, view.title)}
       {confirming ? (
-        <div className="flex flex-col gap-1.5 pt-0.5" role="alertdialog" aria-label="Discard the re-index">
+        <div className="flex flex-col gap-1.5 pt-0.5" role="alertdialog" aria-label={tr('shell.systemStatusStrip.discardTheReIndex')}>
           <p className="m-0 text-caption text-shodh-text">{discardConfirmText(status)}</p>
           <div className="flex flex-wrap gap-1.5">
             <button
@@ -269,11 +270,11 @@ function ModelSwitchBlock({ status, onAction }: { status: SystemStatus; onAction
               }}
             >
               <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
-              Discard
+              {tr('shell.systemStatusStrip.discard')}
             </button>
             <button type="button" className={SMALL_BUTTON} onClick={() => setConfirming(false)}>
               <X className="w-3.5 h-3.5" aria-hidden="true" />
-              Keep it
+              {tr('shell.systemStatusStrip.keepIt')}
             </button>
           </div>
         </div>
@@ -384,13 +385,12 @@ function SystemStatusPanel({
                 onChange={e => onUseGpu(e.target.checked)}
                 className={cn('w-3.5 h-3.5 accent-shodh-accent', PANEL_FOCUS_RING)}
               />
-              Use the graphics card for search
+              {tr('shell.systemStatusStrip.useTheGraphicsCardFor')}
             </label>
           )}
           {status?.searchInstalled && IS_WINDOWS && (
             <p className="m-0 text-caption text-shodh-text-muted">
-              On Windows this uses Microsoft&rsquo;s DirectML. Its licence says it may send information about its use
-              to Microsoft, and not all of that can be turned off. Turn this off to keep search fully local.
+              {tr('shell.systemStatusStrip.onWindowsThisUsesMicrosoft')}
             </p>
           )}
         </PartRow>
@@ -440,7 +440,7 @@ function SystemStatusPanel({
               </div>
               <button type="button" className={SMALL_BUTTON} onClick={() => onCancel(job.id)} aria-label={`Cancel indexing ${job.name}`}>
                 <X className="w-3.5 h-3.5" aria-hidden="true" />
-                Cancel
+                {tr('shell.systemStatusStrip.cancel')}
               </button>
             </div>
           ))}
@@ -448,12 +448,12 @@ function SystemStatusPanel({
             <div key={run.sourceId} className="flex items-center gap-2">
               <Network className="w-3.5 h-3.5 shrink-0 text-shodh-text-muted" aria-hidden="true" />
               <div className="min-w-0 flex-1 flex flex-col">
-                <span className="text-caption font-medium text-shodh-text truncate">Code map: {run.name}</span>
+                <span className="text-caption font-medium text-shodh-text truncate">{tr('shell.systemStatusStrip.codeMap')}{run.name}</span>
                 <span className="text-caption text-shodh-text-muted tabular-nums">{codeMapRunText(run)}</span>
               </div>
               <button type="button" className={SMALL_BUTTON} onClick={() => onCancel(run.sourceId)} aria-label={`Stop the code map of ${run.name}`}>
                 <X className="w-3.5 h-3.5" aria-hidden="true" />
-                Stop
+                {tr('shell.systemStatusStrip.stop')}
               </button>
             </div>
           ))}
@@ -461,12 +461,12 @@ function SystemStatusPanel({
             <div className="flex items-center gap-2">
               <History className="w-3.5 h-3.5 shrink-0 text-shodh-text-muted" aria-hidden="true" />
               <div className="min-w-0 flex-1 flex flex-col">
-                <span className="text-caption font-medium text-shodh-text truncate">AI coding sessions</span>
+                <span className="text-caption font-medium text-shodh-text truncate">{tr('shell.systemStatusStrip.aiCodingSessions')}</span>
                 <span className="text-caption text-shodh-text-muted tabular-nums">{recallRunText(status.recall)}</span>
               </div>
-              <button type="button" className={SMALL_BUTTON} onClick={() => onCancel(status.recall?.sourceId ?? 'recall')} aria-label="Stop indexing coding sessions">
+              <button type="button" className={SMALL_BUTTON} onClick={() => onCancel(status.recall?.sourceId ?? 'recall')} aria-label={tr('shell.systemStatusStrip.stopIndexingCodingSessions')}>
                 <X className="w-3.5 h-3.5" aria-hidden="true" />
-                Stop
+                {tr('shell.systemStatusStrip.stop')}
               </button>
             </div>
           )}
@@ -479,15 +479,15 @@ function SystemStatusPanel({
             >
               {paused ? <Play className="w-3.5 h-3.5" aria-hidden="true" /> : <Pause className="w-3.5 h-3.5" aria-hidden="true" />}
               {paused ? 'Resume indexing' : 'Pause indexing'}
-              <Kbd shortcut="toggleIndexingPause" className="ml-1" />
+              <Kbd shortcut="toggleIndexingPause" className="ms-1" />
             </button>
             <button type="button" className={SMALL_BUTTON} onClick={onOpenLibrary}>
               <ListOrdered className="w-3.5 h-3.5" aria-hidden="true" />
-              Open Library
+              {tr('shell.systemStatusStrip.openLibrary')}
             </button>
           </div>
           {paused && (
-            <p className="m-0 text-caption text-shodh-text-muted">Paused indexing stays paused after Shodh restarts.</p>
+            <p className="m-0 text-caption text-shodh-text-muted">{tr('shell.systemStatusStrip.pausedIndexingStaysPausedAfter')}</p>
           )}
         </PartRow>
       </ul>
@@ -669,16 +669,16 @@ export function SystemStatusStrip({
         className={cn(
           collapsed
             ? 'relative w-10 h-10 rounded-[10px] inline-flex items-center justify-center hover:bg-shodh-raised transition-colors duration-micro'
-            : 'flex flex-wrap items-center gap-x-2 gap-y-0.5 min-h-8 w-full px-3 py-1.5 rounded-[10px] border border-shodh-border text-left hover:bg-shodh-raised transition-colors duration-micro min-w-0',
+            : 'flex flex-wrap items-center gap-x-2 gap-y-0.5 min-h-8 w-full px-3 py-1.5 rounded-[10px] border border-shodh-border text-start hover:bg-shodh-raised transition-colors duration-micro min-w-0',
           FOCUS_RING,
         )}
       >
         <SearchIcon className="w-4 h-4 shrink-0 text-shodh-text-muted" aria-hidden="true" />
         {!collapsed && (
-          <span className="flex-1 min-w-0 whitespace-normal break-words text-caption font-medium text-shodh-text-secondary">Search · {search.short}</span>
+          <span className="flex-1 min-w-0 whitespace-normal break-words text-caption font-medium text-shodh-text-secondary">{tr('shell.systemStatusStrip.search')}{search.short}</span>
         )}
         {!collapsed && <Kbd shortcut="openSystemStatus" className="ms-auto" />}
-        <ToneDot tone={search.tone} className={collapsed ? 'absolute top-1.5 right-1.5' : undefined} />
+        <ToneDot tone={search.tone} className={collapsed ? 'absolute top-1.5 end-1.5' : undefined} />
       </button>
 
       {/* A pause is shown even with nothing waiting: it is kept across restarts. */}
@@ -686,13 +686,13 @@ export function SystemStatusStrip({
         <div className="flex items-center gap-1 px-1">
           <span className="min-w-0 flex-1 flex items-center gap-1.5 text-caption font-semibold text-shodh-text">
             <Pause className="w-3.5 h-3.5 shrink-0 text-shodh-warning" aria-hidden="true" />
-            Indexing paused
+            {tr('shell.systemStatusStrip.indexingPaused')}
           </span>
           <button
             type="button"
             className={ICON_BUTTON}
             onClick={() => onPause(false)}
-            aria-label="Resume indexing"
+            aria-label={tr('shell.systemStatusStrip.resumeIndexing')}
             aria-keyshortcuts={ariaKeyShortcuts('toggleIndexingPause', IS_MAC)}
             title={withShortcut('Resume indexing', 'toggleIndexingPause', IS_MAC)}
           >
@@ -705,7 +705,7 @@ export function SystemStatusStrip({
           type="button"
           className={ICON_BUTTON}
           onClick={() => onPause(false)}
-          aria-label="Indexing paused. Resume indexing"
+          aria-label={tr('shell.systemStatusStrip.indexingPausedResumeIndexing')}
           title={withShortcut('Indexing paused. Resume indexing', 'toggleIndexingPause', IS_MAC)}
         >
           <Pause className="w-3.5 h-3.5 text-shodh-warning" aria-hidden="true" />
@@ -718,7 +718,7 @@ export function SystemStatusStrip({
               type="button"
               onClick={onOpenLibrary}
               aria-label={`Indexing ${job.name}: ${jobDetail(job, jobProgress)}. Open Library`}
-              className={cn('min-w-0 flex-1 flex flex-col text-left rounded-sm', FOCUS_RING)}
+              className={cn('min-w-0 flex-1 flex flex-col text-start rounded-sm', FOCUS_RING)}
             >
               <span className="text-caption font-semibold text-shodh-text truncate">
                 {paused ? 'Paused: ' : 'Indexing '}
@@ -742,7 +742,7 @@ export function SystemStatusStrip({
               className={ICON_BUTTON}
               onClick={() => onCancel(job.id)}
               aria-label={`Cancel indexing ${job.name}`}
-              title="Cancel indexing"
+              title={tr('shell.systemStatusStrip.cancelIndexing')}
             >
               <X className="w-3.5 h-3.5" aria-hidden="true" />
             </button>
@@ -771,7 +771,7 @@ export function SystemStatusStrip({
               type="button"
               onClick={() => setOpen(true)}
               aria-label={`${paused ? 'Paused: code map of' : 'Building the code map of'} ${codeMap.name}: ${codeMapRunText(codeMap)}. Open System status`}
-              className={cn('min-w-0 flex-1 flex flex-col text-left rounded-sm', FOCUS_RING)}
+              className={cn('min-w-0 flex-1 flex flex-col text-start rounded-sm', FOCUS_RING)}
             >
               <span className="text-caption font-semibold text-shodh-text truncate flex items-center gap-1.5">
                 <Network className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
@@ -795,7 +795,7 @@ export function SystemStatusStrip({
               className={ICON_BUTTON}
               onClick={() => onCancel(codeMap.sourceId)}
               aria-label={`Stop the code map of ${codeMap.name}`}
-              title="Stop the code map (what it read is kept)"
+              title={tr('shell.systemStatusStrip.stopTheCodeMapWhat')}
             >
               <X className="w-3.5 h-3.5" aria-hidden="true" />
             </button>
@@ -824,7 +824,7 @@ export function SystemStatusStrip({
               type="button"
               onClick={() => setOpen(true)}
               aria-label={`${paused ? 'Paused: coding sessions' : 'Indexing coding sessions'}: ${recallRunText(recallRun)}. Open System status`}
-              className={cn('min-w-0 flex-1 flex flex-col text-left rounded-sm', FOCUS_RING)}
+              className={cn('min-w-0 flex-1 flex flex-col text-start rounded-sm', FOCUS_RING)}
             >
               <span className="text-caption font-semibold text-shodh-text truncate flex items-center gap-1.5">
                 <History className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
@@ -846,15 +846,15 @@ export function SystemStatusStrip({
               type="button"
               className={ICON_BUTTON}
               onClick={() => onCancel(recallRun.sourceId)}
-              aria-label="Stop indexing coding sessions"
-              title="Stop indexing coding sessions (what is indexed is kept)"
+              aria-label={tr('shell.systemStatusStrip.stopIndexingCodingSessions')}
+              title={tr('shell.systemStatusStrip.stopIndexingCodingSessionsWhat')}
             >
               <X className="w-3.5 h-3.5" aria-hidden="true" />
             </button>
           </div>
           <div
             role="progressbar"
-            aria-label="Coding sessions indexed"
+            aria-label={tr('shell.systemStatusStrip.codingSessionsIndexed')}
             aria-valuemin={0}
             aria-valuemax={100}
             aria-valuenow={recallPercent}
@@ -875,7 +875,7 @@ export function SystemStatusStrip({
             type="button"
             onClick={() => setOpen(true)}
             aria-label={`${switchView.title}. ${switchView.detail ?? ''} Open System status`}
-            className={cn('min-w-0 flex-1 flex flex-col text-left rounded-sm', FOCUS_RING)}
+            className={cn('min-w-0 flex-1 flex flex-col text-start rounded-sm', FOCUS_RING)}
           >
             <span className="text-caption font-semibold text-shodh-text truncate">{switchView.title}</span>
             {switchView.detail && (
@@ -888,7 +888,7 @@ export function SystemStatusStrip({
               className={ICON_BUTTON}
               onClick={() => onModelSwitch('stop')}
               aria-label={`Stop: ${switchView.title}. The work is kept for Continue.`}
-              title="Stop re-indexing (the work is kept)"
+              title={tr('shell.systemStatusStrip.stopReIndexingTheWork')}
             >
               <Pause className="w-3.5 h-3.5" aria-hidden="true" />
             </button>
@@ -911,10 +911,10 @@ export function SystemStatusStrip({
           className="fixed z-50 w-[380px] max-w-[calc(100vw-24px)] rounded-xl border border-shodh-border bg-shodh-surface shadow-lg overflow-hidden"
         >
           <header className="flex items-center justify-between gap-2 px-3.5 py-2.5 border-b border-shodh-border-subtle">
-            <h2 id={headingId} className="m-0 text-small font-semibold text-shodh-text">System status</h2>
+            <h2 id={headingId} className="m-0 text-small font-semibold text-shodh-text">{tr('shell.systemStatusStrip.systemStatus')}</h2>
             <button type="button" className={SMALL_BUTTON} onClick={() => close(true)}>
               <X className="w-3.5 h-3.5" aria-hidden="true" />
-              Close
+              {tr('shell.systemStatusStrip.close')}
             </button>
           </header>
           <SystemStatusPanel

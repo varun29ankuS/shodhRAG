@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import type { KeyboardEvent } from 'react';
 import { useTheme } from '../../contexts/ThemeContext';
 import type { LoadFailureNotice } from '../../hooks/conversationSaves';
+import { tr } from '../../i18n/tr';
 
 /**
  * Blocks the window when the saved conversations could not be loaded: says
@@ -121,7 +122,7 @@ export function ConversationsUnavailable({ notice, onContinue }: {
               color: colors.primaryText,
             }}
           >
-            Continue without saving
+            {tr('ask.conversationsUnavailable.continueWithoutSaving')}
           </button>
         </div>
       </div>

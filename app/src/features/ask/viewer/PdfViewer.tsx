@@ -1371,7 +1371,7 @@ export function PdfViewer({
           <ChevronDown className="w-4 h-4" aria-hidden="true" />
         </button>
         <form
-          className="flex items-center gap-1.5 ml-1"
+          className="flex items-center gap-1.5 ms-1"
           onSubmit={e => {
             e.preventDefault();
             const n = Number(pageInput);
@@ -1491,7 +1491,7 @@ export function PdfViewer({
               VIEWER_FOCUS_RING,
             )}
           />
-          <span className="min-w-[76px] text-right tabular-nums text-shodh-text-muted" role="status" aria-live="polite">
+          <span className="min-w-[76px] text-end tabular-nums text-shodh-text-muted" role="status" aria-live="polite">
             {findSummary}
           </span>
           <button type="button" className={toolButton} onClick={() => stepFind(-1)} disabled={findHits.length === 0} aria-label="Previous match" title={withShortcut('Previous match', 'prevMatch', IS_MAC_PLATFORM)}>

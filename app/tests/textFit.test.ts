@@ -9,7 +9,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { MAX_REPORTED, clipped, fieldTextFits, shortenedWithTitle } from '../src/features/launch/textFit.ts';
+import { MAX_REPORTED, clipped, fieldTextFits, shortenedWithTitle, textSpill } from '../src/features/launch/textFit.ts';
 import { appDir, source, withoutComments } from './jsxScan.ts';
 
 const box = { scrollWidth: 100, clientWidth: 100, scrollHeight: 20, clientHeight: 20, overflowX: 'visible', overflowY: 'visible' };
@@ -110,4 +110,28 @@ test('a citation pill is at least as wide as its 24px target, so its target neve
   assert.match(renderer, /'target-24 inline-flex items-center justify-center min-w-6 h-\[18px\] px-1 /);
   // The pill a wrong number gets keeps the same size.
   assert.match(source('features/agent/GroundingFlags.tsx'), /inline-flex items-center justify-center min-w-6 h-\[18px\] px-1 ml-0\.5 rounded-\[5px\]/);
+});
+
+test('text that spills is measured on its own lines, not on what else its box holds', () => {
+  // A citation pill: 24px wide with a 1px border and 4px padding, its "1" in the middle.
+  // Its click target (target-24) spills a pixel past the inside, but the text fits.
+  const pill = { left: 105, right: 119 };
+  assert.equal(textSpill([{ left: 108.5, right: 115.5 }], pill), 0);
+  // Exactly at the edges fits; there is no tolerance either way.
+  assert.equal(textSpill([{ left: 105, right: 119 }], pill), 0);
+  // Text past the content box, on either side or on any line of several, does not fit.
+  assert.ok(textSpill([{ left: 104, right: 119 }], pill) > 0);
+  assert.ok(textSpill([{ left: 105, right: 119.5 }], pill) > 0);
+  assert.equal(textSpill([{ left: 106, right: 118 }, { left: 106, right: 130 }], pill), 11);
+  // No text, nothing to spill.
+  assert.equal(textSpill([], pill), 0);
+
+  const fit = withoutComments(source('features/launch/textFit.ts'));
+  // Only boxes that let text spill; hiding boxes and fields keep their own measures.
+  assert.match(fit, /if \(cutsX && !hides\(style\.overflowX\) && !scrolls\(style\.overflowX\)\) \{/);
+  assert.match(fit, /scrollWidth: cutsX && hides\(style\.overflowX\) \? el\.scrollWidth : 0,/);
+  assert.match(fit, /range\.selectNodeContents\(node\);\s*for \(const rect of Array\.from\(range\.getClientRects\(\)\)\)/);
+  // The content box: inside the border and the padding.
+  assert.match(fit, /left: rect\.left \+ px\(style\.borderLeftWidth\) \+ px\(style\.paddingLeft\),/);
+  assert.match(fit, /right: rect\.right - px\(style\.borderRightWidth\) - px\(style\.paddingRight\),/);
 });

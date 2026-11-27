@@ -6,6 +6,7 @@
  */
 import type { ActiveModel, CatalogModel, LocalServer, ModelRef, ModelPrefs, PickId, PickerView, PrivacyNote, ProviderId } from './modelTypes.ts';
 import { PROVIDER_LABELS, sameModel } from './modelTypes.ts';
+import { modelDisplayName } from '../connection/connectionStatus.ts';
 
 /** USD per million tokens as shown: "$0.18", "$3", "$15", "<$0.01"; null is unknown. */
 export function formatUsd(perMillion: number | null): string | null {
@@ -77,6 +78,16 @@ export function modelName(models: readonly CatalogModel[], ref: ModelRef | null 
   const listed = findModel(models, ref);
   if (listed) return listed.name;
   return ref.model;
+}
+
+/**
+ * The model control's text: the active model's name (the one name the sidebar's model
+ * status shows too, `modelDisplayName`), or what to do when there is none.
+ */
+export function modelLabelOf(view: Pick<PickerView, 'active' | 'models'> | null): { label: string; ready: boolean } {
+  const active = view?.active ?? null;
+  if (active) return { label: modelDisplayName(view?.models ?? [], active.model), ready: true };
+  return { label: view ? 'Choose a model' : 'Model', ready: false };
 }
 
 export function modelKey(ref: ModelRef): string {
@@ -260,6 +271,26 @@ export function chipEntries(
     recent += 1;
   }
   return entries;
+}
+
+/**
+ * Whether a row of the composer's model menu is the one that answers now: a pick while it
+ * is the selected pick (`selectedPick`), a recent model while no pick claims it.
+ */
+export function chipEntryActive(view: Pick<PickerView, 'active' | 'prefs' | 'picks'>, entry: ChipEntry): boolean {
+  if (!sameModel(view.active?.model, entry.model)) return false;
+  const activePick = selectedPick(view);
+  return entry.kind === 'recent' ? activePick === null || view.active?.source !== 'settings' : activePick === entry.pick;
+}
+
+/** A menu row's second line: the model and its provider, or that it was used recently. */
+export function chipEntryDetail(entry: ChipEntry): string {
+  return entry.kind === 'pick' ? `${entry.name} · ${PROVIDER_LABELS[entry.model.provider]}` : `Recent · ${PROVIDER_LABELS[entry.model.provider]}`;
+}
+
+/** A menu row's first line: the pick's label, or a recent model's name. */
+export function chipEntryTitle(entry: ChipEntry): string {
+  return entry.kind === 'pick' ? entry.label : entry.name;
 }
 
 /**

@@ -22,6 +22,7 @@ import { useNavigationTarget } from '../../features/agent/useNavigationTarget';
 import { agentItemKey, revealAgentItem } from '../../lib/agentHighlight';
 
 import type { SettingsSection } from '../../features/memory/navigation';
+import { PageFrame } from './PageFrame';
 export type { SettingsSection } from '../../features/memory/navigation';
 
 const SECTIONS: { id: SettingsSection; label: string; description: string }[] = [
@@ -148,12 +149,12 @@ export default function SettingsView({
   const active = SECTIONS.find(s => s.id === section) ?? SECTIONS[0];
 
   return (
-    <div className="h-full flex bg-shodh-ground text-shodh-text">
+    <PageFrame fill width="full" title="Settings">
+      <div className="flex-1 min-h-0 flex border-t border-shodh-border-subtle">
       <nav
         aria-label="Settings sections"
-        className="w-[220px] shrink-0 border-r border-shodh-border-subtle px-3 py-7 flex flex-col gap-0.5"
+        className="w-[220px] shrink-0 border-e border-shodh-border-subtle ps-5 pe-3 py-4 overflow-y-auto scrollbar-thin flex flex-col gap-0.5"
       >
-        <h1 className="px-3 pb-2.5 text-[18px] font-bold">Settings</h1>
         <ul className="flex flex-col gap-0.5">
           {SECTIONS.map(s => {
             const isActive = s.id === section;
@@ -180,25 +181,25 @@ export default function SettingsView({
       </nav>
 
       {section === 'models' ? (
-        <section aria-labelledby="settings-section-heading" className="flex-1 min-w-0 overflow-y-auto">
-          <div className="max-w-[820px] px-10 py-8 flex flex-col gap-7">
+        <section aria-labelledby="settings-section-heading" className="flex-1 min-w-0 overflow-y-auto scrollbar-thin">
+          <div className="max-w-[820px] px-8 pt-5 pb-page-end flex flex-col gap-7">
             <header className="flex flex-col gap-1.5">
-              <h2 id="settings-section-heading" data-agent-item={agentItemKey('settings-section', active.id)} className="m-0 text-2xl font-bold">
+              <h2 id="settings-section-heading" data-agent-item={agentItemKey('settings-section', active.id)} className="m-0 text-subhead font-semibold">
                 {active.label}
               </h2>
-              <p className="text-sm text-shodh-text-muted">{active.description}</p>
+              <p className="text-body text-shodh-text-muted">{active.description}</p>
             </header>
             <ModelSettingsSection />
           </div>
         </section>
       ) : (
-        <section aria-labelledby="settings-section-heading" className="flex-1 min-w-0 overflow-y-auto">
-          <div className="max-w-[820px] px-10 py-8 flex flex-col gap-7">
+        <section aria-labelledby="settings-section-heading" className="flex-1 min-w-0 overflow-y-auto scrollbar-thin">
+          <div className="max-w-[820px] px-8 pt-5 pb-page-end flex flex-col gap-7">
             <header className="flex flex-col gap-1.5">
-              <h2 id="settings-section-heading" data-agent-item={agentItemKey('settings-section', active.id)} className="m-0 text-2xl font-bold">
+              <h2 id="settings-section-heading" data-agent-item={agentItemKey('settings-section', active.id)} className="m-0 text-subhead font-semibold">
                 {active.label}
               </h2>
-              <p className="text-sm text-shodh-text-muted">{active.description}</p>
+              <p className="text-body text-shodh-text-muted">{active.description}</p>
             </header>
 
             <section className="p-5 rounded-[14px] bg-shodh-surface border border-shodh-border">
@@ -249,6 +250,7 @@ export default function SettingsView({
           </div>
         </section>
       )}
-    </div>
+      </div>
+    </PageFrame>
   );
 }

@@ -436,7 +436,7 @@ function TableEditor({
           </form>
         ) : (
           <div className="flex items-center gap-1.5 flex-1 min-w-[240px]">
-            <h3 className="m-0 text-[16px] font-semibold text-shodh-text truncate">{table.name}</h3>
+            <h3 className="m-0 text-body-lg font-semibold text-shodh-text truncate">{table.name}</h3>
             <button
               type="button"
               aria-label="Rename table"

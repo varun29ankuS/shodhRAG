@@ -75,7 +75,7 @@ export function ConceptPage({
       {back}
       <header className="flex flex-col gap-1">
         <p className={SECTION_TITLE}>{kind === 'method' ? 'Method' : 'Dataset'}</p>
-        <h2 id={headingId} className="m-0 text-[19px] font-semibold text-shodh-text">{v.concept.label}</h2>
+        <h2 id={headingId} className="m-0 text-title font-semibold text-shodh-text">{v.concept.label}</h2>
         {v.proposedIn && (
           <p className="text-small text-shodh-text-secondary">
             First proposed in{' '}

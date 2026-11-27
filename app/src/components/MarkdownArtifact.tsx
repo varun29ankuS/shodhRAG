@@ -11,7 +11,7 @@ export function MarkdownArtifact({
 }: MarkdownArtifactProps) {
 
   return (
-    <div className="h-full flex flex-col bg-white dark:bg-gray-900">
+    <div className="h-full flex flex-col bg-shodh-surface">
       {/* Content */}
       <div className="flex-1 overflow-auto p-6">
         <div className="prose prose-sm dark:prose-invert max-w-none">

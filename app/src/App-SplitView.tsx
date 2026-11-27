@@ -146,6 +146,8 @@ import { useNavigationTarget } from './features/agent/useNavigationTarget';
 import { countOf } from './lib/plural';
 import { InfoPopover } from './components/ui/InfoPopover';
 import { IS_MAC_PLATFORM, shortcutText, withShortcut } from './lib/shortcuts';
+import { FOCUS_UNDERLINE } from './lib/focusStyles';
+import { cn } from './lib/utils';
 
 // Debug logging — set to true during development, false for demo/production
 const DEBUG = false;
@@ -1603,7 +1605,7 @@ function AppSplitView() {
         >
           <div className="flex items-center gap-3 shrink-0">
             <span className="inline-flex items-center">
-              <span className="text-xs font-semibold tracking-wide" style={{ color: colors.text }}>
+              <span className="text-caption font-semibold tracking-wide" style={{ color: colors.text }}>
                 {VIEW_TAB_LABELS[viewTab]}
               </span>
               <AssistantViewCue cue={viewCue} />
@@ -1663,7 +1665,7 @@ function AppSplitView() {
                 </button>
                 {showSystemPromptEditor && (
                   <>
-                    <div className="fixed inset-0 z-40" onClick={() => { setShowSystemPromptEditor(false); setEditingInstructionIdx(null); }} />
+                    <div aria-hidden="true" className="fixed inset-0 z-40" onClick={() => { setShowSystemPromptEditor(false); setEditingInstructionIdx(null); }} />
                     <div
                       ref={instructionsPopoverRef}
                       role="dialog"
@@ -1682,7 +1684,7 @@ function AppSplitView() {
                         <button
                           type="button"
                           onClick={() => { setShowSystemPromptEditor(false); setEditingInstructionIdx(null); instructionsButtonRef.current?.focus(); }}
-                          className="w-5 h-5 rounded flex items-center justify-center"
+                          className="target-24 w-5 h-5 rounded flex items-center justify-center"
                           style={{ color: colors.textMuted }}
                           aria-label="Close instructions"
                           title={withShortcut('Close', 'close', IS_MAC_PLATFORM)}
@@ -1724,7 +1726,7 @@ function AppSplitView() {
                                       }}
                                       aria-label="Edit instruction"
                                       autoFocus
-                                      className="flex-1 text-caption leading-snug bg-transparent border-b outline-none py-0.5"
+                                      className={cn('flex-1 text-caption leading-snug bg-transparent border-b outline-none py-0.5', FOCUS_UNDERLINE)}
                                       style={{ color: colors.text, borderColor: colors.primary }}
                                     />
                                     <button
@@ -1795,7 +1797,7 @@ function AppSplitView() {
                             // Focus starts here as the popover opens, and comes back here
                             // after Save, Cancel, Remove or Clear all (focusNewInstruction).
                             autoFocus
-                            className="flex-1 text-caption rounded-md border px-2 py-1.5 outline-none"
+                            className="flex-1 text-caption rounded-md border px-2 py-1.5 outline-none focus-visible:ring-2 focus-visible:ring-ring"
                             style={{
                               backgroundColor: colors.inputBg,
                               borderColor: colors.border,

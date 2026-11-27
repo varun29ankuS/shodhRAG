@@ -178,7 +178,7 @@ export function RepeatField({ task, repeat }: { task: TodoItem; repeat: RepeatSt
           ))}
         </select>
         <span className="w-4 h-4 shrink-0" aria-hidden="true">
-          {busy === 'menu' && <Loader2 className="w-4 h-4 animate-spin text-shodh-text-faint" />}
+          {busy === 'menu' && <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none text-shodh-text-faint" />}
         </span>
       </div>
       <p
@@ -204,7 +204,7 @@ export function RepeatField({ task, repeat }: { task: TodoItem; repeat: RepeatSt
             onClick={() => act(action)}
             className={cn(ACTION, ACTION_WIDTH[action])}
           >
-            {busy === action ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-label="Saving" /> : ACTION_LABELS[action]}
+            {busy === action ? <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" aria-label="Saving" /> : ACTION_LABELS[action]}
           </button>
         ))}
       </div>

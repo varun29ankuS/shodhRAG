@@ -670,7 +670,7 @@ function TaskStage({ task }: { task: FocusTaskSnapshot }) {
   return (
     <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin bg-shodh-raised-2 p-6 flex justify-center">
       <article className="w-full max-w-[560px] h-fit rounded-2xl border border-shodh-border bg-shodh-surface p-5 flex flex-col gap-4">
-        <h3 className="text-[18px] font-semibold text-shodh-text break-words">{task.title}</h3>
+        <h3 className="text-subhead font-semibold text-shodh-text break-words">{task.title}</h3>
         <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-2 text-body">
           {rows.map(([k, v]) => (
             <React.Fragment key={k}>

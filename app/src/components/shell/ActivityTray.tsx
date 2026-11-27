@@ -151,7 +151,7 @@ export function ActivityTray({ jobs, onOpenConversation }: ActivityTrayProps) {
 
           {liveRun && (
             <div className="flex items-start gap-2 rounded-lg px-2 py-2 hover:bg-shodh-raised">
-              <span className="mt-[5px] w-2 h-2 rounded-full shrink-0 bg-shodh-accent-text ask-breathe" aria-hidden="true" />
+              <span className="mt-1 w-2 h-2 rounded-full shrink-0 bg-shodh-accent-text ask-breathe" aria-hidden="true" />
               <button
                 type="button"
                 onClick={() => {
@@ -183,7 +183,7 @@ export function ActivityTray({ jobs, onOpenConversation }: ActivityTrayProps) {
 
           {sessions && (
             <div className="flex items-start gap-2 px-2 py-1.5" role="status" aria-live="polite">
-              <Bot className="w-3.5 h-3.5 mt-[2px] shrink-0 text-shodh-text-faint" aria-hidden="true" />
+              <Bot className="w-3.5 h-3.5 mt-0.5 shrink-0 text-shodh-text-faint" aria-hidden="true" />
               <div className="min-w-0 flex flex-col">
                 <span className="text-caption text-shodh-text-secondary tabular-nums">{sessionCountsLabel(sessions)}</span>
                 {sessions.side > 0 && (
@@ -199,7 +199,7 @@ export function ActivityTray({ jobs, onOpenConversation }: ActivityTrayProps) {
             const processed = job.processedCount ?? 0;
             return (
               <div key={job.id} className="flex items-start gap-2 rounded-lg px-2 py-2">
-                <span className="mt-[5px] w-2 h-2 rounded-full shrink-0 bg-shodh-warning" aria-hidden="true" />
+                <span className="mt-1 w-2 h-2 rounded-full shrink-0 bg-shodh-warning" aria-hidden="true" />
                 <div className="min-w-0 flex-1 flex flex-col gap-1">
                   <span className="text-small font-medium text-shodh-text truncate">{`Indexing ${job.name}`}</span>
                   <div

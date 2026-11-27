@@ -83,7 +83,15 @@ function input(messages: ChatMessage[], extra: Partial<SnapshotInput> = {}): Sna
     work: 'research',
     permission: 'ask',
     codeAvailable: true,
-    model: { label: 'Gemma 4 31B', ready: true },
+    model: {
+      label: 'Gemma 4 31B',
+      ready: true,
+      dot: 'green',
+      choices: [
+        { id: 'pick:free', title: 'Free', detail: 'Gemma 4 31B · OpenRouter', selected: true },
+        { id: 'model:openrouter:meta/llama-4:free', title: 'Llama 4', detail: 'Recent · OpenRouter', selected: false },
+      ],
+    },
     sendKey: 'enter',
     ...extra,
   };
@@ -120,6 +128,8 @@ test('every action round-trips', () => {
     { kind: 'setPermission', mode: 'ask' },
     { kind: 'setPermission', mode: 'auto' },
     { kind: 'pickModel' },
+    { kind: 'setModel', id: 'pick:free' },
+    { kind: 'setModel', id: 'model:openrouter:meta/llama-4:free' },
   ];
   for (const action of actions) {
     assert.deepEqual(parseDockAction(JSON.parse(JSON.stringify(action))), action);
@@ -155,6 +165,13 @@ test('unknown or malformed actions are refused', () => {
     { kind: 'setPermission', mode: 'creator' },
     { kind: 'setPermission', mode: 'bypass' },
     { kind: 'pickModel', model: 'x' },
+    // The model menu: an id of printable characters without spaces, and nothing else.
+    { kind: 'setModel' },
+    { kind: 'setModel', id: '' },
+    { kind: 'setModel', id: 'two words' },
+    { kind: 'setModel', id: 'x'.repeat(257) },
+    { kind: 'setModel', id: 7 },
+    { kind: 'setModel', id: 'pick:free', sessionOverride: true },
     { kind: 'stopCommand', id: '' },
     { kind: 'toString' },
     { kind: '__proto__' },
@@ -257,6 +274,14 @@ test('a malformed snapshot is not read', () => {
     { ...good, codeAvailable: 'yes' },
     { ...good, model: null },
     { ...good, model: { label: 1, ready: true } },
+    // The model's state is one of the four dots, and its menu a bounded list of well-formed rows.
+    { ...good, model: { label: 'x', ready: true, choices: [] } },
+    { ...good, model: { label: 'x', ready: true, dot: 'blue', choices: [] } },
+    { ...good, model: { label: 'x', ready: true, dot: 'green' } },
+    { ...good, model: { label: 'x', ready: true, dot: 'green', choices: [{ id: 'a b', title: 't', detail: 'd', selected: false }] } },
+    { ...good, model: { label: 'x', ready: true, dot: 'green', choices: [{ id: 'a', title: 't'.repeat(161), detail: 'd', selected: false }] } },
+    { ...good, model: { label: 'x', ready: true, dot: 'green', choices: [{ id: 'a', title: 't', detail: 'd' }] } },
+    { ...good, model: { label: 'x', ready: true, dot: 'green', choices: Array.from({ length: 13 }, (_, i) => ({ id: `m${i}`, title: 't', detail: 'd', selected: false })) } },
     { ...good, sendKey: 'altEnter' },
   ]) {
     assert.equal(parseDockSnapshot(bad), null, JSON.stringify(bad)?.slice(0, 80));

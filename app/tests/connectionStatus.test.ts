@@ -13,6 +13,7 @@ import {
   healthDot,
   healthText,
   keyOriginNote,
+  modelNotice,
   pillView,
   readSnapshot,
   sourceText,
@@ -152,4 +153,29 @@ test('the snapshot reader rejects malformed data and never shows more of a key t
   assert.equal(read.providers[1].health, 'unchecked');
   assert.equal(read.providers[1].keyHint, null, 'a hint must be masked');
   assert.equal(activeStatus(read)?.provider, 'openrouter');
+});
+
+test('a model known not to work is said before sending, in one line, with its fix', () => {
+  // Working, not checked yet, or no model: nothing to say.
+  assert.equal(modelNotice(snapshot([status()]), at), null);
+  assert.equal(modelNotice(snapshot([status({ health: 'unchecked' })]), at), null);
+  assert.equal(modelNotice({ active: null, providers: [], localOnly: false }, at), null);
+  assert.equal(modelNotice(null, at), null);
+  assert.equal(modelNotice(snapshot([]), at), null);
+
+  // A rejected key: the one state that needs the user, with the provider's long message left to the panel.
+  const rejected = modelNotice(snapshot([status({ health: 'rejected', httpStatus: 401, message: 'No auth credentials found. Visit the dashboard to create a key.' })]), at);
+  assert.deepEqual(rejected, { tone: 'bad', text: 'OpenRouter: Key rejected (401)', provider: 'openrouter', fix: 'Fix key' });
+
+  // Out of quota or rate-limited: it may clear by itself.
+  const quota = modelNotice(snapshot([status({ health: 'limited', quota: true })]), at);
+  assert.equal(quota?.tone, 'warn');
+  assert.equal(quota?.text, 'OpenRouter: Out of credit or daily quota');
+  assert.equal(modelNotice(snapshot([status({ health: 'limited' })]), at)?.text, 'OpenRouter: Rate-limited');
+
+  // A sign-in or a local server: the fix is named for what it is.
+  const signIn = modelNotice({ ...snapshot([status({ provider: 'claude-sub', label: 'Claude (Pro/Max)', source: 'subscription', keyHint: null, health: 'rejected' })]), active: { model: { provider: 'claude-sub', model: 'claude-opus-5-5' }, source: 'settings' } }, at);
+  assert.equal(signIn?.fix, 'Fix sign-in');
+  const local = modelNotice({ ...snapshot([status({ provider: 'lmstudio', label: 'LM Studio', source: 'local', keyHint: null, health: 'unreachable' })]), active: { model: { provider: 'lmstudio', model: 'qwen' }, source: 'settings' } }, at);
+  assert.deepEqual(local, { tone: 'warn', text: "Can't reach LM Studio", provider: 'lmstudio', fix: 'Open settings' });
 });

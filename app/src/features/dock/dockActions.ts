@@ -40,6 +40,8 @@ export interface DockTarget {
   setPermission: (mode: AgentMode) => void;
   /** Show Ask with its model menu open. */
   pickModel: () => void;
+  /** The model menu's pick: one of the rows main offered, by its id. */
+  setModel: (id: string) => void;
 }
 
 export function applyDockAction(action: DockAction, target: DockTarget): void {
@@ -103,6 +105,9 @@ export function applyDockAction(action: DockAction, target: DockTarget): void {
       return;
     case 'pickModel':
       target.pickModel();
+      return;
+    case 'setModel':
+      target.setModel(action.id);
       return;
   }
 }

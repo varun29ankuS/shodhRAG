@@ -444,7 +444,7 @@ export function ChipInput({
                 type="button"
                 aria-label={`Remove tag ${tag}`}
                 onClick={() => onChange(removeTag(tags, tag))}
-                className={cn('w-4 h-4 rounded inline-flex items-center justify-center text-shodh-text-muted hover:text-shodh-text hover:bg-shodh-pressed', FOCUS_RING)}
+                className={cn('target-24 w-4 h-4 rounded inline-flex items-center justify-center text-shodh-text-muted hover:text-shodh-text hover:bg-shodh-pressed', FOCUS_RING)}
               >
                 <X className="w-3 h-3" aria-hidden="true" />
               </button>

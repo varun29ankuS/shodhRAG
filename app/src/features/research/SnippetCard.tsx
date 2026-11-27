@@ -22,9 +22,9 @@ export function SnippetThumb({ snippet, className }: { snippet: Snippet; classNa
       {image.status === 'ready' ? (
         <img src={pngDataUrl(image.png)} alt="" className="max-w-full max-h-full object-contain" draggable={false} />
       ) : image.status === 'loading' ? (
-        <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none text-zinc-500" aria-hidden="true" />
+        <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none text-shodh-paper-ink-muted" aria-hidden="true" />
       ) : (
-        <span className="flex items-center gap-1.5 px-3 text-caption text-zinc-600" title={image.message}>
+        <span className="flex items-center gap-1.5 px-3 text-caption text-shodh-paper-ink-muted" title={image.message}>
           <AlertTriangle className="w-3.5 h-3.5 text-shodh-warning" aria-hidden="true" />
           Not drawn
         </span>

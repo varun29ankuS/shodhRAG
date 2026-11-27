@@ -190,6 +190,20 @@ impl PlanSource {
         refresh_availability(app, availability_ids(&inputs));
         resolve(&inputs, &state.health, &state.availability, now_ms())
     }
+
+    /// The plan [`Self::plan`] would resolve, from what is known now: nothing is
+    /// fetched. For saying which model a call would reach before it is made.
+    pub(crate) fn plan_as_known(
+        &self,
+        app: &AppHandle,
+        requested: &ModelRef,
+        needs: CallNeeds,
+    ) -> Plan {
+        let state = app.state::<FallbackState>();
+        let chain = self.pick_chain();
+        let inputs = self.inputs(requested, &chain, needs);
+        resolve(&inputs, &state.health, &state.availability, now_ms())
+    }
 }
 
 /// Fetches OpenRouter's availability of `ids` in the background (those not fetched in

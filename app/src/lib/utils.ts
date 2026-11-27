@@ -6,6 +6,9 @@ import { TYPE_SCALE_NAMES } from "./typeScale.ts"
 // colours: told so, a class list with a size and a colour keeps both.
 const twMerge = extendTailwindMerge({
   extend: {
+    theme: {
+      spacing: ["page-end"],
+    },
     classGroups: {
       "font-size": [{ text: [...TYPE_SCALE_NAMES] }],
     },

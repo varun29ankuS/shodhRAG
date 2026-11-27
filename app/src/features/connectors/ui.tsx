@@ -45,7 +45,7 @@ export function StatusPill({ pill, className, wrap = false }: { pill: Pill; clas
     <span
       className={cn(
         'inline-flex gap-1.5 max-w-full px-2 text-caption font-medium',
-        wrap ? 'items-start min-h-6 py-[5px] leading-[14px] rounded-xl' : 'items-center h-6 rounded-full',
+        wrap ? 'items-start min-h-6 py-1 leading-[14px] rounded-xl' : 'items-center h-6 rounded-full',
         PILL_SURFACE[pill.tone],
         className,
       )}

@@ -119,7 +119,7 @@ export function DesignCheckChip({ conversationId, workspaceId, creates, answerRu
         FOCUS_RING,
       )}
     >
-      {busy ? <Loader2 className="w-3 h-3 shrink-0 animate-spin" aria-hidden="true" /> : <Palette className="w-3 h-3 shrink-0" aria-hidden="true" />}
+      {busy ? <Loader2 className="w-3 h-3 shrink-0 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <Palette className="w-3 h-3 shrink-0" aria-hidden="true" />}
       <span>{check ? badgeText(check) : 'Design check'}</span>
     </button>
   );

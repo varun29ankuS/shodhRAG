@@ -212,7 +212,7 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
     >
       {/* Above the text, so a reason that comes and goes never moves the row of controls. */}
       {blockedReason && (
-        <div className={cn('flex items-center gap-2 min-w-0', compact ? 'px-3 pt-2' : 'px-[18px] pt-3')}>
+        <div className={cn('flex items-center gap-2 min-w-0', compact ? 'px-3 pt-2' : 'px-4.5 pt-3')}>
           <p id={blockedId} className="m-0 min-w-0 truncate text-caption text-shodh-text-muted" title={blockedReason}>
             {blockedReason}
           </p>
@@ -249,7 +249,7 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
         aria-describedby={blockedReason ? blockedId : undefined}
         className={cn(
           'block w-full resize-none [field-sizing:content] border-0 bg-transparent text-shodh-text placeholder:text-shodh-text-faint outline-none focus:outline-none scrollbar-thin',
-          compact ? 'px-3 pt-2.5 pb-0.5 text-body leading-[1.45]' : 'px-[18px] pt-4 pb-1 text-body-lg leading-[1.5]',
+          compact ? 'px-3 pt-2.5 pb-0.5 text-body leading-[1.45]' : 'px-4.5 pt-4 pb-1 text-body-lg leading-[1.5]',
         )}
         style={NATIVE_FIELD_SIZING ? { maxHeight, minHeight: compact ? MIN_COMPACT_HEIGHT : MIN_TEXTAREA_HEIGHT } : { maxHeight }}
       />

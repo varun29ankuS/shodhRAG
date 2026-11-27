@@ -1,25 +1,23 @@
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import type React from 'react';
 import { createPortal } from 'react-dom';
-import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
 import { KeyRound, Loader2, RefreshCw, SlidersHorizontal } from 'lucide-react';
 import { cn } from '../../lib/utils';
-import { MODEL_CHANGED_EVENT } from '../modelPicker/modelApi';
+import { useModelPicker } from '../modelPicker/modelApi';
+import { useConnectionSnapshot } from './useConnectionSnapshot';
 import { requestFixKey, requestModelPicker } from '../modelPicker/navigation';
 import { requestSettingsSection } from '../memory/navigation';
 import type { ProviderId } from '../modelPicker/modelTypes';
-import type { ConnectionSnapshot, ProviderStatus } from './connectionStatus';
+import type { ProviderStatus } from './connectionStatus';
 import {
-  CONNECTION_STATUS_EVENT,
   DOT_CLASS,
   checkedText,
   fixLabel,
   healthDot,
   healthText,
   keyOriginNote,
+  localTime,
   pillView,
-  readSnapshot,
   sourceText,
 } from './connectionStatus';
 
@@ -131,8 +129,9 @@ function ProviderRow({
  * spend a chat request.
  */
 export function ConnectionStatusChip({ collapsed }: { collapsed: boolean }) {
-  const [snapshot, setSnapshot] = useState<ConnectionSnapshot | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const { snapshot, loadError, check } = useConnectionSnapshot();
+  // The name the composer's model control shows (the catalogue's), so the two agree.
+  const { view: models } = useModelPicker();
   const [open, setOpen] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [position, setPosition] = useState<React.CSSProperties | null>(null);
@@ -141,39 +140,6 @@ export function ConnectionStatusChip({ collapsed }: { collapsed: boolean }) {
   const panelRef = useRef<HTMLElement>(null);
   const panelId = useId();
   const headingId = useId();
-
-  const load = useCallback(async () => {
-    try {
-      const next = readSnapshot(await invoke<unknown>('connection_status'));
-      if (next) setSnapshot(next);
-      setLoadError(null);
-    } catch (error) {
-      setLoadError(error instanceof Error ? error.message : String(error));
-    }
-  }, []);
-
-  // The backend sends every change; a model change elsewhere re-reads it.
-  useEffect(() => {
-    void load();
-    let disposed = false;
-    let unlisten: (() => void) | null = null;
-    listen<unknown>(CONNECTION_STATUS_EVENT, event => {
-      const next = readSnapshot(event.payload);
-      if (next) setSnapshot(next);
-    })
-      .then(fn => {
-        if (disposed) fn();
-        else unlisten = fn;
-      })
-      .catch(error => console.error('Connection status listener failed:', error));
-    const onModelChanged = () => void load();
-    window.addEventListener(MODEL_CHANGED_EVENT, onModelChanged);
-    return () => {
-      disposed = true;
-      if (unlisten) unlisten();
-      window.removeEventListener(MODEL_CHANGED_EVENT, onModelChanged);
-    };
-  }, [load]);
 
   // Relative times stay current while the panel is open.
   useEffect(() => {
@@ -215,21 +181,12 @@ export function ConnectionStatusChip({ collapsed }: { collapsed: boolean }) {
     if (shown) panelRef.current?.querySelector<HTMLButtonElement>('button')?.focus();
   }, [shown]);
 
-  const check = useCallback(async (provider: ProviderId | null) => {
-    try {
-      const next = readSnapshot(await invoke<unknown>('connection_check', { provider }));
-      if (next) setSnapshot(next);
-    } catch (error) {
-      setLoadError(error instanceof Error ? error.message : String(error));
-    }
-  }, []);
-
   const close = (refocus: boolean) => {
     setOpen(false);
     if (refocus) buttonRef.current?.focus();
   };
 
-  const pill = pillView(snapshot);
+  const pill = pillView(snapshot, localTime, models?.models ?? []);
   const activeProvider = snapshot?.active?.model.provider ?? null;
   const anyChecking = snapshot?.providers.some(p => p.checking) ?? false;
 

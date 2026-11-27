@@ -21,6 +21,15 @@
  * the dark values so the first paint before React mounts is already correct.
  */
 @layer base {
+  /*
+   * Paper: a PDF page or a snippet's picture is white in both themes, as printed, so what
+   * is written on it (a loading line, an error) has one ink in both. 9.7:1 and 7.7:1 on white.
+   */
+  :root {
+    --c-paper-ink: #3f3f46;
+    --c-paper-ink-muted: #52525b;
+  }
+
   :root,
   [data-theme="dark"] {
     color-scheme: dark;
@@ -561,4 +570,59 @@
 /* Notices stay clickable (e.g. Undo) while a modal dialog has made the rest of the page inert to the pointer. */
 [data-sonner-toast][data-visible='true'] {
   pointer-events: auto;
+}
+
+/*
+ * The conversation's wide blocks (features/ask/wideBlock.ts, whose numbers these are).
+ * The scroller is a size container; a wide block is as wide as the conversation allows, up
+ * to 1100px, keeping the column's 28px clear at each edge, and is centred on the text
+ * column by equal negative margins. Outside a conversation (the floating chat) the rule
+ * does not apply and the block is the width of what holds it.
+ */
+.ask-log {
+  container: ask-log / inline-size;
+}
+
+@container ask-log (min-width: 0px) {
+  .ask-wide {
+    width: min(1100px, calc(100cqw - 56px));
+    margin-inline: calc((100% - min(1100px, calc(100cqw - 56px))) / 2);
+  }
+}
+
+/* A previewed page (features/ask/htmlPreview.ts): its frame cannot be measured, so it takes
+   a share of the window and the user drags it. */
+.html-preview-frame {
+  height: clamp(360px, 60vh, 720px);
+}
+
+/*
+ * Targets (WCAG 2.2, 2.5.8): a control drawn smaller than 24px (a 20px switch, a 16px
+ * checkbox, a chip's remove button) still takes a click anywhere in the 24px square around
+ * its centre. In the components layer, so a control that is `absolute` stays so.
+ */
+@layer components {
+  .target-24 {
+    position: relative;
+  }
+
+  .target-24::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: max(100%, 24px);
+    height: max(100%, 24px);
+    transform: translate(-50%, -50%);
+  }
+}
+
+/*
+ * Buttons never wrap (UI structure audit 2026-11-23, rule 7): a button laid out as one row
+ * (an icon and a label) keeps its label on one line. A button that is a card, with lines of
+ * text of its own, is a block or a column and is not touched. Zero specificity, so a class
+ * that asks to wrap still wins.
+ */
+:where(button.inline-flex, a.inline-flex) {
+  white-space: nowrap;
 }

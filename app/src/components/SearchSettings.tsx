@@ -104,7 +104,7 @@ export default function SearchSettings({ config, onUpdate, onReset }: SearchSett
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Sliders className="w-4 h-4" style={{ color: colors.primary }} />
-          <span className="text-sm font-semibold" style={{ color: colors.text }}>Search</span>
+          <span className="text-body font-semibold" style={{ color: colors.text }}>Search</span>
         </div>
         <button
           onClick={onReset}
@@ -119,10 +119,10 @@ export default function SearchSettings({ config, onUpdate, onReset }: SearchSett
       {/* Max results */}
       <div data-agent-item={agentItemKey('setting', 'search_max_results')} className="rounded-lg">
         <div className="flex items-center justify-between mb-1.5">
-          <label className="text-xs font-medium" style={{ color: colors.textSecondary }}>
+          <label className="text-caption font-medium" style={{ color: colors.textSecondary }}>
             Passages per search
           </label>
-          <span className="text-xs font-bold" style={{ color: colors.text }}>{config.maxResults}</span>
+          <span className="text-caption font-bold" style={{ color: colors.text }}>{config.maxResults}</span>
         </div>
         <input
           type="range"

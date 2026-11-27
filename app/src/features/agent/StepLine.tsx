@@ -46,7 +46,7 @@ function DetailView({ step }: { step: TranscriptStep }) {
   const webSources = webSourcesFromDetail(step.detail);
   const passages = passagesFromDetail(step.detail).filter(p => !p.web);
   return (
-    <div className="mt-1 ml-[18px] rounded-lg border border-shodh-border-subtle bg-shodh-surface px-3 py-2 font-mono text-caption leading-[1.55] text-shodh-text-secondary overflow-x-auto scrollbar-thin">
+    <div className="mt-1 ml-4.5 rounded-lg border border-shodh-border-subtle bg-shodh-surface px-3 py-2 font-mono text-caption leading-[1.55] text-shodh-text-secondary overflow-x-auto scrollbar-thin">
       {hasContent(step.args) && (
         <>
           <p className="text-shodh-text-faint">{step.tool}</p>
@@ -118,11 +118,11 @@ export function StepLine({ step, steps, onDecide, compact = false, depth = 0, li
   const attribution = step.status === 'done' ? detailString(step.detail, 'attributionHtml') : null;
 
   const marker = running ? (
-    <Spinner className="mt-[5px]" />
+    <Spinner className="mt-1" />
   ) : (
     <span
       className={cn(
-        'mt-[5px] w-[9px] h-[9px] rounded-full shrink-0',
+        'mt-1 w-[9px] h-[9px] rounded-full shrink-0',
         failed
           ? 'bg-shodh-error'
           : retried
@@ -150,7 +150,7 @@ export function StepLine({ step, steps, onDecide, compact = false, depth = 0, li
       <span className="sr-only">{` (${stateText})`}</span>
       {expandable && (
         <ChevronRight
-          className={cn('w-3 h-3 mt-[3px] shrink-0 text-shodh-text-faint transition-transform duration-micro', open && 'rotate-90')}
+          className={cn('w-3 h-3 mt-0.5 shrink-0 text-shodh-text-faint transition-transform duration-micro', open && 'rotate-90')}
           aria-hidden="true"
         />
       )}
@@ -158,7 +158,7 @@ export function StepLine({ step, steps, onDecide, compact = false, depth = 0, li
   );
 
   return (
-    <div className={cn('ask-rise flex flex-col min-w-0', depth > 0 && 'ml-[18px] pl-2.5 border-l border-shodh-border-subtle')}>
+    <div className={cn('ask-rise flex flex-col min-w-0', depth > 0 && 'ml-4.5 pl-2.5 border-l border-shodh-border-subtle')}>
       <div className={cn('flex items-start gap-2 min-w-0', compact ? 'text-small' : 'text-body')}>
         {marker}
         {expandable ? (
@@ -180,7 +180,7 @@ export function StepLine({ step, steps, onDecide, compact = false, depth = 0, li
       {result && (!step.command || failed) && (
         <p
           className={cn(
-            'ml-[3px] flex gap-1.5 min-w-0 font-mono',
+            'ml-0.5 flex gap-1.5 min-w-0 font-mono',
             compact ? 'text-caption' : 'text-small',
             failed ? 'text-shodh-error' : 'text-shodh-text-muted',
           )}
@@ -192,7 +192,7 @@ export function StepLine({ step, steps, onDecide, compact = false, depth = 0, li
       {open && <div id={detailId}><DetailView step={step} /></div>}
       {attribution && <AttributionFrame html={attribution} />}
       {step.approval && onDecide && (pendingApprovals || step.approval.decision !== 'pending') && (
-        <div className="mt-2 ml-[17px]">
+        <div className="mt-2 ml-4.5">
           <ApprovalPrompt approval={step.approval} onDecide={(approved, forConversation, reviewToken) => onDecide(step.id, approved, forConversation, reviewToken)} compact={compact} />
         </div>
       )}

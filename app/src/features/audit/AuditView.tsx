@@ -12,6 +12,7 @@ import { VIEW_CACHE_KEYS, dropViewCache, readViewCache, writeViewCache } from '.
 import { UsageCards } from './UsageCards';
 import { EVENT_TYPES, MAX_RETENTION_DAYS, MIN_RETENTION_DAYS } from './types';
 import type { AuditEventType, AuditQuery, AuditRow, AuditStats, VerifyReport } from './types';
+import { ViewState } from '../../components/shell/ViewState';
 
 const PAGE_SIZE = 200;
 const SEARCH_DEBOUNCE_MS = 300;
@@ -101,8 +102,16 @@ function VerifyResult({ report, error }: { report: VerifyReport | null; error: s
   );
 }
 
-/** Settings → Usage & Audit. */
-export default function AuditView() {
+interface AuditViewProps {
+  /**
+   * Draws the page around the log: `action` is the log's primary action (its exports), for
+   * the page frame's slot at the title row's right, and `body` the rest.
+   */
+  frame: (action: React.ReactNode, body: React.ReactNode) => React.ReactElement;
+}
+
+/** Activity: usage, and the audit log with its exports. */
+export default function AuditView({ frame }: AuditViewProps) {
   const ids = useId();
   const [stats, setStats] = useState<AuditStats | null>(() => readViewCache<AuditStats>(VIEW_CACHE_KEYS.auditStats));
   const [unavailable, setUnavailable] = useState<string | null>(null);
@@ -322,13 +331,23 @@ export default function AuditView() {
   const hasFilters =
     filters.types.length > 0 || filters.fromDate !== '' || filters.toDate !== '' || filters.conversationId !== '' || filters.tool !== '' || searchText !== '';
 
-  return (
+  const exports = (
+    <>
+      <button type="button" className={BUTTON} onClick={() => void runExport('jsonl')} disabled={exporting}>
+        <Download aria-hidden="true" className="w-3.5 h-3.5" />
+        Export JSONL
+      </button>
+      <button type="button" className={BUTTON} onClick={() => void runExport('csv')} disabled={exporting}>
+        <Download aria-hidden="true" className="w-3.5 h-3.5" />
+        Export CSV
+      </button>
+    </>
+  );
+
+  return frame(
+    exports,
     <div className="flex flex-col gap-6">
-      {unavailable && (
-        <p role="alert" className="m-0 rounded-lg border border-shodh-error/40 bg-shodh-surface px-3 py-2 text-small text-shodh-error">
-          {unavailable}
-        </p>
-      )}
+      {unavailable && <ViewState kind="error" title="Activity is unavailable" detail={unavailable} />}
 
       <UsageCards stats={stats} />
 
@@ -340,14 +359,6 @@ export default function AuditView() {
           <button type="button" className={BUTTON} onClick={runVerify} disabled={verifying}>
             <ShieldCheck aria-hidden="true" className="w-3.5 h-3.5" />
             {verifying ? 'Verifying…' : 'Verify integrity'}
-          </button>
-          <button type="button" className={BUTTON} onClick={() => void runExport('jsonl')} disabled={exporting}>
-            <Download aria-hidden="true" className="w-3.5 h-3.5" />
-            Export JSONL
-          </button>
-          <button type="button" className={BUTTON} onClick={() => void runExport('csv')} disabled={exporting}>
-            <Download aria-hidden="true" className="w-3.5 h-3.5" />
-            Export CSV
           </button>
           <button type="button" className={BUTTON} onClick={refresh} disabled={loading} aria-label="Refresh events">
             <RefreshCw aria-hidden="true" className={cn('w-3.5 h-3.5', loading && 'agent-spin')} />
@@ -424,7 +435,7 @@ export default function AuditView() {
             Conversation
             <input
               type="text"
-              className={cn(INPUT, 'w-[180px] font-mono')}
+              className={cn(INPUT, 'w-[24ch] font-mono')}
               placeholder="Conversation id"
               value={filters.conversationId}
               onChange={e => setFilters(f => ({ ...f, conversationId: e.target.value }))}
@@ -434,8 +445,8 @@ export default function AuditView() {
             Tool
             <input
               type="text"
-              className={cn(INPUT, 'w-[150px] font-mono')}
-              placeholder="e.g. web_search"
+              className={cn(INPUT, 'w-[18ch] font-mono')}
+              placeholder="web_search"
               value={filters.tool}
               onChange={e => setFilters(f => ({ ...f, tool: e.target.value }))}
             />
@@ -498,6 +509,6 @@ export default function AuditView() {
           {savingRetention ? 'Saving…' : 'Save'}
         </button>
       </form>
-    </div>
+    </div>,
   );
 }

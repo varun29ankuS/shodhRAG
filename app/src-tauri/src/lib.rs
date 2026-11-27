@@ -1136,6 +1136,8 @@ pub fn run() {
             shutdown::quit_ready,
             // The main window's first-load handshake (the log says it is ready)
             startup::startup_ready,
+            // The launch test's measure of a view's text (launch_probe.rs; dropped unless the probe runs)
+            launch_probe::launch_probe_text_fit,
             // Damaged data files (backup used, settings reset)
             store_notices::store_notices,
         ])

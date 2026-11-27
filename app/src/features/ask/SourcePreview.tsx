@@ -139,7 +139,7 @@ export function SourcePreview({ hit, siblings, onSelectHit, onClose, onOpenView,
         expanded ? 'left-3' : 'w-[min(720px,max(55vw,420px),calc(100%-24px))]',
       )}
     >
-      <header className="flex items-center gap-2.5 pl-[18px] pr-3.5 pt-3.5 pb-3 border-b border-shodh-border-subtle">
+      <header className="flex items-center gap-2.5 pl-4.5 pr-3.5 pt-3.5 pb-3 border-b border-shodh-border-subtle">
         <span
           className="w-[22px] h-[22px] shrink-0 rounded-md bg-shodh-accent text-shodh-on-accent inline-flex items-center justify-center text-caption font-bold tabular-nums"
           aria-label={`Source ${hit.number}`}

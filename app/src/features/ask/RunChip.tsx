@@ -125,14 +125,14 @@ export function RunChip({ run, metadata, passageCount }: RunChipProps) {
         <ol
           id={timelineId}
           aria-label="Run steps"
-          className="ask-rise list-none -mt-1 ml-0 py-1 pl-[18px] border-l border-shodh-border flex flex-col gap-3"
+          className="ask-rise list-none -mt-1 ml-0 py-1 pl-4.5 border-l border-shodh-border flex flex-col gap-3"
         >
           {run.steps.map(step => {
             const meta = stepMeta(step);
             return (
               <li key={step.id} className="ask-rise flex items-baseline gap-2.5 text-small min-w-0">
                 <span
-                  className={cn('w-[7px] h-[7px] rounded-full shrink-0 -mr-[7px] -translate-x-[22px] -translate-y-px', stepDotClass(step))}
+                  className={cn('w-[7px] h-[7px] rounded-full shrink-0 -mr-2 -translate-x-[22px] -translate-y-px', stepDotClass(step))}
                   aria-hidden="true"
                 />
                 <span className="font-semibold text-shodh-text whitespace-nowrap">{step.title}</span>

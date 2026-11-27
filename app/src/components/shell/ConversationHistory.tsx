@@ -10,6 +10,7 @@ import { WorkspaceIcon } from '../../features/workspaces/WorkspaceIcon';
 import { ConversationPreviewCard, usePreviewVisibility } from './ConversationPreviewCard';
 import { connectorGroups, connectorName } from '../../features/connectors/conversations';
 import { ConnectorIcon } from '../../features/connectors/ConnectorIcon';
+import { FOCUS_UNDERLINE } from '../../lib/focusStyles';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-sidebar';
@@ -137,7 +138,7 @@ export function ConversationHistory({
   };
 
   return (
-    <section aria-labelledby={headingId} className="flex-1 min-h-0 flex flex-col">
+    <section aria-labelledby={headingId} className="flex-1 min-h-[12rem] flex flex-col">
       <h2
         id={headingId}
         className="px-5 pt-4 pb-1 text-caption font-semibold tracking-[0.08em] uppercase text-shodh-text-faint shrink-0"
@@ -461,7 +462,7 @@ function ConversationRow({
               }
             }}
             onBlur={commitRename}
-            className="w-full bg-transparent text-small text-shodh-text border-b border-shodh-accent-text outline-none py-0.5"
+            className={cn('w-full bg-transparent text-small text-shodh-text border-b border-shodh-accent-text outline-none py-0.5', FOCUS_UNDERLINE)}
           />
         </div>
       ) : (

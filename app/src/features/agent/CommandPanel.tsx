@@ -165,7 +165,7 @@ function RunningCommand({ run, nowMs, stateLabel, stopping, stopError, onStop, o
   // The last fifth of the time limit shows as a warning.
   const nearLimit = used >= 0.8;
   return (
-    <div className="mt-1 ml-[18px] rounded-lg border border-shodh-border-subtle bg-shodh-surface px-3 py-2 flex flex-col gap-1.5 min-w-0">
+    <div className="mt-1 ml-4.5 rounded-lg border border-shodh-border-subtle bg-shodh-surface px-3 py-2 flex flex-col gap-1.5 min-w-0">
       <div className="flex items-start gap-2 min-w-0">
         <code className={cn('flex-1 min-w-0 font-mono text-shodh-text break-all line-clamp-3', textSize)} title={run.command}>
           {run.command}
@@ -245,7 +245,7 @@ function FinishedCommand({ run, open, onToggle, outputId, textSize }: FinishedCo
   );
 
   return (
-    <div className={cn('ml-[3px] flex flex-col gap-1 min-w-0 font-mono', textSize)}>
+    <div className={cn('ml-0.5 flex flex-col gap-1 min-w-0 font-mono', textSize)}>
       <div className="flex items-start gap-1.5 min-w-0">
         <span aria-hidden="true" className="text-shodh-text-faint">⎿</span>
         {hasOutput ? (
@@ -259,7 +259,7 @@ function FinishedCommand({ run, open, onToggle, outputId, textSize }: FinishedCo
             {summary}
             <span className="sr-only">{open ? ', hide output' : ', show output'}</span>
             <ChevronRight
-              className={cn('w-3 h-3 mt-[3px] shrink-0 text-shodh-text-faint transition-transform duration-micro', open && 'rotate-90')}
+              className={cn('w-3 h-3 mt-0.5 shrink-0 text-shodh-text-faint transition-transform duration-micro', open && 'rotate-90')}
               aria-hidden="true"
             />
           </button>
@@ -267,9 +267,9 @@ function FinishedCommand({ run, open, onToggle, outputId, textSize }: FinishedCo
           summary
         )}
       </div>
-      {note && <p className="m-0 ml-[18px] text-shodh-text-muted break-words">{note}</p>}
+      {note && <p className="m-0 ml-4.5 text-shodh-text-muted break-words">{note}</p>}
       {open && hasOutput && (
-        <div className="ml-[15px] rounded-lg border border-shodh-border-subtle bg-shodh-surface px-3 py-2 flex flex-col gap-1.5 min-w-0">
+        <div className="ml-4 rounded-lg border border-shodh-border-subtle bg-shodh-surface px-3 py-2 flex flex-col gap-1.5 min-w-0">
           <code className="font-mono text-shodh-text break-all">{run.command}</code>
           <CommandOutput run={run} id={outputId} />
         </div>

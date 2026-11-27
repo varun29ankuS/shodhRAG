@@ -15,6 +15,8 @@ import { lastWorkspacePlace, rememberWorkspacePlace } from './place';
 import type { LibraryFolder } from './SourcesTab';
 import { FOCUS_RING, PRIMARY_BUTTON, QUIET_BUTTON } from './ui';
 import { SlackAnswersBadge, useSlackAnswerSource, type SlackAnswerSource } from '../connectors/SlackAnswersBadge';
+import { PageFrame } from '../../components/shell/PageFrame';
+import { ViewState } from '../../components/shell/ViewState';
 
 function isTab(value: string | null): value is WorkspaceTab {
   return value !== null && (WORKSPACE_TABS as readonly string[]).includes(value);
@@ -143,8 +145,17 @@ export default function WorkspacesView({
   };
 
   return (
-    <div className="h-full overflow-y-auto scrollbar-thin bg-shodh-ground">
-      <div className="max-w-5xl mx-auto px-8 py-7 flex flex-col gap-5">
+    <>
+      <PageFrame
+        title="Workspaces"
+        lede="Each keeps its own sources, instructions, memory and chats"
+        heading={!selected}
+        action={
+          <button type="button" className={PRIMARY_BUTTON} onClick={() => startCreate(null)}>
+            <Plus className="w-4 h-4" aria-hidden="true" /> New workspace
+          </button>
+        }
+      >
         {selected ? (
           <WorkspacePage
             key={selected}
@@ -161,23 +172,10 @@ export default function WorkspacesView({
           />
         ) : (
           <>
-            <header className="flex items-start gap-3">
-              <div className="flex-1 min-w-0">
-                <h2 className="m-0 text-[20px] font-semibold text-shodh-text">Workspaces</h2>
-                <p className="m-0 mt-1 text-small text-shodh-text-secondary max-w-[640px]">
-                  A workspace keeps one piece of work together: the sources its chats search (and nothing else), the
-                  instructions every answer follows, what Shodh remembers about it, and its chats.
-                </p>
-              </div>
-              <button type="button" className={PRIMARY_BUTTON} onClick={() => startCreate(null)}>
-                <Plus className="w-4 h-4" aria-hidden="true" /> New workspace
-              </button>
-            </header>
-
             {status === 'error' ? (
-              <p role="alert" className="m-0 text-small text-shodh-error">Workspaces could not be loaded: {error}</p>
+              <ViewState kind="error" title="Workspaces could not be loaded" detail={error} />
             ) : status === 'loading' ? (
-              <p role="status" className="m-0 text-small text-shodh-text-muted">Loading workspaces…</p>
+              <ViewState kind="loading" title="Loading workspaces" />
             ) : sorted.length === 0 ? (
               <section aria-labelledby="ws-empty" className="flex flex-col gap-3 rounded-xl border border-dashed border-shodh-border p-6">
                 <Layers className="w-6 h-6 text-shodh-text-muted" aria-hidden="true" />
@@ -236,7 +234,7 @@ export default function WorkspacesView({
             </div>
           </>
         )}
-      </div>
+      </PageFrame>
       <CreateWorkspaceDialog
         open={creating}
         onOpenChange={setCreating}
@@ -247,6 +245,6 @@ export default function WorkspacesView({
           setTab('sources');
         }}
       />
-    </div>
+    </>
   );
 }

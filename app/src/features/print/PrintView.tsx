@@ -158,7 +158,7 @@ export default function PrintView() {
           </p>
         )}
         <header className="mb-6 flex flex-col gap-1 border-b border-shodh-border pb-4">
-          <h1 className="m-0 text-[24px] font-bold leading-tight text-shodh-text">{doc.title}</h1>
+          <h1 className="m-0 text-title font-bold leading-tight text-shodh-text">{doc.title}</h1>
           {doc.subtitle && <p className="m-0 text-body text-shodh-text-secondary">{doc.subtitle}</p>}
           {date && <p className="m-0 text-small text-shodh-text-muted">{date}</p>}
         </header>
@@ -167,7 +167,7 @@ export default function PrintView() {
         </PrintBoundary>
         {doc.sources.length > 0 && (
           <section aria-labelledby="print-sources" className="mt-8 border-t border-shodh-border pt-4" data-print-block="">
-            <h2 id="print-sources" className="m-0 mb-3 text-[17px] font-semibold text-shodh-text">Sources</h2>
+            <h2 id="print-sources" className="m-0 mb-3 text-subhead font-semibold text-shodh-text">Sources</h2>
             <ol className="m-0 list-none p-0 flex flex-col gap-1.5 text-small text-shodh-text-secondary">
               {doc.sources.map(source => (
                 <li key={source.n} id={sourceAnchor(source.n)} className="break-words">

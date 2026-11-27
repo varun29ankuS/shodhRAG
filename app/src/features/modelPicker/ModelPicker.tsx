@@ -297,7 +297,7 @@ export function ModelPickerPanel({ picker, answerRunning, onSelected, onOpenSett
                     i === clampedIndex ? 'bg-shodh-raised' : 'hover:bg-shodh-raised',
                   )}
                 >
-                  <Check className={cn('w-3.5 h-3.5 mt-[3px] shrink-0 text-shodh-accent-text', !isActive && 'invisible')} aria-hidden="true" />
+                  <Check className={cn('w-3.5 h-3.5 mt-0.5 shrink-0 text-shodh-accent-text', !isActive && 'invisible')} aria-hidden="true" />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-baseline gap-2 min-w-0">
                       <span className="truncate text-small font-medium text-shodh-text">{model.name}</span>

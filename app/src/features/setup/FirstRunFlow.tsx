@@ -233,7 +233,7 @@ interface StepProps {
 
 function StepHeading({ titleId, headingRef, children }: StepProps & { children: React.ReactNode }) {
   return (
-    <h2 id={titleId} ref={headingRef} tabIndex={-1} className="text-[20px] font-bold text-shodh-text outline-none">
+    <h2 id={titleId} ref={headingRef} tabIndex={-1} className="text-title font-bold text-shodh-text outline-none">
       {children}
     </h2>
   );

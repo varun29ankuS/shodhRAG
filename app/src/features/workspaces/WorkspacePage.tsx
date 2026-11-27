@@ -258,7 +258,7 @@ export function WorkspacePage({
       <header className="flex items-start gap-3">
         <WorkspaceIcon icon={detail.icon} color={detail.color} className="w-6 h-6 mt-1" />
         <div className="flex-1 min-w-0">
-          <h2 className="m-0 text-[20px] font-semibold text-shodh-text truncate">
+          <h2 className="m-0 text-title font-semibold text-shodh-text truncate">
             {detail.name}
             {detail.archived && <span className="ml-2 align-middle text-caption font-medium px-1.5 py-0.5 rounded-full bg-shodh-raised text-shodh-text-muted">Archived</span>}
             <span className="ml-2 align-middle"><SlackAnswersBadge source={slack} workspaceId={detail.id} /></span>
@@ -350,7 +350,7 @@ export function WorkspacePage({
         ))}
       </div>
 
-      <div role="tabpanel" id={`ws-panel-${tab}`} aria-labelledby={`ws-tab-${tab}`} tabIndex={0} className="focus:outline-none">
+      <div role="tabpanel" id={`ws-panel-${tab}`} aria-labelledby={`ws-tab-${tab}`} tabIndex={0} className="rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
         {tab === 'overview' && <OverviewTab workspace={detail} onChanged={() => void load()} />}
         {tab === 'sources' && <SourcesTab workspace={detail} library={library} onChanged={() => void load()} />}
         {tab === 'chats' && <ChatsTab workspace={detail} onNewChat={() => onNewChat(detail.id)} onOpenChat={onOpenChat} />}

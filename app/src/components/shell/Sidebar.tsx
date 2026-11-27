@@ -290,7 +290,7 @@ export default function Sidebar({
       <div
         className={cn(
           'flex items-center gap-2.5 shrink-0',
-          collapsed ? 'flex-col px-3 pt-[18px] pb-3' : 'px-[18px] pt-[18px] pb-3.5'
+          collapsed ? 'flex-col px-3 pt-4.5 pb-3' : 'px-4.5 pt-4.5 pb-3.5'
         )}
       >
         <img
@@ -380,6 +380,12 @@ export default function Sidebar({
         )}
       </div>
 
+      {/*
+        The views and the chats under them. In a tall window the views stay put and the
+        chats scroll in the room that is left; in a short one the chats keep room for a
+        few rows (ConversationHistory's least height) and the two scroll together.
+      */}
+      <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin flex flex-col">
       {/* Views */}
       <ul
         className={cn('flex flex-col gap-0.5 py-1 shrink-0', collapsed ? 'px-3 items-center' : 'px-2')}
@@ -415,6 +421,7 @@ export default function Sidebar({
           onMoveToWorkspace={onMoveToWorkspace}
         />
       )}
+      </div>
 
       {/* Footer */}
       <div

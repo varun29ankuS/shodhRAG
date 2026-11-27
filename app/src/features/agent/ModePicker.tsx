@@ -21,6 +21,7 @@ import {
   workInfo,
 } from './composerRow';
 import type { WorkKind } from './composerRow';
+import { nextMenuIndex } from '../../lib/menuKeys';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-shodh-surface';
@@ -170,17 +171,13 @@ export function ModePicker({ work, permission, codeAvailable, onPickWork, onPick
       e.preventDefault();
       e.stopPropagation();
       close(true);
-    } else if (e.key === 'ArrowDown') {
-      e.preventDefault();
-      items[(index + 1) % items.length]?.focus();
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      items[(index - 1 + items.length) % items.length]?.focus();
-    } else if (e.key === 'Home' || e.key === 'End') {
-      e.preventDefault();
-      items[e.key === 'Home' ? 0 : items.length - 1]?.focus();
     } else if (e.key === 'Tab') {
       close(false);
+    } else {
+      const next = nextMenuIndex(e.key, index, items.length);
+      if (next === null) return;
+      e.preventDefault();
+      items[next]?.focus();
     }
   };
 

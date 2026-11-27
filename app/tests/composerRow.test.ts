@@ -78,10 +78,21 @@ test('mode and model share one height token with the row', () => {
   assert.match(withoutComments(source('features/modelPicker/ModelChip.tsx')), /<ModelTrigger/);
 });
 
-test('one model state colour: the accent dot, or an icon with the reason in the label', () => {
+test("one model state, one colour: the composer's dot is the sidebar's, from one mapping", () => {
   const trigger = withoutComments(source('features/modelPicker/ModelTrigger.tsx'));
-  assert.match(trigger, /bg-shodh-accent/);
-  assert.doesNotMatch(trigger, /bg-shodh-(info|warning|error|success)\b/);
+  // The trigger writes no colour of its own: its dot is the state's, through DOT_CLASS.
+  assert.match(trigger, /DOT_CLASS\[dot\]/);
+  assert.doesNotMatch(trigger, /bg-shodh-(accent|info|warning|error|success)\b/);
+  // Ask's chip, the floating chat and the sidebar's status all take the state from modelDot.
+  const chip = withoutComments(source('features/modelPicker/ModelChip.tsx'));
+  assert.match(chip, /dot=\{modelDot\(connection\)\}/);
+  assert.match(withoutComments(source('features/modelPicker/useModelLabel.ts')), /const dot = modelDot\(snapshot\);/);
+  const status = withoutComments(source('features/connection/connectionStatus.ts'));
+  assert.match(status, /dot: modelDot\(snapshot\),/);
+  // And one name: the sidebar's status and the composer's control both use modelDisplayName.
+  assert.match(status, /const model = modelDisplayName\(models, active\.model\);/);
+  assert.match(withoutComments(source('features/modelPicker/modelFormat.ts')), /label: modelDisplayName\(/);
+  assert.match(withoutComments(source('features/connection/ConnectionStatusChip.tsx')), /pillView\(snapshot, localTime, models\?\.models \?\? \[\]\)/);
 });
 
 test('what the answer works on, and when permissions apply', () => {
@@ -139,7 +150,11 @@ test('mode and permissions live in one menu, which keeps its shape', () => {
   assert.match(menu, /if \(next === 'creator' && work !== 'creator' && confirming\?\.kind !== 'work'\)/);
   assert.match(menu, /if \(next === 'auto' && permission !== 'auto' && confirming\?\.kind !== 'permission'\)/);
   // Keyboard: arrows, Home/End, Esc returns focus to the trigger; disabled items are skipped.
-  for (const key of ['ArrowDown', 'ArrowUp', 'Home', 'End', 'Escape', 'Tab']) assert.match(menu, new RegExp(`'${key}'`));
+  // The arrows, Home and End move by the shared rule (lib/menuKeys.ts; keyboardPath.test.ts walks it).
+  for (const key of ['Escape', 'Tab']) assert.match(menu, new RegExp(`'${key}'`));
+  assert.match(menu, /nextMenuIndex\(e\.key, index, items\.length\)/);
+  const menuKeys = source('lib/menuKeys.ts');
+  for (const key of ['ArrowDown', 'ArrowUp', 'Home', 'End']) assert.match(menuKeys,new RegExp(`case '${key}':`));
   assert.match(menu, /:not\(\[aria-disabled="true"\]\)/);
   assert.match(menu, /if \(restore\) buttonRef\.current\?\.focus\(\)/);
   assert.match(menu, /aria-haspopup="menu"/);

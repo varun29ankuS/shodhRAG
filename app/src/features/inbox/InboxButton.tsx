@@ -519,7 +519,7 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
                         onClick={() => openItem(item)}
                         className={cn('text-left flex items-start gap-2 rounded-md min-w-0', FOCUS_RING)}
                       >
-                        <span className={cn('mt-[5px] w-2 h-2 rounded-full shrink-0', tone.dot)} aria-hidden="true" />
+                        <span className={cn('mt-1 w-2 h-2 rounded-full shrink-0', tone.dot)} aria-hidden="true" />
                         <span className="min-w-0 flex-1 flex flex-col gap-0.5">
                           <span className="text-small font-medium text-shodh-text break-words">{item.title}</span>
                           <span className="text-caption text-shodh-text-muted break-words">

@@ -119,18 +119,18 @@ export function ArtifactPreviewCard({ artifact, onClick }: ArtifactPreviewCardPr
       >
         <div className="flex items-center space-x-2">
           <Icon className="w-4 h-4" style={{ color: colors.primary }} />
-          <span className="text-xs font-semibold" style={{ color: colors.primary }}>
+          <span className="text-caption font-semibold" style={{ color: colors.primary }}>
             {getTypeName()}
           </span>
-          <span className="text-xs" style={{ color: colors.textMuted }}>&bull;</span>
-          <span className="text-xs font-medium" style={{ color: colors.text }}>
+          <span className="text-caption" style={{ color: colors.textMuted }}>&bull;</span>
+          <span className="text-caption font-medium" style={{ color: colors.text }}>
             {artifact.title}
           </span>
         </div>
 
         <motion.div
           whileHover={{ scale: 1.1 }}
-          className="flex items-center space-x-1 text-xs"
+          className="flex items-center space-x-1 text-caption"
           style={{ color: colors.textMuted }}
         >
           <Eye className="w-3 h-3" />
@@ -141,7 +141,7 @@ export function ArtifactPreviewCard({ artifact, onClick }: ArtifactPreviewCardPr
       {/* Preview Content */}
       <div className="p-3">
         {kind === 'code' && (
-          <pre className="text-xs font-mono overflow-auto max-h-[300px] min-h-[150px]" style={{ color: colors.text }}>
+          <pre className="text-caption font-mono overflow-auto max-h-[300px] min-h-[150px]" style={{ color: colors.text }}>
             <code>{getPreview()}</code>
           </pre>
         )}
@@ -153,9 +153,9 @@ export function ArtifactPreviewCard({ artifact, onClick }: ArtifactPreviewCardPr
                 className="p-4 rounded-lg max-w-md"
                 style={{ border: `1px solid ${colors.error}30`, backgroundColor: `${colors.error}08` }}
               >
-                <p className="text-sm font-semibold mb-2" style={{ color: colors.error }}>Diagram Error</p>
-                <p className="text-xs font-mono whitespace-pre-wrap" style={{ color: `${colors.error}cc` }}>{mermaidError}</p>
-                <p className="text-xs mt-2" style={{ color: colors.textMuted }}>Click to view source and fix syntax</p>
+                <p className="text-body font-semibold mb-2" style={{ color: colors.error }}>Diagram Error</p>
+                <p className="text-caption font-mono whitespace-pre-wrap" style={{ color: `${colors.error}cc` }}>{mermaidError}</p>
+                <p className="text-caption mt-2" style={{ color: colors.textMuted }}>Click to view source and fix syntax</p>
               </div>
             ) : (
               <div ref={mermaidRef} className="w-full flex items-center justify-center p-4" />
@@ -164,19 +164,19 @@ export function ArtifactPreviewCard({ artifact, onClick }: ArtifactPreviewCardPr
         )}
 
         {kind === 'markdown' && (
-          <div className="text-xs line-clamp-8 min-h-[150px] max-h-[300px] overflow-auto" style={{ color: colors.textSecondary }}>
+          <div className="text-caption line-clamp-8 min-h-[150px] max-h-[300px] overflow-auto" style={{ color: colors.textSecondary }}>
             {getPreview()}
           </div>
         )}
 
         {kind === 'table' && (
-          <pre className="text-xs font-mono overflow-auto max-h-[300px] min-h-[100px] whitespace-pre-wrap" style={{ color: colors.text }}>
+          <pre className="text-caption font-mono overflow-auto max-h-[300px] min-h-[100px] whitespace-pre-wrap" style={{ color: colors.text }}>
             {getPreview()}
           </pre>
         )}
 
         {kind === 'chart' && (
-          <div className="flex items-center justify-center min-h-[100px] text-sm" style={{ color: colors.textMuted }}>
+          <div className="flex items-center justify-center min-h-[100px] text-body" style={{ color: colors.textMuted }}>
             {(() => {
               try {
                 const spec = JSON.parse(artifact.content.trim());
@@ -190,7 +190,7 @@ export function ArtifactPreviewCard({ artifact, onClick }: ArtifactPreviewCardPr
 
         {/* Fallback for unknown types */}
         {kind !== 'code' && kind !== 'mermaid' && kind !== 'markdown' && kind !== 'table' && kind !== 'chart' && (
-          <pre className="text-xs font-mono overflow-auto max-h-[300px] min-h-[100px] whitespace-pre-wrap" style={{ color: colors.text }}>
+          <pre className="text-caption font-mono overflow-auto max-h-[300px] min-h-[100px] whitespace-pre-wrap" style={{ color: colors.text }}>
             {getPreview()}
           </pre>
         )}
@@ -201,13 +201,13 @@ export function ArtifactPreviewCard({ artifact, onClick }: ArtifactPreviewCardPr
         className="px-4 py-2 flex items-center justify-between"
         style={{ backgroundColor: colors.bgSecondary, borderTop: `1px solid ${colors.border}` }}
       >
-        <span className="text-xs" style={{ color: colors.textMuted }}>
+        <span className="text-caption" style={{ color: colors.textMuted }}>
           {artifact.content.split('\n').length} lines
         </span>
         <motion.button
           whileHover={{ scale: 1.05 }}
           whileTap={{ scale: 0.95 }}
-          className="flex items-center space-x-1 text-xs"
+          className="flex items-center space-x-1 text-caption"
           style={{ color: colors.primary }}
         >
           <ExternalLink className="w-3 h-3" />

@@ -43,10 +43,10 @@ export function UpdateNotification() {
             <div className="flex items-center gap-3">
               <Sparkles className="w-6 h-6" style={{ color: colors.primary }} />
               <div>
-                <h3 className="font-bold text-sm" style={{ color: colors.text }}>
+                <h3 className="font-bold text-body" style={{ color: colors.text }}>
                   Update available
                 </h3>
-                <p className="text-xs" style={{ color: colors.textMuted }}>
+                <p className="text-caption" style={{ color: colors.textMuted }}>
                   Version {updateInfo.version}
                 </p>
               </div>
@@ -67,11 +67,11 @@ export function UpdateNotification() {
           <div className="p-4">
             {updateInfo.notes && (
               <div className="mb-4">
-                <p className="text-xs font-medium mb-2" style={{ color: colors.textSecondary }}>
+                <p className="text-caption font-medium mb-2" style={{ color: colors.textSecondary }}>
                   What's new:
                 </p>
                 <div
-                  className="text-xs p-3 rounded-lg max-h-32 overflow-y-auto"
+                  className="text-caption p-3 rounded-lg max-h-32 overflow-y-auto"
                   style={{
                     background: colors.bgSecondary,
                     color: colors.text,
@@ -90,11 +90,11 @@ export function UpdateNotification() {
             {downloading && (
               <div className="mb-4">
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs" style={{ color: colors.textMuted }}>
+                  <span className="text-caption" style={{ color: colors.textMuted }}>
                     {installing ? 'Installing… Shodh closes and opens again by itself.' : 'Downloading…'}
                   </span>
                   {downloadProgress !== null && (
-                    <span className="text-xs font-medium" style={{ color: colors.primary }}>
+                    <span className="text-caption font-medium" style={{ color: colors.primary }}>
                       {downloadProgress}%
                     </span>
                   )}
@@ -134,7 +134,7 @@ export function UpdateNotification() {
               >
                 {downloading ? (
                   <>
-                    <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+                    <RefreshCw className="w-4 h-4 mr-2 animate-spin motion-reduce:animate-none" />
                     {installing ? 'Installing…' : 'Downloading…'}
                   </>
                 ) : (
@@ -148,11 +148,11 @@ export function UpdateNotification() {
 
             {/* Info */}
             <div className="mt-3 pt-3 border-t" style={{ borderColor: colors.border }}>
-              <p className="text-xs text-center" style={{ color: colors.textMuted }}>
+              <p className="text-caption text-center" style={{ color: colors.textMuted }}>
                 Current: {updateInfo.currentVersion} → New: {updateInfo.version}
               </p>
               {!downloading && (
-                <p className="text-xs text-center mt-1" style={{ color: colors.textMuted }}>
+                <p className="text-caption text-center mt-1" style={{ color: colors.textMuted }}>
                   Your chats are saved first. Shodh closes while the update installs and opens again when it is done.
                 </p>
               )}

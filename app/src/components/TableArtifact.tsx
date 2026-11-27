@@ -9,15 +9,15 @@ interface TableArtifactProps {
  * Renders table artifacts. Parses markdown pipe-table format into a styled HTML table.
  * Falls back to raw preformatted text if parsing fails.
  */
-export function TableArtifact({ artifact, theme }: TableArtifactProps) {
+export function TableArtifact({ artifact }: TableArtifactProps) {
   const { headers, rows } = parseMarkdownTable(artifact.content);
 
   if (headers.length === 0) {
     // Fallback: render as preformatted text
     return (
-      <div className="h-full flex flex-col bg-white dark:bg-gray-900">
+      <div className="h-full flex flex-col bg-shodh-surface">
         <div className="flex-1 overflow-auto p-6">
-          <pre className="text-sm font-mono whitespace-pre-wrap text-gray-800 dark:text-gray-200">
+          <pre className="text-body font-mono whitespace-pre-wrap text-shodh-text">
             {artifact.content}
           </pre>
         </div>
@@ -25,12 +25,10 @@ export function TableArtifact({ artifact, theme }: TableArtifactProps) {
     );
   }
 
-  const isDark = theme === 'dark';
-
   return (
-    <div className="h-full flex flex-col bg-white dark:bg-gray-900">
+    <div className="h-full flex flex-col bg-shodh-surface">
       <div className="flex-1 overflow-auto p-4">
-        <table className="w-full border-collapse text-sm">
+        <table className="w-full border-collapse text-body">
           <thead>
             <tr>
               {headers.map((header, i) => (
@@ -38,9 +36,9 @@ export function TableArtifact({ artifact, theme }: TableArtifactProps) {
                   key={i}
                   className="px-4 py-3 text-left font-semibold border-b-2"
                   style={{
-                    borderColor: isDark ? '#374151' : '#e5e7eb',
-                    backgroundColor: isDark ? '#1f2937' : '#f9fafb',
-                    color: isDark ? '#e5e7eb' : '#111827',
+                    borderColor: 'var(--c-border-strong)',
+                    backgroundColor: 'var(--c-raised)',
+                    color: 'var(--c-text)',
                   }}
                 >
                   {header}
@@ -53,9 +51,7 @@ export function TableArtifact({ artifact, theme }: TableArtifactProps) {
               <tr
                 key={rowIdx}
                 style={{
-                  backgroundColor: rowIdx % 2 === 0
-                    ? (isDark ? '#111827' : '#ffffff')
-                    : (isDark ? '#1a2332' : '#f9fafb'),
+                  backgroundColor: rowIdx % 2 === 0 ? 'var(--c-surface)' : 'var(--c-surface-2)',
                 }}
               >
                 {row.map((cell, cellIdx) => (
@@ -63,8 +59,8 @@ export function TableArtifact({ artifact, theme }: TableArtifactProps) {
                     key={cellIdx}
                     className="px-4 py-2.5 border-b"
                     style={{
-                      borderColor: isDark ? '#1f2937' : '#f3f4f6',
-                      color: isDark ? '#d1d5db' : '#374151',
+                      borderColor: 'var(--c-border-subtle)',
+                      color: 'var(--c-text-secondary)',
                     }}
                   >
                     {cell}

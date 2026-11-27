@@ -4,9 +4,9 @@ import { AlertTriangle, Check, Loader2, Settings2 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import type { ModelPickerHandle } from './modelApi';
 import type { ChipEntry } from './modelFormat';
-import { chipEntries, selectedPick } from './modelFormat';
+import { chipEntries, chipEntryActive, chipEntryDetail, chipEntryTitle, selectedPick } from './modelFormat';
 import type { PickerError } from './modelTypes';
-import { PROVIDER_LABELS, sameModel } from './modelTypes';
+import { sameModel } from './modelTypes';
 
 const ITEM =
   'w-full flex items-start gap-2 px-2.5 py-2 rounded-lg text-left hover:bg-shodh-raised focus-visible:outline-none focus-visible:bg-shodh-raised focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50';
@@ -106,8 +106,7 @@ export function ChipMenu({ picker, answerRunning, onManage, onSelected }: ChipMe
         <p className="px-2.5 py-3 m-0 text-small text-shodh-text-muted">Nothing is connected yet. Connect a subscription, an API key or a local model.</p>
       )}
       {entries.map(entry => {
-        const active =
-          sameModel(view.active?.model, entry.model) && (entry.kind === 'recent' ? activePick === null || view.active?.source !== 'settings' : activePick === entry.pick);
+        const active = chipEntryActive(view, entry);
         return (
           <button
             key={`${entry.kind}-${entry.pick ?? ''}-${entry.model.provider}:${entry.model.model}`}
@@ -118,12 +117,10 @@ export function ChipMenu({ picker, answerRunning, onManage, onSelected }: ChipMe
             onClick={() => choose(entry)}
             className={ITEM}
           >
-            <Check className={cn('w-3.5 h-3.5 mt-[3px] shrink-0 text-shodh-accent-text', !active && 'invisible')} aria-hidden="true" />
+            <Check className={cn('w-3.5 h-3.5 mt-0.5 shrink-0 text-shodh-accent-text', !active && 'invisible')} aria-hidden="true" />
             <span className="min-w-0 flex flex-col">
-              <span className="text-small font-medium text-shodh-text">{entry.kind === 'pick' ? entry.label : entry.name}</span>
-              <span className="text-caption text-shodh-text-muted truncate">
-                {entry.kind === 'pick' ? `${entry.name} · ${PROVIDER_LABELS[entry.model.provider]}` : `Recent · ${PROVIDER_LABELS[entry.model.provider]}`}
-              </span>
+              <span className="text-small font-medium text-shodh-text">{chipEntryTitle(entry)}</span>
+              <span className="text-caption text-shodh-text-muted truncate">{chipEntryDetail(entry)}</span>
             </span>
           </button>
         );
@@ -148,7 +145,7 @@ export function ChipMenu({ picker, answerRunning, onManage, onSelected }: ChipMe
       )}
       <div className="my-1 border-t border-shodh-border-subtle" />
       <button type="button" role="menuitem" onClick={onManage} className={ITEM}>
-        <Settings2 className="w-3.5 h-3.5 mt-[3px] shrink-0 text-shodh-text-muted" aria-hidden="true" />
+        <Settings2 className="w-3.5 h-3.5 mt-0.5 shrink-0 text-shodh-text-muted" aria-hidden="true" />
         <span className="text-small text-shodh-text">Manage…</span>
       </button>
     </div>

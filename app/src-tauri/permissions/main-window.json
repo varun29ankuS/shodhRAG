@@ -148,6 +148,7 @@
           "install_table_model",
           "install_update",
           "jump_to_source",
+          "launch_probe_text_fit",
           "library_profile",
           "library_skipped_files",
           "link_folder_enhanced",

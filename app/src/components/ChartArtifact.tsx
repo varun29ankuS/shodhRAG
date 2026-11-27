@@ -15,12 +15,12 @@ export interface ChartArtifactProps {
 const ChartArtifactView = lazy(() => import('./ChartArtifactView').then(m => ({ default: m.ChartArtifactView })));
 
 /** The chart's frame (title, plot area) while recharts loads, so nothing moves when it lands. */
-function ChartPlaceholder({ artifact, theme, height = 320 }: ChartArtifactProps) {
+function ChartPlaceholder({ artifact, height = 320 }: ChartArtifactProps) {
   const spec = useMemo(() => tryParseChartSpec(artifact.content), [artifact.content]);
   if (!spec) return <ChartUnparsed content={artifact.content} />;
   return (
     <div aria-busy="true">
-      {spec.title && <ChartTitle title={spec.title} color={chartTitleColor(theme)} />}
+      {spec.title && <ChartTitle title={spec.title} color={chartTitleColor()} />}
       <div style={{ width: '100%', height, padding: '4px 8px 8px' }} />
     </div>
   );

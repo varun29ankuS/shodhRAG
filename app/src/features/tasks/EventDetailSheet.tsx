@@ -82,7 +82,7 @@ export default function EventDetailSheet({ event, onClose }: { event: CalendarEv
         required
         value={shown.title}
         onCommit={title => void updateEvent(shown.id, { title })}
-        className="h-auto py-1.5 text-[17px] font-semibold"
+        className="h-auto py-1.5 text-subhead font-semibold"
       />
       <Provenance source={shown.source} sourceRef={shown.sourceRef} />
       <div className="px-2.5 flex flex-col gap-3">

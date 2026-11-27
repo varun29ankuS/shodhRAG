@@ -6,17 +6,24 @@
  * - `follow`: the assistant's moves of a Creator build, as its run sends them (`navigated`
  *   events): each is parsed like any other and followed the way the session follows one (its
  *   target handed to its view, then the view opened);
- * - `openDesign`: the user clicks the design check's badge, and its findings open.
+ * - `openDesign`: the user clicks the design check's badge, and its findings open;
+ * - `show`: the views tour, after every check: one view opened as a click in the sidebar
+ *   opens it, in one theme, with the findings pane closed, for the job's picture of it;
+ * - `measure`: the tour's check of the view now shown: every text on it that does not fit
+ *   its box (`textFit.ts`), reported with `launch_probe_text_fit`.
  *
  * Rust then checks, from this window's own reports, that the page stayed shown.
  */
 import { useEffect, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
+import { clippedText } from './textFit';
 import { navigationFromEvent, publishTarget } from '../agent/navigation';
 import type { NavigatedEvent } from '../agent/events';
 import { normalizeViewTab } from '../../lib/viewTabs';
 import { useCodeReview } from '../code/codeReviewHost';
 import { designApi } from '../code/api';
+import { useTheme } from '../../contexts/ThemeContext';
 
 /** Rust → main only (`launch_probe::LAUNCH_PROBE_EVENT`). */
 export const LAUNCH_PROBE_EVENT = 'launch-probe';
@@ -42,6 +49,9 @@ export function LaunchProbeHost(): null {
   const review = useCodeReview();
   const reviewRef = useRef(review);
   reviewRef.current = review;
+  const theme = useTheme();
+  const themeRef = useRef(theme);
+  themeRef.current = theme;
 
   useEffect(() => {
     let disposed = false;
@@ -63,6 +73,24 @@ export function LaunchProbeHost(): null {
           .get(payload.checkId)
           .then(found => reviewRef.current?.openDesign(found))
           .catch(error => console.error('Launch probe: the design check could not be opened:', error));
+      } else if (payload.kind === 'show' && typeof payload.view === 'string') {
+        const tab = normalizeViewTab(payload.view);
+        if (!tab) return;
+        reviewRef.current?.close();
+        if ((payload.theme === 'light' || payload.theme === 'dark') && payload.theme !== themeRef.current.theme) {
+          themeRef.current.toggleTheme();
+        }
+        window.dispatchEvent(new CustomEvent('switchTab', { detail: tab }));
+      } else if (payload.kind === 'measure' && typeof payload.view === 'string' && typeof payload.theme === 'string') {
+        const { count, lines } = clippedText(document);
+        invoke('launch_probe_text_fit', {
+          view: payload.view,
+          theme: payload.theme,
+          width: window.innerWidth,
+          height: window.innerHeight,
+          count,
+          clipped: lines,
+        }).catch(error => console.error('Launch probe: the text measure was not delivered:', error));
       }
     })
       .then(fn => {

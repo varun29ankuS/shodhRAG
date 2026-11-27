@@ -3,6 +3,8 @@ import { ArrowUpRight, Check, Copy, CornerLeftUp, FileDown, FileText, FolderPlus
 import { useTheme } from '../../contexts/ThemeContext';
 import { invoke } from '@tauri-apps/api/core';
 import { cn } from '../../lib/utils';
+import { TEXT_COLUMN_PX, WIDE_BLOCK_HOST_CLASS } from './wideBlock';
+import { ModelNotice } from '../connection/ModelNotice';
 import type { ViewTab } from '../../lib/viewTabs';
 import { useMediaQuery } from '../../hooks/useMediaQuery';
 import { AgentComposer } from '../agent/AgentComposer';
@@ -495,6 +497,8 @@ function AssistantMessageView({
 
   const article = (
     <article
+      // Focused by code when an answer is revealed (a jump from a citation or the rail).
+      tabIndex={-1}
       className="group/msg flex flex-col gap-4 rounded-xl outline-none data-[revealed=true]:ring-2 data-[revealed=true]:ring-shodh-accent data-[revealed=true]:ring-offset-4 data-[revealed=true]:ring-offset-shodh-ground"
       aria-busy={running}
       // Selected text in a finished answer can be asked about (features/focus/SelectionAsk).
@@ -1368,7 +1372,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
       aria-hidden="true"
     >
       <div className="text-center">
-        <p className="text-[16px] font-semibold text-shodh-text">Drop to index</p>
+        <p className="text-body-lg font-semibold text-shodh-text">Drop to index</p>
         <p className="mt-1 text-small text-shodh-text-muted">PDF, Word, Excel, PowerPoint, text, Markdown or images</p>
       </div>
     </div>
@@ -1394,7 +1398,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
       const asked = next?.role === 'assistant' ? linesOfRuns(turnMemories, runIdsOf(next.transcript), 'asked') : undefined;
       const bubble = (
         <div className="flex justify-end">
-          <div className="max-w-[520px] min-w-0 px-4 py-[11px] rounded-[18px] bg-shodh-raised-2 text-body-lg leading-[1.55] text-shodh-text">
+          <div className="max-w-[520px] min-w-0 px-4 py-2.5 rounded-[18px] bg-shodh-raised-2 text-body-lg leading-[1.55] text-shodh-text">
             <UserText text={message.content} />
             {message.aboutFiles && message.aboutFiles.length > 0 && (
               <ul aria-label="Answer limited to" className="m-0 mt-2 p-0 list-none flex flex-wrap gap-1.5">
@@ -1525,59 +1529,56 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
     />
   );
 
-  if (messages.length === 0) {
-    return (
-      <section aria-label="Ask" className="relative h-full overflow-y-auto bg-shodh-ground" {...dropHandlers}>
-        {dropOverlay}
-        <div className="min-h-full flex items-center justify-center px-7 py-12">
-          <div className="ask-rise w-full max-w-[700px] flex flex-col gap-7">
-            <h1 className="text-center text-[28px] font-semibold tracking-[-0.01em] text-shodh-text">
-              Ask anything about your files
-            </h1>
-            <SetupCard waiting={queued.waiting} onCancelWaiting={queued.cancel} />
-            {seedNotice}
-            {composer(true)}
-            {topBarContext}
-            {!hasSources ? (
-              <div className="flex flex-col items-center gap-3 text-center">
-                <p className="text-body text-shodh-text-muted">
-                  Shodh answers from the files you add. Add a folder to start asking about it.
-                </p>
+  // A new chat: the heading and what to try, above the message box. The box is the same
+  // element, at the same place at the bottom, before and after the first message (UI
+  // structure audit, rule 3): nothing the user just used moves when they send.
+  const empty = messages.length === 0;
+  const emptyChat = (
+    <div className="min-h-full flex items-center justify-center px-7 py-6" data-testid="ask-empty">
+      <div className="ask-rise w-full flex flex-col gap-7" style={{ maxWidth: TEXT_COLUMN_PX }}>
+        <h1 className="m-0 text-center text-display font-semibold tracking-[-0.01em] text-shodh-text">
+          Ask anything about your files
+        </h1>
+        <SetupCard waiting={queued.waiting} onCancelWaiting={queued.cancel} />
+        {seedNotice}
+        {!hasSources ? (
+          <div className="flex flex-col items-center gap-3 text-center">
+            <p className="text-body text-shodh-text-muted">
+              Shodh answers from the files you add. Add a folder to start asking about it.
+            </p>
+            <button
+              type="button"
+              onClick={() => onNavigate('library')}
+              className={cn(
+                'inline-flex items-center gap-2 h-9 px-4 rounded-[9px] bg-shodh-accent text-shodh-on-accent text-small font-semibold hover:bg-shodh-accent-hover transition-colors duration-micro',
+                FOCUS_RING,
+              )}
+            >
+              <FolderPlus className="w-4 h-4" aria-hidden="true" />
+              Add a folder
+            </button>
+          </div>
+        ) : (
+          <ul className="grid grid-cols-1 sm:grid-cols-2 gap-2.5" aria-label="Starter questions">
+            {starterPrompts(libraryKind).map(prompt => (
+              <li key={prompt}>
                 <button
                   type="button"
-                  onClick={() => onNavigate('library')}
+                  onClick={() => applyStarter(prompt)}
                   className={cn(
-                    'inline-flex items-center gap-2 h-9 px-4 rounded-[9px] bg-shodh-accent text-shodh-on-accent text-small font-semibold hover:bg-shodh-accent-hover transition-colors duration-micro',
+                    'w-full h-full text-left px-4 py-3 rounded-[14px] border border-shodh-border bg-shodh-surface text-body leading-snug text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
                     FOCUS_RING,
                   )}
                 >
-                  <FolderPlus className="w-4 h-4" aria-hidden="true" />
-                  Add a folder
+                  {prompt}
                 </button>
-              </div>
-            ) : (
-              <ul className="grid grid-cols-1 sm:grid-cols-2 gap-2.5" aria-label="Starter questions">
-                {starterPrompts(libraryKind).map(prompt => (
-                  <li key={prompt}>
-                    <button
-                      type="button"
-                      onClick={() => applyStarter(prompt)}
-                      className={cn(
-                        'w-full h-full text-left px-4 py-3 rounded-[14px] border border-shodh-border bg-shodh-surface text-body leading-snug text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
-                        FOCUS_RING,
-                      )}
-                    >
-                      {prompt}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </div>
-      </section>
-    );
-  }
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
 
   return (
     <section aria-label="Ask" className="relative h-full flex flex-col bg-shodh-ground" {...dropHandlers}>
@@ -1586,9 +1587,10 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
         ref={setScrollerRef}
         onFocus={onFocusIn}
         onBlur={onFocusOut}
-        className="flex-1 overflow-y-auto scrollbar-thin"
+        className={cn('flex-1 overflow-y-auto scrollbar-thin', WIDE_BLOCK_HOST_CLASS)}
         style={{ paddingTop: CONVERSATION_TOP_PX, paddingBottom: composerSpace }}
       >
+        {empty ? emptyChat : (
         <DiagramHostContext.Provider value={diagramHost}>
           <Suspense fallback={null}>
             <ConversationLog
@@ -1603,6 +1605,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
             />
           </Suspense>
         </DiagramHostContext.Provider>
+        )}
       </div>
 
       {findOpen && (
@@ -1619,9 +1622,12 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
         </div>
       )}
 
-      <div ref={setComposerArea} className="absolute left-0 right-0 bottom-0 px-7 pt-10 pb-[22px] bg-gradient-to-b from-transparent via-shodh-ground via-[38%] to-shodh-ground pointer-events-none">
-        <div className="max-w-[700px] mx-auto pointer-events-auto flex flex-col gap-2">
-          <SetupCard compact waiting={queued.waiting} onCancelWaiting={queued.cancel} />
+      <div ref={setComposerArea} className="absolute left-0 right-0 bottom-0 px-7 pt-10 pb-6 bg-gradient-to-b from-transparent via-shodh-ground via-[38%] to-shodh-ground pointer-events-none">
+        <div className="mx-auto pointer-events-auto flex flex-col gap-2" style={{ maxWidth: TEXT_COLUMN_PX }} data-testid="ask-composer-dock">
+          {/* A new chat shows the setup card whole, above; here it is the compact one. */}
+          {!empty && <SetupCard compact waiting={queued.waiting} onCancelWaiting={queued.cancel} />}
+          {/* A model known not to work is said here, before the send (rule 6). */}
+          <ModelNotice />
           {composer(true)}
         </div>
       </div>

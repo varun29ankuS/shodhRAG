@@ -214,7 +214,7 @@ function ChainList({ chain, nowMs, localOnly }: { chain: ChainPlan | null; nowMs
             <li key={modelOptionValue(c.model)} className="relative flex gap-3 pb-3 last:pb-0">
               {/* The route the answer takes: a dot per model, a line to the next one. */}
               <span className="relative flex flex-col items-center w-3 shrink-0" aria-hidden="true">
-                <span className={cn('mt-[5px] w-2.5 h-2.5 rounded-full ring-2 ring-shodh-surface', DOT[health.tone])} />
+                <span className={cn('mt-1 w-2.5 h-2.5 rounded-full ring-2 ring-shodh-surface', DOT[health.tone])} />
                 {!last && <span className="flex-1 w-px mt-1 bg-shodh-border" />}
               </span>
               <span className="min-w-0 flex flex-col gap-0.5">

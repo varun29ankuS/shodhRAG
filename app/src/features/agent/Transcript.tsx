@@ -66,7 +66,7 @@ function RevisionRow({ block, compact, live }: { block: Extract<TranscriptBlock,
   const Icon = live ? RefreshCw : ListChecks;
   return (
     <p className={cn('ask-rise flex items-start gap-2 text-shodh-text-muted', compact ? 'text-caption' : 'text-small')}>
-      <Icon className={cn('w-3.5 h-3.5 mt-[3px] shrink-0', live ? 'text-shodh-accent-text' : 'text-shodh-text-muted')} aria-hidden="true" />
+      <Icon className={cn('w-3.5 h-3.5 mt-0.5 shrink-0', live ? 'text-shodh-accent-text' : 'text-shodh-text-muted')} aria-hidden="true" />
       <span className="min-w-0 break-words">{revisionText(block.reason, block.flagged, block.missingNeeds, live)}</span>
     </p>
   );
@@ -173,7 +173,7 @@ export function Transcript({
               if (block.kind === 'steer') {
                 return (
                   <p key={block.id} className="flex items-start gap-2 text-small text-shodh-text-secondary">
-                    <CornerDownRight className="w-3.5 h-3.5 mt-[3px] shrink-0 text-shodh-accent-text" aria-hidden="true" />
+                    <CornerDownRight className="w-3.5 h-3.5 mt-0.5 shrink-0 text-shodh-accent-text" aria-hidden="true" />
                     <span className="min-w-0 break-words">
                       <span className="sr-only">You steered: </span>
                       {block.text}
@@ -227,7 +227,7 @@ export function Transcript({
         if (block.kind === 'steer') {
           return (
             <p key={block.id} className={cn('ask-rise flex items-start gap-2 text-shodh-text-secondary', compact ? 'text-small' : 'text-body')}>
-              <CornerDownRight className="w-3.5 h-3.5 mt-[3px] shrink-0 text-shodh-accent-text" aria-hidden="true" />
+              <CornerDownRight className="w-3.5 h-3.5 mt-0.5 shrink-0 text-shodh-accent-text" aria-hidden="true" />
               <span className="min-w-0 break-words">
                 <span className="sr-only">You steered: </span>
                 {block.text}

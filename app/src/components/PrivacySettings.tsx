@@ -44,7 +44,7 @@ export function SwitchRow({ label, description, checked, disabled = false, onCha
         disabled={disabled}
         onClick={() => onChange(!checked)}
         className={cn(
-          'relative shrink-0 mt-0.5 w-9 h-5 rounded-full transition-colors duration-micro disabled:opacity-50 disabled:cursor-not-allowed',
+          'target-24 relative shrink-0 mt-0.5 w-9 h-5 rounded-full transition-colors duration-micro disabled:opacity-50 disabled:cursor-not-allowed',
           checked ? 'bg-shodh-accent' : 'bg-shodh-raised-2',
           FOCUS_RING,
         )}
@@ -187,7 +187,7 @@ function DefaultModeSettings() {
                 checked={selected}
                 disabled={saving}
                 onChange={() => void save(info.id)}
-                className={cn('mt-[3px] accent-shodh-accent', FOCUS_RING)}
+                className={cn('mt-0.5 accent-shodh-accent', FOCUS_RING)}
               />
               <span className="flex flex-col">
                 <span className="inline-flex items-center gap-1.5 text-small font-medium text-shodh-text">

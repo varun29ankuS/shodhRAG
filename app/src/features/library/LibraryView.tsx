@@ -41,6 +41,8 @@ import { RecallSection } from '../recall/RecallSection';
 import { RecallViewer } from '../recall/RecallViewer';
 import { isReceipt } from '../recall/recallModel';
 import { WhatsNewSection } from '../whatsNew/WhatsNewSection';
+import { PageFrame } from '../../components/shell/PageFrame';
+import { ViewState } from '../../components/shell/ViewState';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-ground';
@@ -54,9 +56,6 @@ const QUIET_BUTTON = cn(
   'h-8 px-2.5 inline-flex items-center gap-1.5 rounded-lg text-small text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
   FOCUS_RING,
 );
-
-/** File types the indexer reads, for the empty state. */
-const SUPPORTED_SUMMARY = 'PDF, Word, Excel, PowerPoint, CSV, Markdown, text and code files';
 
 interface LibraryViewProps {
   sources: LibrarySource[];
@@ -170,38 +169,30 @@ export function LibraryView({
 
   if (recallReceipt) {
     return (
-      <div className="h-full overflow-y-auto scrollbar-thin">
-        <div className="max-w-5xl mx-auto px-8 py-7 flex flex-col gap-4">
-          <RecallViewer receipt={recallReceipt} onBack={() => setRecallReceipt(null)} />
-        </div>
-      </div>
+      <PageFrame title="Library" heading={false}>
+        <RecallViewer receipt={recallReceipt} onBack={() => setRecallReceipt(null)} />
+      </PageFrame>
     );
   }
 
   if (graphPage) {
     const openPaper = (id: string) => pushPage({ kind: 'paper', id });
     const openConcept = (kind: 'method' | 'dataset', id: string) => pushPage({ kind, id });
+    if (graphPage.kind === 'graph') {
+      return (
+        <PageFrame title="Paper graph" lede="How your papers cite each other" back={{ label: 'Library', onClick: popPage }}>
+          <PaperGraphView onOpenPaper={openPaper} />
+        </PageFrame>
+      );
+    }
     return (
-      <div className="h-full overflow-y-auto scrollbar-thin">
-        <div className="max-w-5xl mx-auto px-8 py-7 flex flex-col gap-4">
-          {graphPage.kind === 'graph' ? (
-            <>
-              <header className="flex items-start justify-between gap-4">
-                <div className="flex flex-col gap-1">
-                  <h1 className="m-0 text-2xl font-bold text-shodh-text">Paper graph</h1>
-                  <p className="text-sm text-shodh-text-muted">How your papers cite each other and the work they build on, read from their bibliographies.</p>
-                </div>
-                <button type="button" onClick={popPage} className={QUIET_BUTTON}>Back to Library</button>
-              </header>
-              <PaperGraphView onOpenPaper={openPaper} />
-            </>
-          ) : graphPage.kind === 'paper' ? (
+      <PageFrame title="Library" heading={false}>
+          {graphPage.kind === 'paper' ? (
             <PaperPage key={graphPage.id} paperId={graphPage.id} onBack={popPage} onOpenPaper={openPaper} onOpenConcept={openConcept} />
           ) : (
             <ConceptPage key={`${graphPage.kind}:${graphPage.id}`} kind={graphPage.kind} conceptId={graphPage.id} onBack={popPage} onOpenPaper={openPaper} />
           )}
-        </div>
-      </div>
+      </PageFrame>
     );
   }
 
@@ -221,26 +212,25 @@ export function LibraryView({
   );
 
   return (
-    <div className="h-full overflow-y-auto scrollbar-thin">
-      <div className="max-w-5xl mx-auto px-8 py-7 flex flex-col gap-6">
-        <header className="flex items-start justify-between gap-4">
-          <div className="flex flex-col gap-1">
-            <h1 className="m-0 text-2xl font-bold text-shodh-text">Library</h1>
-            <p className="text-sm text-shodh-text-muted">
-              {!hasLibrary
-                ? 'Everything Shodh can search. Nothing has been added yet.'
-                : sources.length === 0
-                  ? `${countOf(unlistedCount, 'file')} in the index, in no folder listed here`
-                  : `${countOf(Math.max(totalDocs, fileTotal), 'file')} in ${countOf(sources.length, 'source')}${indexing > 0 ? ` · indexing ${indexing}` : ''}`}
-            </p>
-          </div>
-          {hasLibrary && (
-            <button type="button" onClick={onAddFolder} className={PRIMARY_BUTTON}>
-              <FolderPlus className="w-4 h-4" aria-hidden="true" />
-              Add folder
-            </button>
-          )}
-        </header>
+    <PageFrame
+      title="Library"
+      lede={
+        !hasLibrary
+          ? 'Everything Shodh can search'
+          : sources.length === 0
+            ? `${countOf(unlistedCount, 'file')} in the index, in no folder listed here`
+            : `${countOf(Math.max(totalDocs, fileTotal), 'file')} in ${countOf(sources.length, 'source')}${indexing > 0 ? ` · indexing ${indexing}` : ''}`
+      }
+      action={
+        // The empty library's own card carries the one Add folder; the slot stays reserved.
+        hasLibrary && (
+          <button type="button" onClick={onAddFolder} className={PRIMARY_BUTTON}>
+            <FolderPlus className="w-4 h-4" aria-hidden="true" />
+            Add folder
+          </button>
+        )
+      }
+    >
 
         <SetupCard />
 
@@ -326,8 +316,7 @@ export function LibraryView({
           </section>
         )}
 
-      </div>
-    </div>
+    </PageFrame>
   );
 }
 
@@ -373,7 +362,7 @@ function UnlistedFilesCard({
           </li>
         ))}
         {rest.length > 0 && (
-          <li className="text-small text-shodh-text-muted pl-[22px]">
+          <li className="text-small text-shodh-text-muted pl-6">
             {`and ${countOf(rest.length, 'more folder')} (${restFiles.toLocaleString()})`}
           </li>
         )}
@@ -399,23 +388,18 @@ function UnlistedFilesCard({
 
 function EmptyLibrary({ onAddFolder }: { onAddFolder: () => void }) {
   return (
-    <section aria-labelledby="library-empty" className="rounded-2xl border border-dashed border-shodh-border-strong bg-shodh-surface px-8 py-10 flex flex-col items-center text-center gap-4">
-      <span className="w-12 h-12 rounded-xl bg-shodh-accent-soft inline-flex items-center justify-center" aria-hidden="true">
-        <FolderPlus className="w-6 h-6 text-shodh-accent-text" />
-      </span>
-      <div className="flex flex-col gap-1.5 max-w-md">
-        <h2 id="library-empty" className="text-[17px] font-semibold text-shodh-text">Add a folder to start searching it</h2>
-        <p className="text-small leading-relaxed text-shodh-text-muted">
-          Shodh reads the {SUPPORTED_SUMMARY} in the folder and its subfolders, and indexes them on this computer. Nothing
-          is uploaded. Answers in Ask then cite the exact passage they came from.
-        </p>
-      </div>
-      <button type="button" onClick={onAddFolder} className={PRIMARY_BUTTON}>
-        <FolderPlus className="w-4 h-4" aria-hidden="true" />
-        Add folder
-      </button>
-      <p className="text-caption text-shodh-text-faint">You can also drop a folder or file anywhere on this window.</p>
-    </section>
+    <ViewState
+      kind="empty"
+      icon={FolderPlus}
+      title="No folders yet"
+      detail="Add a folder to search it. Nothing is uploaded."
+      action={
+        <button type="button" onClick={onAddFolder} className={PRIMARY_BUTTON}>
+          <FolderPlus className="w-4 h-4" aria-hidden="true" />
+          Add folder
+        </button>
+      }
+    />
   );
 }
 

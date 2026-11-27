@@ -9,7 +9,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { MAX_REPORTED, clipped, fieldTextFits } from '../src/features/launch/textFit.ts';
+import { MAX_REPORTED, clipped, fieldTextFits, shortenedWithTitle } from '../src/features/launch/textFit.ts';
 import { appDir, source, withoutComments } from './jsxScan.ts';
 
 const box = { scrollWidth: 100, clientWidth: 100, scrollHeight: 20, clientHeight: 20, overflowX: 'visible', overflowY: 'visible' };
@@ -75,4 +75,29 @@ test('the views tour measures every view in every theme and fails on one hit', (
   assert.match(tour, /if clipped_total > 0 \{\s+return Err\(/);
   // The report is kept only while the probe runs, and only for the tour's own views.
   assert.match(probe, /if !STARTED\.load\(Ordering::SeqCst\) \{\s+return;/);
+});
+
+test('a name shortened with an ellipsis passes only with its whole text in a title', () => {
+  const name = 'What does the paper say about recall at small index sizes?';
+  // Passes: an ellipsis, and the whole name in the element's title or its row's.
+  assert.ok(shortenedWithTitle('ellipsis', name, [name, null]));
+  assert.ok(shortenedWithTitle('ellipsis', name, [null, name]));
+  assert.ok(shortenedWithTitle('ellipsis', `  ${name}\n`, [name.replace(/ /g, '  '), null]), 'spaces read as on screen');
+  // Fails: no title.
+  assert.ok(!shortenedWithTitle('ellipsis', name, [null, null]));
+  assert.ok(!shortenedWithTitle('ellipsis', name, []));
+  // Fails: a title that says something else (a part of it, or another name).
+  assert.ok(!shortenedWithTitle('ellipsis', name, ['What does the paper say', null]));
+  assert.ok(!shortenedWithTitle('ellipsis', name, ['Open chat', null]));
+  // Fails: cut without an ellipsis, even with the title.
+  assert.ok(!shortenedWithTitle('clip', name, [name, null]));
+  assert.ok(!shortenedWithTitle('', name, [name, null]));
+  // Fails: nothing to read.
+  assert.ok(!shortenedWithTitle('ellipsis', '   ', ['   ', null]));
+
+  // The measure lets only that through, for text cut to its width, never for height.
+  const fit = withoutComments(source('features/launch/textFit.ts'));
+  assert.match(fit, /if \(why === 'width' && shortenedWithTitle\(\s*style\.textOverflow,\s*el\.textContent \?\? '',\s*\[el\.getAttribute\('title'\), el\.closest\(ROW_OR_CONTROL\)\?\.getAttribute\('title'\) \?\? null\],\s*\)\) continue;/);
+  // The sidebar's chat titles carry their whole text.
+  assert.match(source('components/shell/ConversationHistory.tsx'), /<span className="text-small truncate" title=\{conversation\.title\}>\{conversation\.title\}<\/span>/);
 });

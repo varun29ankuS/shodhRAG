@@ -183,6 +183,11 @@ Still true:
   than the field. One hit fails the job, with every hit in the log. Nothing is passed over by name.
   What it covers is what the tour shows: nine views with the launch profile's data, at the probe's window
   size. A long name a user types can still be shortened with an ellipsis where a row gives it a title.
+  The gate holds that exactly (2b, chosen by the user): cut text passes only when its computed
+  `text-overflow` is `ellipsis` and a `title` on the element itself or on its row or control (`li`, `tr`, a
+  button, a link, or an element with a row, option, menu item, list item or tree item role) equals its whole
+  text, spaces collapsed. No title, a title that says anything else, or text cut without an ellipsis fails as
+  before, and text taller than its box is never let through (`shortenedWithTitle`, `textFit.test.ts`).
 - **The fixes it forced are in the layout, not in widths**: the page title never shortens and the action slot
   wraps under it; Automations' model choice is in the toolbar row and its side pane opens only when it holds
   something; the Tasks add row wraps and the page has one scroller; the sidebar's views and chats share a

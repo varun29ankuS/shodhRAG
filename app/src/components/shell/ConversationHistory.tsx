@@ -493,7 +493,7 @@ function ConversationRow({
         >
           <span className="flex items-center gap-1.5 min-w-0">
             {conversation.pinned && <Pin className="w-3 h-3 shrink-0 text-shodh-text-faint" aria-hidden="true" />}
-            <span className="text-small truncate">{conversation.title}</span>
+            <span className="text-small truncate" title={conversation.title}>{conversation.title}</span>
           </span>
           {meta && <span className="text-caption text-shodh-text-faint truncate short:hidden" aria-hidden="true">{meta}</span>}
         </button>

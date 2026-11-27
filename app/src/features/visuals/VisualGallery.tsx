@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, CornerDownRight, Download, FileDown, Loader2, MoreHorizontal, Pencil, Pin, PinOff, Search, Trash2 } from 'lucide-react';
 import { useTheme } from '../../contexts/ThemeContext';
 import { cn } from '../../lib/utils';
@@ -23,6 +23,10 @@ import { VisualThumb } from './VisualThumb';
 import { exportPdf } from '../print/exportPdf';
 import { buildPrintDocument, visualPrintMarkdown } from '../print/printModel';
 import { agentItemKey } from '../../lib/agentHighlight';
+import { scrollParentOf, tabPastWindow, useWindowedList } from '../../hooks/useWindowedList';
+import { gridColumns, gridRows, rowOfCard } from '../../lib/windowedRows';
+import { useNavigationTarget } from '../agent/useNavigationTarget';
+import type { VisualTarget } from '../agent/events';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
@@ -31,6 +35,11 @@ const MENU_ITEM =
 
 /** Cards loaded at once (search narrows beyond that). */
 const PAGE = 500;
+
+/** The grid: a card's least width, the space between cards (`gap-3`), a row's height before it is measured. */
+const CARD_MIN_PX = 220;
+const CARD_GAP_PX = 12;
+const CARD_ROW_ESTIMATE = 240;
 const SEARCH_DELAY_MS = 200;
 
 function dateLabel(iso: string): string {
@@ -358,6 +367,48 @@ export function VisualGallery({
   const counts = useMemo(() => entryCounts(entries), [entries]);
   const titles = useMemo(() => new Map(conversations.map(c => [c.id, c.title])), [conversations]);
 
+  // The grid draws only the rows of cards in view (useWindowedList), in whatever scrolls
+  // around it (the Artifacts page, a workspace's page, the gallery dialog).
+  const [gridNode, setGridNode] = useState<HTMLUListElement | null>(null);
+  const [gridWidth, setGridWidth] = useState(0);
+  const scroller = useMemo(() => (gridNode ? scrollParentOf(gridNode) : null), [gridNode]);
+  useLayoutEffect(() => {
+    if (!gridNode) return;
+    const measure = () => setGridWidth(gridNode.clientWidth);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(gridNode);
+    return () => observer.disconnect();
+  }, [gridNode]);
+  const columns = gridColumns(gridWidth, CARD_MIN_PX, CARD_GAP_PX);
+  const cardRows = useMemo(() => gridRows(shown.length, columns), [shown.length, columns]);
+  const windowed = useWindowedList({
+    count: cardRows.length,
+    scroller,
+    list: gridNode,
+    estimate: CARD_ROW_ESTIMATE,
+    getKey: index => shown[cardRows[index].first].key,
+    gap: CARD_GAP_PX,
+  });
+  const revealCardRow = windowed.reveal;
+  // Tab past the last card drawn goes on to the next card, drawn first.
+  const onGridKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLUListElement>) => tabPastWindow(e, shown.length, card => rowOfCard(card, columns), revealCardRow),
+    [shown.length, columns, revealCardRow],
+  );
+  // A visual the assistant changed (its card is highlighted, VisualNavigator): its row is
+  // drawn and scrolled to first, so the highlight finds it.
+  const shownRef = useRef(shown);
+  shownRef.current = shown;
+  const columnsRef = useRef(columns);
+  columnsRef.current = columns;
+  const revealVisual = useCallback((target: VisualTarget) => {
+    if (!target.highlightOnly) return;
+    const index = shownRef.current.findIndex(entry => entry.kind !== 'snippet' && entry.visual.id === target.visualId);
+    if (index >= 0) void revealCardRow(rowOfCard(index, columnsRef.current), 'center');
+  }, [revealCardRow]);
+  useNavigationTarget('visual', revealVisual, { consume: false });
+
   const open = useCallback((card: VisualSummary, trigger: HTMLElement) => {
     const target = recordTarget(card);
     if (!focus || !target) {
@@ -453,9 +504,27 @@ export function VisualGallery({
         </p>
       ) : (
         <>
-          <ul className="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-3" aria-label="Visuals">
-            {shown.map(entry =>
-              entry.kind === 'snippet' ? (
+          <ul
+            ref={setGridNode}
+            className="relative m-0 p-0 list-none"
+            style={{ height: windowed.total }}
+            aria-label="Visuals"
+            onKeyDown={onGridKeyDown}
+          >
+            {windowed.rows.map(row => {
+              const { first, last } = cardRows[row.index];
+              return (
+            <div
+              key={row.key}
+              ref={windowed.virtualizer.measureElement}
+              data-index={row.index}
+              role="none"
+              className="absolute left-0 right-0 grid gap-3"
+              style={{ top: row.top, gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
+            >
+            {shown.slice(first, last + 1).map((entry, offset) => (
+              <div key={entry.key} role="none" className="contents" data-card-index={first + offset}>
+              {entry.kind === 'snippet' ? (
                 <SnippetCard key={entry.key} snippet={entry.snippet} onChange={next => replaceSnippet(entry.snippet.id, next)} />
               ) : (
                 <VisualCard
@@ -468,8 +537,12 @@ export function VisualGallery({
                   onChange={change(entry.visual)}
                   onOpenConversation={openConversation}
                 />
-              ),
-            )}
+              )}
+              </div>
+            ))}
+            </div>
+              );
+            })}
           </ul>
           {total > items.length && (
             <p className="text-caption text-shodh-text-muted">{`Showing the first ${items.length} of ${total}. Search to find others.`}</p>

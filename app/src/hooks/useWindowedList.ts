@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useMemo, useState } from 'react';
+import React, { useCallback, useLayoutEffect, useMemo, useState } from 'react';
 import { defaultRangeExtractor, useVirtualizer } from '@tanstack/react-virtual';
 import type { Range, VirtualItem, Virtualizer } from '@tanstack/react-virtual';
 import { drawnIndexes } from '../lib/windowedRows';
@@ -113,4 +113,48 @@ export function useWindowedList({
   );
 
   return { virtualizer, rows, total: virtualizer.getTotalSize(), reveal };
+}
+
+/** The elements Tab stops on. */
+const TABBABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/**
+ * The nearest ancestor of `el` that scrolls vertically (a windowed grid inside a page, a
+ * dialog or a pane), or null.
+ */
+export function scrollParentOf(el: HTMLElement): HTMLElement | null {
+  for (let box = el.parentElement; box; box = box.parentElement) {
+    const overflowY = getComputedStyle(box).overflowY;
+    if (overflowY === 'auto' || overflowY === 'scroll') return box;
+  }
+  return null;
+}
+
+/**
+ * Tab out of the last card drawn of a windowed grid (Shift+Tab out of the first) goes
+ * on to the next card, drawn first, as it would in a grid that drew every card. Cards
+ * carry `data-card-index`; `rowOf` names the grid row a card is in.
+ */
+export function tabPastWindow(
+  e: React.KeyboardEvent<HTMLElement>,
+  count: number,
+  rowOf: (card: number) => number,
+  reveal: (row: number) => Promise<HTMLElement | null>,
+): void {
+  if (e.key !== 'Tab') return;
+  const target = e.target as HTMLElement;
+  const card = target.closest<HTMLElement>('[data-card-index]');
+  if (!card) return;
+  const stops = Array.from(card.querySelectorAll<HTMLElement>(TABBABLE));
+  const leaving = e.shiftKey ? stops[0] === target : stops[stops.length - 1] === target;
+  if (!leaving) return;
+  const next = Number(card.dataset.cardIndex) + (e.shiftKey ? -1 : 1);
+  if (!Number.isInteger(next) || next < 0 || next >= count) return;
+  if (e.currentTarget.querySelector(`[data-card-index="${next}"]`)) return;
+  e.preventDefault();
+  void reveal(rowOf(next)).then(row => {
+    const into = row?.querySelector<HTMLElement>(`[data-card-index="${next}"]`);
+    const stopsInto = into ? Array.from(into.querySelectorAll<HTMLElement>(TABBABLE)) : [];
+    (e.shiftKey ? stopsInto[stopsInto.length - 1] : stopsInto[0])?.focus();
+  });
 }

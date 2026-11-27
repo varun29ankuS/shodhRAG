@@ -60,7 +60,13 @@ const LISTS: Record<string, RegExp[]> = {
   'features/artifacts/ArtifactsView.tsx': [
     /const cardRows = useMemo\(\(\) => gridRows\(shown\.length, columns\), \[shown\.length, columns\]\);/,
     // Tab goes on past the last card drawn.
-    /void revealCardRow\(rowOfCard\(next, columns\)\)/,
+    /tabPastWindow\(e, shown\.length, card => rowOfCard\(card, columns\), revealCardRow\)/,
+  ],
+  'features/visuals/VisualGallery.tsx': [
+    /const cardRows = useMemo\(\(\) => gridRows\(shown\.length, columns\), \[shown\.length, columns\]\);/,
+    /tabPastWindow\(e, shown\.length, card => rowOfCard\(card, columns\), revealCardRow\)/,
+    // A card the assistant changed is drawn and scrolled to before its highlight looks for it.
+    /useNavigationTarget\('visual', revealVisual, \{ consume: false \}\);/,
   ],
 };
 

@@ -10,7 +10,7 @@ import { STATUS_LABELS, filterCreations, selectionFor } from './model';
 import type { ArtifactSelection, CodeChange, Creation } from './model';
 import { PageFrame } from '../../components/shell/PageFrame';
 import { ViewState } from '../../components/shell/ViewState';
-import { useWindowedList } from '../../hooks/useWindowedList';
+import { tabPastWindow, useWindowedList } from '../../hooks/useWindowedList';
 import { gridColumns, gridRows, rowOfCard } from '../../lib/windowedRows';
 
 /** The creations grid: a card's least width, the space between cards (`gap-3`), a row's height before it is measured. */
@@ -108,20 +108,11 @@ export default function ArtifactsView({ onOpenChat, onChange }: ArtifactsViewPro
   });
   const revealCardRow = windowed.reveal;
 
-  // Tab past the last card drawn (or Shift+Tab before the first) goes on to the next card,
-  // drawn first, as it would in a grid that drew every card.
-  const onGridKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
-    if (e.key !== 'Tab') return;
-    const card = (e.target as HTMLElement).closest<HTMLElement>('[data-card-index]');
-    if (!card) return;
-    const next = Number(card.dataset.cardIndex) + (e.shiftKey ? -1 : 1);
-    if (next < 0 || next >= shown.length) return;
-    if (e.currentTarget.querySelector(`[data-card-index="${next}"]`)) return;
-    e.preventDefault();
-    void revealCardRow(rowOfCard(next, columns)).then(row => {
-      row?.querySelector<HTMLElement>(`[data-card-index="${next}"] button`)?.focus();
-    });
-  }, [shown.length, columns, revealCardRow]);
+  // Tab past the last card drawn goes on to the next card, drawn first.
+  const onGridKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>) => tabPastWindow(e, shown.length, card => rowOfCard(card, columns), revealCardRow),
+    [shown.length, columns, revealCardRow],
+  );
 
   if (selection) {
     return (

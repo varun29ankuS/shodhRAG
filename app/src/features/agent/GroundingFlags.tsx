@@ -204,7 +204,7 @@ export function InvalidCitation({ number }: { number: number }) {
       role="note"
       title={description}
       data-answer-ui=""
-      className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 ml-0.5 rounded-[5px] align-[3px] text-caption font-bold leading-none tabular-nums border border-dashed border-shodh-error/60 text-shodh-error line-through decoration-shodh-error/70"
+      className="inline-flex items-center justify-center min-w-6 h-[18px] px-1 ml-0.5 rounded-[5px] align-[3px] text-caption font-bold leading-none tabular-nums border border-dashed border-shodh-error/60 text-shodh-error line-through decoration-shodh-error/70"
     >
       <span aria-hidden="true">{number}</span>
       <span className="sr-only">{description}</span>

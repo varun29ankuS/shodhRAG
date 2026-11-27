@@ -101,3 +101,13 @@ test('a name shortened with an ellipsis passes only with its whole text in a tit
   // The sidebar's chat titles carry their whole text.
   assert.match(source('components/shell/ConversationHistory.tsx'), /<span className="text-small truncate" title=\{conversation\.title\}>\{conversation\.title\}<\/span>/);
 });
+
+test('a citation pill is at least as wide as its 24px target, so its target never spills past its text', () => {
+  // `target-24` widens a small control's hit area with a centred pseudo-element; on a box
+  // under 24px wide it reaches past the box, and the measure reads that as text that does
+  // not fit. A pill with text is as wide as its target and grows with its number.
+  const renderer = source('features/ask/MessageContentRenderer.tsx');
+  assert.match(renderer, /'target-24 inline-flex items-center justify-center min-w-6 h-\[18px\] px-1 /);
+  // The pill a wrong number gets keeps the same size.
+  assert.match(source('features/agent/GroundingFlags.tsx'), /inline-flex items-center justify-center min-w-6 h-\[18px\] px-1 ml-0\.5 rounded-\[5px\]/);
+});

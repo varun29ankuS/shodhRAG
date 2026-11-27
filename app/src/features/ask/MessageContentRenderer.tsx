@@ -358,7 +358,7 @@ function MessageContent({
             className={cn(
               // Every badge has a 1px border (transparent where none shows), so a web
               // source's outline never resizes the badge as it is opened.
-              'target-24 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 ml-0.5 rounded-[5px] border align-[3px] text-caption font-bold leading-none tabular-nums transition-colors duration-micro',
+              'target-24 inline-flex items-center justify-center min-w-6 h-[18px] px-1 ml-0.5 rounded-[5px] border align-[3px] text-caption font-bold leading-none tabular-nums transition-colors duration-micro',
               isActive
                 ? 'border-shodh-accent bg-shodh-accent text-shodh-on-accent'
                 : isWeb

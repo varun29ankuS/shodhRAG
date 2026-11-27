@@ -31,12 +31,32 @@ import { designApi } from '../code/api';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useSidebar } from '../../contexts/SidebarContext';
 import { useChatSession } from '../ask/ChatSessionContext';
+import { reduceAll } from '../agent/reducer';
+import type { TranscriptAction, TranscriptState } from '../agent/reducer';
+import { RUN_PANEL_TOGGLE } from '../agent/RunPanel';
 
 /** Rust → main only (`launch_probe::LAUNCH_PROBE_EVENT`). */
 export const LAUNCH_PROBE_EVENT = 'launch-probe';
 
-/** The tour's scene of a conversation (`launch_probe::TOUR_SCENES`). */
-const SCENE_CONVERSATION = 'conversation';
+/** The tour's scenes (`launch_probe::TOUR_SCENES`): Ask with a sample conversation open. */
+const SCENES = new Set(['conversation', 'run-plan', 'run-progress', 'run-summary']);
+
+/** How long the window waits for a scene's conversation to be open before setting its run. */
+const SCENE_OPEN_TRIES = 30;
+const SCENE_OPEN_INTERVAL_MS = 50;
+
+/** A `run-*` scene's run: the answer it is set on, its transcript's seed and actions, and whether its view opens. */
+interface SceneRun {
+  answerId: string;
+  seed: unknown;
+  actions: unknown[];
+  open: boolean;
+}
+
+function sceneRunOf(value: unknown): SceneRun | null {
+  if (!isRecord(value) || typeof value.answerId !== 'string' || !isRecord(value.seed) || !Array.isArray(value.actions)) return null;
+  return { answerId: value.answerId, seed: value.seed, actions: value.actions, open: value.open === true };
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -71,6 +91,30 @@ export function LaunchProbeHost(): null {
   // What a scene changed, given back to the view after it: the chat open and the sidebar.
   const beforeSceneRef = useRef<{ conversationId: string | null; collapsed: boolean } | null>(null);
 
+  /**
+   * A `run-*` scene: once its conversation is open, its answer is set to the run as the
+   * reducer builds it from the actions sent (the session's own update of a message), and
+   * a finished run's view is opened by its button, as a click opens it.
+   */
+  const showRun = async (conversationId: string, run: SceneRun) => {
+    for (let tries = 0; tries < SCENE_OPEN_TRIES; tries++) {
+      const current = sessionRef.current;
+      if (current.activeConversationId === conversationId && current.messages.some(m => m.id === run.answerId)) {
+        const transcript = reduceAll(structuredClone(run.seed) as TranscriptState, run.actions as TranscriptAction[]);
+        sessionRef.current.updateMessage(run.answerId, { transcript });
+        if (run.open) {
+          await new Promise(resolve => window.setTimeout(resolve, SCENE_OPEN_INTERVAL_MS * 4));
+          document.querySelector<HTMLButtonElement>(`[data-testid="${RUN_PANEL_TOGGLE}"][aria-expanded="false"]`)?.click();
+        }
+        return;
+      }
+      await new Promise(resolve => window.setTimeout(resolve, SCENE_OPEN_INTERVAL_MS));
+    }
+    console.error(`Launch probe: the run's conversation ${conversationId} did not open`);
+  };
+  const showRunRef = useRef(showRun);
+  showRunRef.current = showRun;
+
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | null = null;
@@ -91,7 +135,7 @@ export function LaunchProbeHost(): null {
           .get(payload.checkId)
           .then(found => reviewRef.current?.openDesign(found))
           .catch(error => console.error('Launch probe: the design check could not be opened:', error));
-      } else if (payload.kind === 'show' && payload.view === SCENE_CONVERSATION && typeof payload.conversation === 'string') {
+      } else if (payload.kind === 'show' && typeof payload.view === 'string' && SCENES.has(payload.view) && typeof payload.conversation === 'string') {
         reviewRef.current?.close();
         if ((payload.theme === 'light' || payload.theme === 'dark') && payload.theme !== themeRef.current.theme) {
           themeRef.current.toggleTheme();
@@ -101,8 +145,11 @@ export function LaunchProbeHost(): null {
           collapsed: sidebarRef.current.collapsed,
         };
         sidebarRef.current.setSidebarCollapsed(true);
-        sessionRef.current.switchConversation(payload.conversation);
+        const conversationId = payload.conversation;
+        sessionRef.current.switchConversation(conversationId);
         window.dispatchEvent(new CustomEvent('switchTab', { detail: 'ask' }));
+        const run = sceneRunOf(payload.run);
+        if (run) void showRunRef.current(conversationId, run);
       } else if (payload.kind === 'show' && typeof payload.view === 'string') {
         const tab = normalizeViewTab(payload.view);
         if (!tab) return;

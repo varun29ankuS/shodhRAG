@@ -202,8 +202,8 @@ Done in 2b:
   side threads keep their blocks in their own box (`MessageContentRenderer`'s `wide`, set only on answers).
 - **The question dots rail**, in the 28 px gutter wide blocks leave, below the find box and above the message
   box. One Tab stop, the menus' arrows. Hidden below three questions.
-- **The docked plan only where it covers nothing**, the widest block included (`planDocks`). Below that it stays
-  in its answer. 2c replaces it with the run view.
+- **The docked plan only where it covers nothing** (2b). 2c removed the docked plan altogether: the plan is in the
+  run view.
 - **A short window (800 px tall or less) tightens the sidebar**: 28 px view rows, a chat row's time hidden (it
   stays in the row's label). The launch tour checks that every view shows at least three chats whole.
 - **Windowed lists**: Library's files (the 500-row cap is gone), Tasks, the Inbox, the Artifacts creations and
@@ -218,3 +218,20 @@ Still true:
   holds what a user adds by hand (folders, workspaces), tens of rows.
 - **The windowed lists are checked by reading their sources and by the launch tour's pictures**; the launch
   profile has few rows, so no CI run scrolls a list of thousands.
+
+## 10. What 2c did, said plainly
+
+- **One run view (`RunPanel`) in each agent answer** replaces the plan panel, the docked plan and the folded steps
+  line. Closed, it is one line: what the run is doing now, or what it did, and the plan's count. Open: the
+  **Summary** once finished (the sources it read, each opening its passage; what it changed; the commands it ran;
+  plan items not found or blocked), then the **Plan**, then the **Steps**. It is open while the run goes on and
+  closes when it finishes, so the answer starts at the top. Its header wraps; nothing in it is cut.
+- **Links only to places that exist**: a source opens the citation preview. Changed files are listed by the run's
+  own step names, without a link, because the agent's write tools are the runtime's and their arguments are not
+  a stable contract.
+- **The launch tour photographs a sample run** in three states (`run-plan`, `run-progress`, `run-summary`), in
+  both themes. Its transcript is built by the Ask view's own reducer from recorded-style actions and set on the
+  answer as the session sets one; the summary is opened by its button. A live run cannot be saved and reloaded
+  (a reload marks it interrupted), so this is how a running state reaches a picture.
+- **Two fixes from 2b's pictures**: a table's "Expand & ask" sits in a row above it instead of over its last header
+  cell, and dark code blocks no longer paint a band behind each line.

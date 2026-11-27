@@ -3,7 +3,7 @@ import { ArrowUpRight, Check, Copy, CornerLeftUp, FileDown, FileText, FolderPlus
 import { useTheme } from '../../contexts/ThemeContext';
 import { invoke } from '@tauri-apps/api/core';
 import { cn } from '../../lib/utils';
-import { COLUMN_GUTTER_PX, PLAN_DOCK_INSET_PX, TEXT_COLUMN_PX, WIDE_BLOCK_HOST_CLASS, planDocks } from './wideBlock';
+import { COLUMN_GUTTER_PX, TEXT_COLUMN_PX, WIDE_BLOCK_HOST_CLASS } from './wideBlock';
 import { QuestionRail } from './QuestionRail';
 import { currentQuestion, railQuestions, railShown } from './questionDots';
 import { ModelNotice } from '../connection/ModelNotice';
@@ -13,7 +13,6 @@ import { ConnectorConversationView, SeedNotice } from '../connectors/ConnectorCo
 import { continueSeed, readSeed, seedGoesWithNextQuestion } from '../connectors/conversations';
 import type { AgentComposerHandle, PastedImage } from '../agent/AgentComposer';
 import { passageHits } from '../agent/citations';
-import { PlanPanel } from '../agent/PlanPanel';
 import { answerText, pendingApproval, isLive } from '../agent/reducer';
 import type { ClaimCheck } from '../agent/events';
 import type { CorrectionOutcome } from '../agent/grounding';
@@ -380,8 +379,6 @@ interface AssistantMessageProps {
   canRetry: boolean;
   /** The newest message of the conversation: a provider failure may retry or fall back by itself. */
   latest: boolean;
-  /** Task list shown inline above the answer (narrow layouts). */
-  inlinePlan: boolean;
   onOpenSource: (messageId: string, hit: SearchHit, trigger: HTMLElement) => void;
   onOpenArtifact: (artifactId: string) => void;
   onRetry: (message: ChatMessage, fallback?: FallbackRun | null) => void;
@@ -417,7 +414,6 @@ function AssistantMessageView({
   activeFile,
   canRetry,
   latest,
-  inlinePlan,
   onOpenSource,
   onOpenArtifact,
   onRetry,
@@ -510,7 +506,6 @@ function AssistantMessageView({
     >
       {transcript ? (
         <>
-          {inlinePlan && transcript.plan && <PlanPanel items={transcript.plan} live={running} variant="inline" />}
           <Transcript
             transcript={transcript}
             hits={hits}
@@ -880,8 +875,8 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
   }, []);
   const windowRef = useRef<ConversationLogHandle>(null);
 
-  // The conversation's width and its scrollbar's: whether the plan docks beside it, and
-  // where the question rail sits (in the gutter wide blocks leave, left of the scrollbar).
+  // The conversation's scrollbar: the question rail sits left of it, in the gutter wide
+  // blocks leave.
   const [hostBox, setHostBox] = useState({ width: 0, scrollbar: 0 });
   useEffect(() => {
     if (!scroller) return;
@@ -895,7 +890,6 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
     observer.observe(scroller);
     return () => observer.disconnect();
   }, [scroller]);
-  const planDocked = planDocks(hostBox.width);
 
   // The message holding keyboard focus stays mounted while it is scrolled away.
   const onFocusIn = useCallback((e: React.FocusEvent<HTMLDivElement>) => {
@@ -1497,9 +1491,6 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
         activeFile={isPreviewed ? preview.hit.sourceFile : null}
         canRetry={canRetry}
         latest={index === messages.length - 1}
-        // A wide conversation docks the newest answer's plan beside it; every earlier
-        // answer keeps its own, folded to its final counts, above its text.
-        inlinePlan={!planDocked || message.transcript !== latest}
         onOpenSource={openSource}
         onOpenArtifact={setOpenArtifactId}
         onRetry={handleRetry}
@@ -1692,11 +1683,6 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
       </div>
       {topBarContext}
 
-      {planDocked && latest?.plan && (
-        <aside className="absolute top-[18px] z-10" style={{ insetInlineEnd: hostBox.scrollbar + PLAN_DOCK_INSET_PX }} aria-label="Plan of the latest answer">
-          <PlanPanel items={latest.plan} live={isLive(latest)} variant="docked" />
-        </aside>
-      )}
 
       {preview && (
         // Text selected in the document is asked about in a side discussion on its answer.

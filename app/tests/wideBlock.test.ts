@@ -8,13 +8,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   COLUMN_GUTTER_PX,
-  PLAN_DOCK_INSET_PX,
-  PLAN_DOCK_PX,
   TEXT_COLUMN_PX,
   WIDE_BLOCK_CLASS,
   WIDE_BLOCK_HOST_CLASS,
   WIDE_BLOCK_MAX_PX,
-  planDocks,
   textWidth,
   wideBlockOverhang,
   wideBlockWidth,
@@ -89,25 +86,6 @@ test('every conversation reads in the same column', () => {
   const connector = source('features/connectors/ConnectorConversationView.tsx');
   assert.doesNotMatch(connector, /max-w-\[700px\]/);
   assert.equal(connector.match(/style=\{\{ maxWidth: TEXT_COLUMN_PX \}\}/g)?.length, 3);
-});
-
-test('the plan docks beside the conversation only where it covers none of it', () => {
-  // The docked plan is the width planDocks counts with.
-  assert.match(source('features/agent/PlanPanel.tsx'), new RegExp(`variant === 'docked' \\? 'w-\\[${PLAN_DOCK_PX}px\\]'`));
-  for (let host = 0; host <= 3000; host += 4) {
-    if (!planDocks(host)) continue;
-    // Room right of the widest block for the plan and its inset.
-    const right = (host - wideBlockWidth(host)) / 2;
-    assert.ok(right >= PLAN_DOCK_PX + PLAN_DOCK_INSET_PX, `at ${host}`);
-  }
-  // Clear of the rail in the gutter, and docked in a wide enough window.
-  assert.ok(PLAN_DOCK_INSET_PX > COLUMN_GUTTER_PX);
-  assert.ok(!planDocks(1440 - 248));
-  assert.ok(planDocks(2400));
-  const ask = source('features/ask/AskView.tsx');
-  assert.match(ask, /const planDocked = planDocks\(hostBox\.width\);/);
-  assert.match(ask, /inlinePlan=\{!planDocked \|\| message\.transcript !== latest\}/);
-  assert.match(ask, /\{planDocked && latest\?\.plan && \(/);
 });
 
 test('a previewed page is no longer held to 360px', () => {

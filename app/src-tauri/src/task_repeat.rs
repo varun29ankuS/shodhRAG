@@ -339,13 +339,16 @@ impl Core {
             })?
     }
 
+    /// Applies `change` to the calendar as `actor`'s change (a series' own copy is the
+    /// automation's; an answer to its question is the user's).
     async fn update<R: Send + 'static>(
         &self,
+        actor: crate::task_db::Actor,
         change: impl FnOnce(&mut CalendarData) -> Result<R, CalendarError> + Send + 'static,
     ) -> Result<R, CalendarError> {
         let store = self.calendar.clone();
         let path = store.path().to_path_buf();
-        tokio::task::spawn_blocking(move || store.update(change))
+        tokio::task::spawn_blocking(move || store.update_as(&actor, change))
             .await
             .map_err(|e| CalendarError::Unreadable {
                 path,
@@ -428,18 +431,21 @@ impl Core {
         let floor = copy_id(&job.id, &local_key(&Local, after));
         let latest_id = latest.id.clone();
         let (task, inserted) = self
-            .update(move |d| {
-                let made = d
-                    .tasks
-                    .iter()
-                    .filter(|t| t.id.starts_with(&prefix) && t.id > floor && t.id != latest_id)
-                    .max_by(|a, b| a.id.cmp(&b.id))
-                    .cloned();
-                match made {
-                    Some(existing) => Ok((existing, false)),
-                    None => d.insert_task_if_absent(&id, new, &subtasks),
-                }
-            })
+            .update(
+                crate::task_db::Actor::automation(Some(format!("repeat:{}", job.id))),
+                move |d| {
+                    let made = d
+                        .tasks
+                        .iter()
+                        .filter(|t| t.id.starts_with(&prefix) && t.id > floor && t.id != latest_id)
+                        .max_by(|a, b| a.id.cmp(&b.id))
+                        .cloned();
+                    match made {
+                        Some(existing) => Ok((existing, false)),
+                        None => d.insert_task_if_absent(&id, new, &subtasks),
+                    }
+                },
+            )
             .await
             .map_err(|e| e.to_string())?;
         let target = if inserted {
@@ -1129,7 +1135,9 @@ impl Repeats {
                 };
                 let (_, done, _) = self
                     .core
-                    .update(move |d| d.patch_task(&subject, &patch))
+                    .update(crate::task_db::Actor::user(), move |d| {
+                        d.patch_task(&subject, &patch)
+                    })
                     .await
                     .map_err(|e| e.to_string())?;
                 self.core.sink.calendar_changed(&done).await;

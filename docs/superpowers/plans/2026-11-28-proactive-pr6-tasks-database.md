@@ -161,3 +161,8 @@ statuses, archive apart.
   a label: a project entity needs a workspace, and the name keeps its meaning until the task has one.
 - **Issue keys** live in `task_issue_key` (workspace -> key); a task keeps the key it was numbered under, so
   its id never changes when the key is edited.
+- **Who changed it.** The assistant's tools record their run (`run:<id>`), a repeat's copies the automation
+  (`repeat:<job>`), a deleted workspace the app with its reason; the phone's writes still read as the user's
+  (its handlers share the app's commands).
+- **The issue key** is read and changed with `task_issue_key_get` / `task_issue_key_set`; its field in the
+  workspace's settings comes with PR 7's project pages.

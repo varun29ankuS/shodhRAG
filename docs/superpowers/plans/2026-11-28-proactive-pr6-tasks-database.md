@@ -139,3 +139,25 @@ What PR 7 shows (the bar is Linear) decides what is stored here:
 6. **Project statuses.**
    - A. **Linear's: Backlog, Planned, In progress, Paused, Completed, Canceled**, with archive kept apart. *(Recommended: PR 7's project page shows them as Linear does.)*
    - B. **The spec's: Active, Paused, Done, Archived.**
+
+## Decided (2026-11-28)
+
+All A: 1A a key per workspace from its name, editable (`THE-12`), `TASK-12` without a workspace; 2A Backlog,
+Todo, In progress, Done, Canceled; 3A Linear's five priorities, new tasks at No priority; 4A shared coloured
+labels, today's tags become labels; 5A checklists kept, real sub-issues added; 6A Linear's six project
+statuses, archive apart.
+
+## As built
+
+- **One model, a new home.** `CalendarData` keeps its rules (every mutation, preview and test of today), and
+  `CalendarStore` stores its tasks in `shodh.db` (`task_db.rs`) when the app gives it the database; events stay
+  in `calendar_data.json`. A save diffs the tasks before and after the change and writes, in one transaction,
+  the rows that changed and one `task_change` per field with its actor. Without the database (it cannot be
+  opened) tasks stay in the file as today, and the next launch with it imports them.
+- **Wire words kept.** Todo is stored and sent as `pending` and Done as `completed`, as old clients read them;
+  Backlog and Canceled are the new `backlog` and `canceled`. Priorities add `none` and `urgent` to
+  `low`/`medium`/`high`. `TodoItem` gains `key`, `projectId`, `parentId` and `owner`, absent when unset.
+- **A project name without a workspace** is kept as the task's project name (`project_name`), not turned into
+  a label: a project entity needs a workspace, and the name keeps its meaning until the task has one.
+- **Issue keys** live in `task_issue_key` (workspace -> key); a task keeps the key it was numbered under, so
+  its id never changes when the key is edited.

@@ -902,9 +902,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
             position INTEGER NOT NULL,
             title TEXT NOT NULL,
             description TEXT NOT NULL DEFAULT '',
-            status TEXT NOT NULL CHECK (status IN
-                ('backlog', 'pending', 'in_progress', 'completed', 'canceled')),
-            priority TEXT NOT NULL CHECK (priority IN ('none', 'urgent', 'high', 'medium', 'low')),
+            -- Checked by the app's model, not here: a value written by an older version
+            -- keeps its place and its meaning.
+            status TEXT NOT NULL,
+            priority TEXT NOT NULL,
             due TEXT NULL,
             reminder TEXT NULL,
             reminder_fired_at TEXT NULL,

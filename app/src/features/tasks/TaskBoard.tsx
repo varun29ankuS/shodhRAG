@@ -146,6 +146,7 @@ function Card({
       >
         {task.title}
       </button>
+      {task.key && <span className="text-caption font-mono text-shodh-text-faint">{task.key}</span>}
       <div className="flex items-center gap-1 flex-wrap -ms-1.5">
         <StatusMenu
           status={status}

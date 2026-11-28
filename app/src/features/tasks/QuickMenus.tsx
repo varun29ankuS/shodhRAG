@@ -9,9 +9,11 @@ import { workspaceName } from './board';
 import { PRIORITIES, PRIORITY_LABELS, STATUS_LABELS, STATUSES } from './types';
 
 export const PRIORITY_TEXT: Record<string, string> = {
+  urgent: 'text-shodh-error',
   high: 'text-shodh-error',
   medium: 'text-shodh-warning',
   low: 'text-shodh-success',
+  none: 'text-shodh-text-muted',
 };
 
 export interface Choice {

@@ -1632,8 +1632,10 @@ function AppSplitView() {
               right changes width, so it stays at one x on every view (UI audit rule 2). */}
           <div className="flex items-center justify-end gap-2 min-w-0">
             {/* Ask's conversation context (the Code branch, code map, tools), portaled in by
-                AskView; empty on every other view. */}
-            <div ref={setAskTopBarSlot} data-testid="topbar-ask-slot" className="flex items-center gap-1.5 min-w-0 overflow-hidden empty:hidden" />
+                AskView; empty on every other view. Its chips shrink, each label cut with an
+                ellipsis and whole in its title, so nothing is hidden by the slot, and their
+                details open below it. */}
+            <div ref={setAskTopBarSlot} data-testid="topbar-ask-slot" className="flex items-center gap-1.5 min-w-0 empty:hidden" />
             {viewTab === 'ask' && activeConversationId && (
               <ChatActionsMenu
                 conversationId={activeConversationId}

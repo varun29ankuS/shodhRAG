@@ -80,7 +80,7 @@ export function ToolsChip({ workspaceId, mode, answerRunning, onOpenSettings }: 
   const failing = view?.servers.filter(s => s.error !== null) ?? [];
 
   return (
-    <div className="relative shrink-0">
+    <div className="relative min-w-0">
       <button
         ref={buttonRef}
         type="button"
@@ -90,7 +90,7 @@ export function ToolsChip({ workspaceId, mode, answerRunning, onOpenSettings }: 
         aria-controls={open ? popoverId : undefined}
         title="Tools this chat can use"
         className={cn(
-          'inline-flex items-center gap-1 h-[26px] px-2 rounded-full text-caption font-medium border transition-colors duration-micro',
+          'inline-flex max-w-full min-w-0 items-center gap-1 h-[26px] px-2 rounded-full text-caption font-medium border transition-colors duration-micro',
           view?.many || failing.length > 0 || error
             ? 'border-shodh-warning text-shodh-text-secondary hover:bg-shodh-raised'
             : 'border-shodh-border text-shodh-text-muted hover:text-shodh-text hover:bg-shodh-raised',
@@ -98,11 +98,11 @@ export function ToolsChip({ workspaceId, mode, answerRunning, onOpenSettings }: 
         )}
       >
         {view?.many || failing.length > 0 || error ? (
-          <AlertTriangle className="w-3 h-3 text-shodh-warning" aria-hidden="true" />
+          <AlertTriangle className="w-3 h-3 shrink-0 text-shodh-warning" aria-hidden="true" />
         ) : (
-          <Wrench className="w-3 h-3" aria-hidden="true" />
+          <Wrench className="w-3 h-3 shrink-0" aria-hidden="true" />
         )}
-        <span className="whitespace-nowrap">{label}</span>
+        <span className="truncate" title={label}>{label}</span>
       </button>
       {open && (
         <div

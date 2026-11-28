@@ -695,10 +695,10 @@ impl Engine {
         self.execute(handler, job_id, run_id, false).await
     }
 
-    /// When the next tick should be: the earliest due time of an enabled, unheld job, or
-    /// of a retry.
+    /// When the next tick of `kind` should be: the earliest due time of an enabled, unheld
+    /// job of that kind, or of a retry of one (a tick of one kind never takes up another's).
     pub fn next_wake(&self, kind: JobKind) -> EngineResult<Option<DateTime<Utc>>> {
-        let mut next = self.store.next_retry_at()?;
+        let mut next = self.store.next_retry_at(kind)?;
         for job in self.store.jobs(kind)? {
             if !job.enabled || job.hold_reason.is_some() {
                 continue;

@@ -8,6 +8,10 @@
 //!   file change while the project is shown (a watcher). Requests are
 //!   coalesced until they go quiet ([`DEBOUNCE`], at most [`MAX_DEBOUNCE`]);
 //!   a refresh reads only files whose size, time or contents changed.
+//! - **Nightly**: every Code workspace's map is refreshed at 02:00 local time,
+//!   or once on wake when the computer slept through it ([`nightly`], a
+//!   system job of the engine's loop), so it is fresh in the morning even
+//!   after changes made outside Shodh.
 //! - **How it runs**: each refresh is an indexing run under the source
 //!   `code-map:<key>` (without a path, so the Library never takes it for one
 //!   of its folders): the status strip shows it, Pause and Stop hold and stop
@@ -39,6 +43,7 @@ use shodh_rag::indexing::{IndexingState, PauseSwitch};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::agent_session_commands::workspace_code_folder;
+use crate::system_jobs::WorkDone;
 use crate::workspace_commands::WorkspaceState;
 
 /// Indexing runs of code maps are under `code-map:<key>`.
@@ -218,6 +223,9 @@ struct Inner {
     /// The app, once it runs: refreshes go through its indexing runs. Without
     /// it (tests) a refresh asked for runs at once on the caller's thread.
     app: OnceLock<AppHandle>,
+    /// When the nightly refresh last ran (RFC 3339): `None` until read from the
+    /// engine's runs, then `Some(None)` before its first night.
+    nightly: Mutex<Option<Option<String>>>,
 }
 
 impl CodeMapState {
@@ -230,6 +238,7 @@ impl CodeMapState {
                 leases: Mutex::new(HashMap::new()),
                 next_lease: AtomicU64::new(1),
                 app: OnceLock::new(),
+                nightly: Mutex::new(None),
             }),
         }
     }
@@ -237,6 +246,37 @@ impl CodeMapState {
     /// Refreshes asked for from now on run as the app's indexing runs.
     pub fn attach(&self, app: AppHandle) {
         let _ = self.inner.app.set(app);
+    }
+
+    /// When the nightly refresh last ran (RFC 3339), read once from the engine's
+    /// runs; `None` before its first night, or while the engine is not open.
+    /// Blocking.
+    pub fn last_nightly(&self) -> Option<String> {
+        let mut known = self.inner.nightly.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(at) = known.as_ref() {
+            return at.clone();
+        }
+        let store = self
+            .inner
+            .app
+            .get()
+            .and_then(crate::engine_commands::store_if_open)?;
+        match crate::system_jobs::last_nightly(&store) {
+            Ok(at) => {
+                *known = Some(at.clone());
+                at
+            }
+            Err(e) => {
+                tracing::debug!(target: "shodh::code_map", error = %e, "the nightly refresh's last run could not be read");
+                None
+            }
+        }
+    }
+
+    /// The nightly refresh ran at `at`.
+    fn ran_nightly(&self, at: chrono::DateTime<chrono::Utc>) {
+        *self.inner.nightly.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some(Some(shodh_rag::engine::lease::timestamp(at)));
     }
 
     /// Indexing is paused by the user.
@@ -542,6 +582,8 @@ pub struct CodeMapView {
     /// What the map holds; `None` while it is not open.
     pub map: Option<MapStatus>,
     pub last_run: Option<RefreshReport>,
+    /// When the nightly refresh last ran (RFC 3339); `None` before its first night.
+    pub nightly: Option<String>,
     /// The lease [`code_map_open`] took (give it back with [`code_map_close`]).
     pub lease: Option<u64>,
 }
@@ -571,6 +613,7 @@ pub fn view_of(
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone(),
+        nightly: state.last_nightly(),
         lease: None,
     }
 }
@@ -854,6 +897,64 @@ pub fn touched(app: &AppHandle, root: &Path) {
             }
         }
     });
+}
+
+/// The nightly refresh (the `code_map_reconcile` system job): the map of every Code
+/// workspace that has one is refreshed through its worker, like a refresh after file
+/// changes (it waits while indexing is paused or other indexing runs, and reads only what
+/// changed). A map nobody uses is closed again once idle.
+pub async fn nightly(app: &AppHandle) -> WorkDone {
+    let (Some(state), Some(workspaces)) = (
+        app.try_state::<CodeMapState>().map(|s| s.inner().clone()),
+        app.try_state::<WorkspaceState>(),
+    ) else {
+        return WorkDone::did("Code maps are not ready".to_string(), None);
+    };
+    let listed = match workspaces.run(|s| s.list(false)).await {
+        Ok(listed) => listed,
+        Err(e) => {
+            return WorkDone {
+                handled: shodh_rag::engine::runner::Handled::Permanent {
+                    code: "workspaces_unreadable".to_string(),
+                    detail: e.message,
+                },
+                next_due: None,
+            }
+        }
+    };
+    let mut roots: Vec<PathBuf> = Vec::new();
+    for workspace in listed {
+        if let Ok(folder) = workspace_code_folder(&workspaces, Some(&workspace.id)).await {
+            let root = folder.root().to_path_buf();
+            if !roots.contains(&root) {
+                roots.push(root);
+            }
+        }
+    }
+    let data_dir = state.inner.data_dir.clone();
+    let found = state.clone();
+    let projects = tokio::task::spawn_blocking(move || {
+        roots
+            .into_iter()
+            // Only maps that were built: one never opened in Code mode is not made here.
+            .filter(|root| CodeMap::map_path_of(&data_dir, root).exists())
+            .filter_map(|root| found.project(&root).ok())
+            .collect::<Vec<_>>()
+    })
+    .await
+    .unwrap_or_default();
+    for project in &projects {
+        schedule(app, &state, project, false);
+    }
+    state.ran_nightly(chrono::Utc::now());
+    WorkDone::did(
+        match projects.len() {
+            0 => "No code maps to refresh".to_string(),
+            1 => "1 code map refreshed".to_string(),
+            n => format!("{n} code maps refreshed"),
+        },
+        None,
+    )
 }
 
 /// A Code session of the project at `root` started.

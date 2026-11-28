@@ -5,11 +5,14 @@
 //! - **Data**: `reminder` (and `snoozed_until`) are local wall-clock times
 //!   ([`REMINDER_FORMAT`]); `reminder_fired_at` records that one was shown.
 //!   See [`crate::calendar_store`].
-//! - **Scheduling**: one task sleeps until the next reminder is due (at most
-//!   [`MAX_SLEEP`], so a suspended computer or a clock change is noticed
-//!   within a minute) and wakes early on every calendar change. Local times
-//!   are converted to instants on every plan, never cached, so time-zone and
-//!   daylight-saving changes apply at once.
+//! - **Scheduling**: a system job of the engine's one loop
+//!   ([`crate::system_jobs`], `reminder_plan`), due when the next reminder
+//!   rings and at once after every calendar change ([`wake`]); the loop looks
+//!   at the clock at least every [`MAX_SLEEP`], so a suspended computer or a
+//!   clock change is noticed within a minute. Local times are converted to
+//!   instants on every plan, never cached, and a change of time zone plans
+//!   again at once. Without the engine (`shodh.db` cannot be opened) the loop
+//!   runs the plan itself: reminders need only the calendar file.
 //! - **Firing**: the task is marked fired in the calendar file first and the
 //!   notification shown only if that write changed something, so a reminder
 //!   is shown once even if two plans race.
@@ -17,6 +20,9 @@
 //!   marked fired without one notification each; the UI lists them once
 //!   ([`list_missed_reminders`] / [`dismiss_missed_reminders`]) and a single
 //!   native notification says how many there were.
+//! - **Missed while asleep**: when the computer wakes with more than one
+//!   reminder [`LATE_AFTER_MINUTES`] late, they are told the same way, in one
+//!   notification ([`after_sleep`]); one late reminder rings as usual.
 //!
 //! Notifications go through [`crate::notifications`] (category: reminders).
 //! What Windows supports (tauri-plugin-notification 2.3, desktop): a title
@@ -25,26 +31,23 @@
 //! does not reach the app. Those actions live in the in-app reminder toast
 //! ([`REMINDER_FIRED_EVENT`]), which waits until the window is shown again.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
 use chrono::{DateTime, NaiveDateTime, TimeZone, Timelike, Utc};
 use serde::Serialize;
 pub use shodh_rag::engine::clock::resolve_local;
+pub use shodh_rag::engine::plan::{sleep_for, LATE_AFTER_MINUTES, MAX_SLEEP};
+use shodh_rag::engine::runner::Handled;
 use shodh_rag::inbox::{InboxKind, InboxLink, InboxStatus, NewInboxItem};
 use tauri::{AppHandle, Emitter, Manager, State};
-use tokio::sync::Notify;
 
 use crate::calendar_commands::CALENDAR_CHANGED_EVENT;
 use crate::calendar_store::{
     parse_reminder, CalendarData, CalendarError, CalendarStore, REMINDER_FORMAT,
 };
-
-/// Longest the scheduler sleeps before looking at the clock again. Sleeping
-/// is measured on a monotonic clock, which a suspended computer or a manual
-/// clock change does not move like the wall clock; re-checking every minute
-/// bounds how late a reminder can be after either.
-pub const MAX_SLEEP: Duration = Duration::from_secs(60);
+use crate::system_jobs::{SystemWork, WorkDone};
 
 /// Snooze length when the UI does not say.
 pub const DEFAULT_SNOOZE_MINUTES: u32 = 10;
@@ -179,12 +182,24 @@ pub fn plan(
     out
 }
 
-/// How long to sleep before the next plan.
-pub fn sleep_for(next_wake: Option<DateTime<Utc>>, now: DateTime<Utc>) -> Duration {
-    match next_wake {
-        Some(at) => (at - now).to_std().unwrap_or(Duration::ZERO).min(MAX_SLEEP),
-        None => MAX_SLEEP,
+/// The reminders of a plan's `due` to ring now, and those to tell in one notification:
+/// more than one reminder more than [`LATE_AFTER_MINUTES`] late means the computer slept
+/// through them (or Shodh could not run), and a notification each would bury the user.
+/// One late reminder rings as usual.
+pub fn after_sleep(
+    due: Vec<DueReminder>,
+    now: DateTime<Utc>,
+) -> (Vec<DueReminder>, Vec<DueReminder>) {
+    let late_after = chrono::TimeDelta::minutes(LATE_AFTER_MINUTES);
+    let (late, on_time): (Vec<DueReminder>, Vec<DueReminder>) =
+        due.into_iter().partition(|r| now - r.at > late_after);
+    if late.len() < 2 {
+        let mut ring = on_time;
+        ring.extend(late);
+        ring.sort_by(|a, b| a.at.cmp(&b.at).then_with(|| a.task_id.cmp(&b.task_id)));
+        return (ring, Vec::new());
     }
+    (on_time, late)
 }
 
 /// The local time a snooze of `minutes` from `now` rings at, rounded up to
@@ -206,30 +221,48 @@ pub fn snooze_until(now: NaiveDateTime, minutes: u32) -> NaiveDateTime {
 // ── Runtime ──────────────────────────────────────────────────────
 
 /// Scheduler state, managed by Tauri.
-#[derive(Default)]
 pub struct ReminderState {
-    wake: Notify,
+    /// The calendar changed since the last plan: it is read again.
+    changed: AtomicBool,
+    planner: tokio::sync::Mutex<Planner>,
     missed: Mutex<Vec<DueReminder>>,
     launch: Mutex<LaunchMissed>,
 }
 
-impl ReminderState {
-    /// Re-plan now (the calendar changed).
-    pub fn wake(&self) {
-        self.wake.notify_one();
+/// What the plans of this launch carry from one to the next.
+struct Planner {
+    launched_at: DateTime<Utc>,
+    /// No plan has run yet: reminders due before the launch were missed while closed.
+    first: bool,
+    /// The calendar as last read, while nothing was written to it.
+    cached: Option<CalendarData>,
+    /// Reads of the calendar that failed in a row.
+    failures: u32,
+}
+
+impl Default for ReminderState {
+    fn default() -> Self {
+        Self {
+            changed: AtomicBool::new(false),
+            planner: tokio::sync::Mutex::new(Planner {
+                launched_at: Utc::now(),
+                first: true,
+                cached: None,
+                failures: 0,
+            }),
+            missed: Mutex::new(Vec::new()),
+            launch: Mutex::new(LaunchMissed::default()),
+        }
     }
 }
 
-/// Re-plan after a calendar change. A no-op before the scheduler exists.
+/// Plan again now (a reminder may have been set, moved or removed). A no-op before
+/// the reminders' state exists.
 pub fn wake(app: &AppHandle) {
     if let Some(state) = app.try_state::<ReminderState>() {
-        state.wake();
+        state.changed.store(true, Ordering::SeqCst);
     }
-}
-
-/// Start the scheduler. Call once, after [`ReminderState`] is managed.
-pub fn spawn(app: AppHandle) {
-    tauri::async_runtime::spawn(run(app));
+    crate::engine_commands::due_now(app, SystemWork::ReminderPlan);
 }
 
 async fn load(store: &CalendarStore) -> Result<CalendarData, CalendarError> {
@@ -318,7 +351,13 @@ async fn ring(app: &AppHandle, store: &CalendarStore, reminder: DueReminder) {
     }
 }
 
-async fn record_missed(app: &AppHandle, store: &CalendarStore, missed: Vec<DueReminder>) {
+/// Marks `missed` fired and posts each to the Inbox as missed; returns those this call
+/// marked.
+async fn mark_missed(
+    app: &AppHandle,
+    store: &CalendarStore,
+    missed: Vec<DueReminder>,
+) -> Vec<DueReminder> {
     let mut recorded = Vec::with_capacity(missed.len());
     for reminder in missed {
         if mark_fired(store, &reminder).await {
@@ -328,7 +367,21 @@ async fn record_missed(app: &AppHandle, store: &CalendarStore, missed: Vec<DueRe
     for reminder in &recorded {
         crate::inbox_commands::post(app, inbox_item(reminder, true)).await;
     }
+    recorded
+}
+
+async fn record_missed(app: &AppHandle, store: &CalendarStore, missed: Vec<DueReminder>) {
+    let recorded = mark_missed(app, store, missed).await;
     report_launch(app, LaunchPart::Reminders, recorded);
+}
+
+/// Reminders the computer slept through: one notification for all of them, and the
+/// in-app list, as for those missed while Shodh was closed.
+async fn record_late(app: &AppHandle, store: &CalendarStore, late: Vec<DueReminder>) {
+    let recorded = mark_missed(app, store, late).await;
+    if let Some(state) = app.try_state::<ReminderState>() {
+        announce_missed(app, &state, "Missed reminders", recorded);
+    }
 }
 
 /// Hands `part`'s list of what was missed while Shodh was closed to the launch summary:
@@ -346,6 +399,20 @@ pub fn report_launch(app: &AppHandle, part: LaunchPart, list: Vec<DueReminder>) 
     let Some(recorded) = announce else {
         return;
     };
+    announce_missed(app, &state, "Missed while Shodh was closed", recorded);
+}
+
+/// One desktop notification titled `title` for every reminder of `recorded`, which join
+/// the in-app list of missed reminders.
+fn announce_missed(
+    app: &AppHandle,
+    state: &ReminderState,
+    title: &str,
+    recorded: Vec<DueReminder>,
+) {
+    if recorded.is_empty() {
+        return;
+    }
     let body = match recorded.as_slice() {
         [one] => match &one.repeat {
             Some(repeat) => format!("{}: {}", one.title, repeat.detail),
@@ -353,7 +420,7 @@ pub fn report_launch(app: &AppHandle, part: LaunchPart, list: Vec<DueReminder>) 
         },
         many => format!("{} reminders. Open Shodh to see them.", many.len()),
     };
-    notify(app, "Missed while Shodh was closed", &body);
+    notify(app, title, &body);
     let list = {
         let mut kept = state.missed.lock().unwrap_or_else(|e| e.into_inner());
         kept.extend(recorded);
@@ -396,76 +463,82 @@ fn calendar_unreadable(store: &CalendarStore, error: &CalendarError) {
     ));
 }
 
-async fn run(app: AppHandle) {
-    let store = match crate::profile::app_data_dir(&app) {
+/// One plan of the reminders (the `reminder_plan` system job): the reminders due ring,
+/// those missed while Shodh was closed (on the first plan) or while the computer slept are
+/// told once, and the work is next due when the next reminder rings. An unreadable
+/// calendar is read again after a growing wait ([`retry_delay`]), and at once after a
+/// calendar change.
+pub async fn system_plan(app: &AppHandle) -> WorkDone {
+    let Some(state) = app.try_state::<ReminderState>() else {
+        return WorkDone::nothing(None);
+    };
+    let mut planner = state.planner.lock().await;
+    let store = match crate::profile::app_data_dir(app) {
         Ok(dir) => CalendarStore::in_dir(&dir),
         Err(e) => {
-            tracing::error!(error = %e, "reminders are off: no app data directory");
-            report_launch(&app, LaunchPart::Reminders, Vec::new());
-            return;
+            if planner.first {
+                planner.first = false;
+                tracing::error!(error = %e, "reminders are off: no app data directory");
+                report_launch(app, LaunchPart::Reminders, Vec::new());
+            }
+            return WorkDone::nothing(None);
         }
     };
-    let launched_at = Utc::now();
-    let mut first = true;
-    let mut cached: Option<CalendarData> = None;
-    // Reads of the calendar that failed in a row.
-    let mut failures: u32 = 0;
-    loop {
-        let state = app.state::<ReminderState>();
-        // Registered before reading, so a change made while planning still
-        // wakes the next sleep.
-        let woken = state.wake.notified();
-        tokio::pin!(woken);
-        woken.as_mut().enable();
-
-        let data = match cached.take() {
-            Some(data) => Ok(data),
-            None => load(&store).await,
-        };
-        let sleep = match data {
-            Ok(data) => {
-                failures = 0;
-                let plan = plan(
-                    pending(&data, &chrono::Local),
-                    Utc::now(),
-                    first.then_some(launched_at),
-                );
-                let wrote = !plan.missed.is_empty() || !plan.due.is_empty();
-                if first || !plan.missed.is_empty() {
-                    // The first plan always reports, even with nothing missed, so the
-                    // repeating tasks' part of the launch summary is never held up.
-                    record_missed(&app, &store, plan.missed).await;
-                }
-                first = false;
-                for reminder in plan.due {
-                    ring(&app, &store, reminder).await;
-                }
-                if !wrote {
-                    cached = Some(data);
-                }
-                sleep_for(plan.next_wake, Utc::now())
+    if state.changed.swap(false, Ordering::SeqCst) {
+        planner.cached = None;
+    }
+    let data = match planner.cached.take() {
+        Some(data) => Ok(data),
+        None => load(&store).await,
+    };
+    match data {
+        Ok(data) => {
+            planner.failures = 0;
+            let now = Utc::now();
+            let plan = plan(
+                pending(&data, &chrono::Local),
+                now,
+                planner.first.then_some(planner.launched_at),
+            );
+            let wrote = !plan.missed.is_empty() || !plan.due.is_empty();
+            let summary = format!("{} rang, {} missed", plan.due.len(), plan.missed.len());
+            if planner.first || !plan.missed.is_empty() {
+                // The first plan always reports, even with nothing missed, so the
+                // repeating tasks' part of the launch summary is never held up.
+                record_missed(app, &store, plan.missed).await;
             }
-            Err(e) => {
-                failures = failures.saturating_add(1);
-                if first && failures == 1 {
-                    // Nothing can be known missed yet: the repeating tasks' part of the
-                    // launch summary goes out without waiting for the calendar.
-                    report_launch(&app, LaunchPart::Reminders, Vec::new());
-                }
-                if failures == 1 {
-                    calendar_unreadable(&store, &e);
-                } else {
-                    tracing::debug!(error = %e, failures, "reminders: calendar still unreadable");
-                }
-                // A calendar change (the user fixing or replacing the file
-                // through the app) wakes the loop at once.
-                retry_delay(failures)
+            planner.first = false;
+            let (ring_now, late) = after_sleep(plan.due, now);
+            for reminder in ring_now {
+                ring(app, &store, reminder).await;
             }
-        };
-
-        tokio::select! {
-            _ = tokio::time::sleep(sleep) => {}
-            _ = &mut woken => cached = None,
+            record_late(app, &store, late).await;
+            if !wrote {
+                planner.cached = Some(data);
+                return WorkDone::nothing(plan.next_wake);
+            }
+            WorkDone::did(summary, plan.next_wake)
+        }
+        Err(e) => {
+            planner.failures = planner.failures.saturating_add(1);
+            if planner.first && planner.failures == 1 {
+                // Nothing can be known missed yet: the repeating tasks' part of the
+                // launch summary goes out without waiting for the calendar.
+                report_launch(app, LaunchPart::Reminders, Vec::new());
+            }
+            if planner.failures == 1 {
+                calendar_unreadable(&store, &e);
+            } else {
+                tracing::debug!(error = %e, failures = planner.failures, "reminders: calendar still unreadable");
+            }
+            let wait = chrono::TimeDelta::from_std(retry_delay(planner.failures))
+                .unwrap_or_else(|_| chrono::TimeDelta::minutes(30));
+            WorkDone {
+                handled: Handled::Skipped {
+                    summary: format!("The calendar could not be read: {e}"),
+                },
+                next_due: Some(Utc::now() + wait),
+            }
         }
     }
 }
@@ -753,6 +826,43 @@ mod tests {
         let mut quiet = LaunchMissed::default();
         assert_eq!(quiet.report(LaunchPart::Repeats, Vec::new()), None);
         assert_eq!(quiet.report(LaunchPart::Reminders, Vec::new()), None);
+    }
+
+    #[test]
+    fn reminders_slept_through_are_told_once_and_one_late_reminder_still_rings() {
+        let data = data_with(&[
+            ("Standup", Some("2026-10-29T09:00")),
+            ("Call bank", Some("2026-10-29T10:00")),
+            ("Pay rent", Some("2026-10-29T11:00")),
+            ("Lunch", Some("2026-10-29T12:58")),
+            ("Later", Some("2026-10-29T15:00")),
+        ]);
+        // The computer slept from before 09:00 (Kolkata) to 13:00; Shodh was running.
+        let woke = utc(2026, 10, 29, 7, 30);
+        let p = plan(pending(&data, &Kolkata), woke, None);
+        let (ring, late) = after_sleep(p.due, woke);
+        let rung: Vec<&str> = ring.iter().map(|r| r.title.as_str()).collect();
+        let told: Vec<&str> = late.iter().map(|r| r.title.as_str()).collect();
+        assert_eq!(rung, vec!["Lunch"], "two minutes late: it rings");
+        assert_eq!(
+            told,
+            vec!["Standup", "Call bank", "Pay rent"],
+            "one notification"
+        );
+        assert_eq!(p.next_wake, Some(utc(2026, 10, 29, 9, 30)));
+        // Only one reminder late: it rings, as it would have.
+        let one = data_with(&[("Call bank", Some("2026-10-29T10:00"))]);
+        let p = plan(pending(&one, &Kolkata), woke, None);
+        let (ring, late) = after_sleep(p.due, woke);
+        assert_eq!(ring.len(), 1);
+        assert!(late.is_empty());
+        // On time: nothing is held back.
+        let (ring, late) = after_sleep(
+            pending(&data, &Kolkata)[..1].to_vec(),
+            utc(2026, 10, 29, 3, 31),
+        );
+        assert_eq!(ring.len(), 1);
+        assert!(late.is_empty());
     }
 
     #[test]

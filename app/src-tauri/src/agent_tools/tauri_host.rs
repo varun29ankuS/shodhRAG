@@ -308,7 +308,7 @@ impl HostEffects for TauriEffects {
     }
 
     fn automations_changed(&self) {
-        crate::engine_commands::wake_automations(&self.app);
+        crate::engine_commands::wake(&self.app);
     }
 
     fn watched_folders(&self) -> Vec<(String, String)> {

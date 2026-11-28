@@ -97,8 +97,9 @@ const MAX_SIDE_SESSIONS: usize = 2;
 /// agent idle period is shorter).
 const SIDE_IDLE_CLOSE: Duration = Duration::from_secs(5 * 60);
 
-/// How often idle sessions are looked for.
-const IDLE_SWEEP_INTERVAL: Duration = Duration::from_secs(30);
+/// Longest wait between two looks for idle sessions: a session started meanwhile is seen
+/// within it (its limit is minutes away).
+const MAX_IDLE_SWEEP_WAIT: Duration = Duration::from_secs(30);
 
 /// Tauri event carrying [`SessionCounts`] whenever sessions start or stop.
 pub const AGENT_SESSIONS_EVENT: &str = "agent_sessions_changed";
@@ -366,6 +367,31 @@ fn expired_sessions(
         .filter(|c| !c.busy && idle_expired(c.focus, c.last_used_ms, now_ms, main))
         .map(|c| c.session_id.clone())
         .collect()
+}
+
+/// How long the idle sweep may wait at `now_ms`: until the first session's limit runs
+/// out, at most [`MAX_IDLE_SWEEP_WAIT`]. A session with an answer running is looked at
+/// again after the longest wait (its answer's events keep it in use).
+fn idle_sweep_wait(
+    candidates: &[EvictionCandidate],
+    now_ms: u64,
+    main: Option<Duration>,
+) -> Duration {
+    let longest = u64::try_from(MAX_IDLE_SWEEP_WAIT.as_millis()).unwrap_or(u64::MAX);
+    let wait_ms = candidates
+        .iter()
+        .filter(|c| !c.busy)
+        .filter_map(|c| {
+            let limit = idle_limit(c.focus, main)?;
+            let limit_ms = u64::try_from(limit.as_millis()).unwrap_or(u64::MAX);
+            Some(
+                c.last_used_ms
+                    .saturating_add(limit_ms)
+                    .saturating_sub(now_ms),
+            )
+        })
+        .fold(longest, u64::min);
+    Duration::from_millis(wait_ms)
 }
 
 /// Live sessions by kind, for the activity tray.
@@ -2790,21 +2816,18 @@ fn agent_idle_period(app: &AppHandle) -> Option<Duration> {
 }
 
 /// Stops sessions idle past their limit (five minutes unless the user chose
-/// another; see [`AgentSessions::close_idle_sessions`]), checking every 30
-/// seconds.
+/// another; see [`AgentSessions::close_idle_sessions`]), each when its limit runs out
+/// ([`idle_sweep_wait`]).
 pub fn start_idle_reaper(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
-        let mut tick = tokio::time::interval(IDLE_SWEEP_INTERVAL);
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            tick.tick().await;
             let sessions = app.state::<AgentSessions>();
-            if sessions.is_empty() {
-                continue;
-            }
-            if sessions.close_idle_sessions(agent_idle_period(&app)).await > 0 {
+            let main = agent_idle_period(&app);
+            if !sessions.is_empty() && sessions.close_idle_sessions(main).await > 0 {
                 emit_counts(&app, &sessions);
             }
+            let wait = idle_sweep_wait(&sessions.candidates(), now_ms(), main);
+            tokio::time::sleep(wait).await;
         }
     });
 }
@@ -4788,6 +4811,42 @@ mod tests {
                 "s-old",
                 "s-recent"
             ]
+        );
+    }
+
+    #[test]
+    fn the_idle_sweep_wakes_when_the_first_limit_runs_out() {
+        let minute = 60_000;
+        let now = 100 * minute;
+        let five = Some(Duration::from_secs(5 * 60));
+        let live = [
+            // Its five minutes run out in 90 s.
+            candidate("s-main", "c-main", false, false, now - 3 * minute - 30_000),
+            // A side thread's in 4 minutes.
+            candidate("s-side", "c--focus--a", true, false, now - minute),
+            // An answer running for an hour is never what the sweep waits for.
+            candidate("s-busy", "c-busy", false, true, now - 60 * minute),
+        ];
+        assert_eq!(idle_sweep_wait(&live, now, five), MAX_IDLE_SWEEP_WAIT);
+        let soon = [candidate(
+            "s-main",
+            "c-main",
+            false,
+            false,
+            now - 5 * minute + 12_000,
+        )];
+        assert_eq!(
+            idle_sweep_wait(&soon, now, five),
+            Duration::from_secs(12),
+            "the sweep comes when the limit runs out, not at the next half minute"
+        );
+        // "Keep running": conversations have no limit; nothing to wait for but new ones.
+        assert_eq!(idle_sweep_wait(&soon, now, None), MAX_IDLE_SWEEP_WAIT);
+        assert_eq!(idle_sweep_wait(&[], now, five), MAX_IDLE_SWEEP_WAIT);
+        assert_eq!(
+            idle_sweep_wait(&live[2..], now, five),
+            MAX_IDLE_SWEEP_WAIT,
+            "a busy session is looked at again after the longest wait"
         );
     }
 

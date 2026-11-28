@@ -700,14 +700,14 @@ impl EngineStore {
         Ok(latest.as_deref().and_then(parse_instant))
     }
 
-    /// The earliest time a waiting run of an unheld, enabled job is due again.
-    pub fn next_retry_at(&self) -> EngineResult<Option<DateTime<Utc>>> {
+    /// The earliest time a waiting run of an unheld, enabled job of `kind` is due again.
+    pub fn next_retry_at(&self, kind: JobKind) -> EngineResult<Option<DateTime<Utc>>> {
         let conn = self.conn.read()?;
         let next: Option<String> = conn.query_row(
             "SELECT MIN(r.next_attempt_at) FROM engine_run r JOIN engine_job j ON j.id = r.job_id
               WHERE r.state = 'waiting' AND r.next_attempt_at IS NOT NULL
-                AND j.enabled = 1 AND j.hold_reason IS NULL",
-            [],
+                AND j.enabled = 1 AND j.hold_reason IS NULL AND j.kind = ?1",
+            params![kind.as_str()],
             |r| r.get(0),
         )?;
         Ok(next.as_deref().and_then(parse_instant))

@@ -73,5 +73,47 @@
         "timestamp": "2026-11-24T11:00:06.000Z"
       }
     ]
+  },
+  {
+    "id": "launch-probe-build",
+    "messages": [
+      {
+        "id": "launch-probe-build-q",
+        "role": "user",
+        "content": "Build me a small HTML page that compares the three index types.",
+        "timestamp": "2026-11-26T10:00:00.000Z"
+      },
+      {
+        "id": "launch-probe-build-a",
+        "role": "assistant",
+        "content": "Creator builds pages like this one: it makes the page in its own folder and shows it in Artifacts.",
+        "timestamp": "2026-11-26T10:00:05.000Z",
+        "transcript": {
+          "runId": "run-build",
+          "sessionId": "probe-session",
+          "model": "openrouter/probe-model",
+          "warning": null,
+          "status": "completed",
+          "startedAtMs": 1764151200000,
+          "durationMs": 5000,
+          "error": null,
+          "errorCode": null,
+          "blocks": [
+            {
+              "kind": "text",
+              "id": "m1",
+              "text": "Creator builds pages like this one: it makes the page in its own folder and shows it in Artifacts."
+            }
+          ],
+          "steps": {},
+          "plan": null,
+          "usage": null,
+          "passages": [],
+          "groundings": [],
+          "interimIds": [],
+          "agentMode": "ask"
+        }
+      }
+    ]
   }
 ]

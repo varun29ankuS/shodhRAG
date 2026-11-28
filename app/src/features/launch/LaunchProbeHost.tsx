@@ -40,7 +40,7 @@ import { RUN_PANEL_TOGGLE } from '../agent/RunPanel';
 export const LAUNCH_PROBE_EVENT = 'launch-probe';
 
 /** The tour's scenes (`launch_probe::TOUR_SCENES`): Ask with a sample conversation open. */
-const SCENES = new Set(['conversation', 'run-plan', 'run-progress', 'run-summary']);
+const SCENES = new Set(['conversation', 'run-plan', 'run-progress', 'run-summary', 'build-card']);
 
 /** How long the window waits for a scene's conversation to be open before setting its run. */
 const SCENE_OPEN_TRIES = 30;

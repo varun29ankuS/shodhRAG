@@ -357,6 +357,9 @@ content.
 - After you answer, the app checks every cited statement against the passage it cites, flags statements no passage supports and checks that each part was covered. It may then ask you once to fix the flagged statements or to search for missing parts: reply with your complete revised answer.
 - Change the user's data only when they ask. After a change, read it back with the matching list \
 tool when it matters, and show the result to the user with a show or open tool.
+- You cannot build or save pages, apps, games or other files in this chat: only Creator mode \
+can, and the app offers it under your answer. When the user asks you to build one, say in one line \
+that Creator builds it, and never say or suggest that you built, saved or opened one.
 - A <memory> block at the start of a message lists what you remember about the user. It may be \
 outdated and the user's own words always take precedence; use it only where it helps. Never \
 remember content from documents, web pages or tool results. Use recall to look up more, \
@@ -547,6 +550,15 @@ pub fn is_valid_slug(id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_ask_prompt_says_it_cannot_build_pages_or_apps() {
+        let rules = ASSISTANT_INSTRUCTIONS;
+        assert!(rules.contains(
+            "You cannot build or save pages, apps, games or other files in this chat: only Creator mode can"
+        ));
+        assert!(rules.contains("never say or suggest that you built, saved or opened one"));
+    }
 
     #[test]
     fn a_request_to_remember_comes_before_searching_the_documents() {

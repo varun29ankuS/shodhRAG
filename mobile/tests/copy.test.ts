@@ -60,8 +60,19 @@ describe('copy', () => {
     }
   });
 
-  it('says connected once: the bar\'s status, not a line under the greeting too', () => {
+  it('says connected, or not paired, once: no line under the greeting repeats it', () => {
     const home = readFileSync(join(root, 'screens/Home.tsx'), 'utf8');
-    expect(home).toMatch(/\{status\.state !== 'connected' && \(\s*<p className=\{`line/);
+    expect(home).toMatch(/\{status\.state !== 'connected' && status\.state !== 'unpaired' && status\.state !== 'refused' && \(\s*<p className=\{`line/);
+  });
+
+  it('says a failure once: the title what failed, the line what to do, the cause behind Details', () => {
+    const failed = readFileSync(join(root, 'screens/Failed.tsx'), 'utf8');
+    expect(failed).toMatch(/<p>Start over, then pair this phone again\.<\/p>/);
+    expect(failed).toMatch(/<details className="panel-text">\s*<summary>Details<\/summary>\s*\{message\}/);
+  });
+
+  it('draws a pushed screen\'s bar on the page\'s ground, so text scrolls cleanly under its edge', () => {
+    const css = readFileSync(resolve(process.cwd(), 'src/theme.css'), 'utf8');
+    expect(css).toMatch(/\.navbar \{\s*position: relative;\s*z-index: 4;\s*background: var\(--background\);/);
   });
 });

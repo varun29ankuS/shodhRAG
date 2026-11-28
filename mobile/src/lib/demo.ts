@@ -402,7 +402,7 @@ export function demoNav(screen: string): Nav | null {
 /** The link state a demo screen opens in: the link failed for `failed`, else connected. */
 export function demoStatus(screen: string): LinkStatus {
   return screen === 'failed'
-    ? { state: 'failed', message: 'The link to your computer could not start.' }
+    ? { state: 'failed', message: "This phone's secure storage could not be read." }
     : { state: 'connected' };
 }
 

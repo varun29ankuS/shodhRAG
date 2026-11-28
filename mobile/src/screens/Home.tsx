@@ -91,8 +91,8 @@ export function Home({ now = () => new Date() }: { now?: () => Date }) {
             <img src={logo} alt="" className="brand-logo" width={34} height={34} />
             <h1 className="greeting">{greeting(today)}</h1>
           </div>
-          {/* Connected says itself in the bar's status; any other state says what it means. */}
-          {status.state !== 'connected' && (
+          {/* Connected and not paired say themselves (the bar's status; the pair card); any other state says what it means. */}
+          {status.state !== 'connected' && status.state !== 'unpaired' && status.state !== 'refused' && (
             <p className={`line${words.dot === 'waiting' && status.state === 'offline' ? ' line-waiting' : ''}`} style={{ marginTop: 8 }}>
               {words.line}
             </p>

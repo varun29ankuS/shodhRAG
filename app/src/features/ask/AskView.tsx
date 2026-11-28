@@ -5,6 +5,9 @@ import { invoke } from '@tauri-apps/api/core';
 import { cn } from '../../lib/utils';
 import { COLUMN_GUTTER_PX, TEXT_COLUMN_PX, WIDE_BLOCK_HOST_CLASS } from './wideBlock';
 import { QuestionRail } from './QuestionRail';
+import { BuildInCreatorCard } from './BuildInCreatorCard';
+import { asksToBuild } from './buildRequest';
+import { confirmCreator } from '../agent/agentModes';
 import { currentQuestion, railQuestions, railShown } from './questionDots';
 import { ModelNotice } from '../connection/ModelNotice';
 import type { ViewTab } from '../../lib/viewTabs';
@@ -1418,6 +1421,14 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
   );
 
   const canRetry = streamingConversationId === null && sideRun === null;
+  // A new Creator chat with the request in its message box, for the user to send.
+  const buildInCreator = useCallback((request: string) => {
+    const id = session.createConversation();
+    confirmCreator(id);
+    session.updateConversationMeta(id, { agentMode: 'creator' });
+    composerDrafts.set(id, request);
+  }, [session]);
+
   const renderMessage = (message: ChatMessage, index: number): React.ReactNode => {
     if (message.role === 'user') {
       const summary = message.sideSummary;
@@ -1535,10 +1546,17 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
         {newest && <SuggestionsBadge onOpen={openMemorySettings} />}
       </div>
     );
-    if ((!learned || learned.length === 0) && !statusRow) return answer;
+    // Finding K: a request to build a page or an app, answered in Ask, which cannot build
+    // one. The card hands the user's words to a new Creator chat.
+    const asked = index > 0 && messages[index - 1].role === 'user' ? messages[index - 1].content : null;
+    const buildCard = asked && message.transcript && !isLive(message.transcript) && message.transcript.agentMode !== 'creator' && asksToBuild(asked) ? (
+      <BuildInCreatorCard codeAvailable={codeModeEnabled} onBuild={() => buildInCreator(asked)} onOpenSettings={openSettings} />
+    ) : null;
+    if ((!learned || learned.length === 0) && !statusRow && !buildCard) return answer;
     return (
       <div className="flex flex-col gap-2">
         {answer}
+        {buildCard}
         {statusRow}
         {learned && learned.length > 0 && <TurnMemoryLines lines={learned} align="start" onReview={openMemorySettings} />}
       </div>

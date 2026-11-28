@@ -434,7 +434,16 @@ pub const TOUR_VIEWS: &[&str] = &[
 /// conversation open ([`SAMPLE_CONVERSATION_ID`]), for the column, its wide blocks
 /// and the question rail; each `run-*` is the sample agent run ([`SAMPLE_RUN`]) at
 /// one of its states, for the run view: its plan, its progress, its summary.
-pub const TOUR_SCENES: &[&str] = &["conversation", "run-plan", "run-progress", "run-summary"];
+pub const TOUR_SCENES: &[&str] = &[
+    "conversation",
+    "run-plan",
+    "run-progress",
+    "run-summary",
+    "build-card",
+];
+/// The `build-card` scene's conversation: a request to build a page, answered in Ask,
+/// under which the app offers to build it in Creator (finding K).
+pub const BUILD_CONVERSATION_ID: &str = "launch-probe-build";
 /// Both themes, each view in each.
 pub const TOUR_THEMES: &[&str] = &["dark", "light"];
 /// The sample conversations the tour writes before its first view, so the
@@ -575,6 +584,8 @@ async fn views_tour(app: &AppHandle, data_dir: &Path) -> Result<(), String> {
             let run_state = run_scene(&run, view)?;
             let conversation = if !scene {
                 None
+            } else if *view == "build-card" {
+                Some(BUILD_CONVERSATION_ID)
             } else if run_state.is_null() {
                 Some(SAMPLE_CONVERSATION_ID)
             } else {
@@ -1085,7 +1096,7 @@ mod tests {
         files.sort();
         files.dedup();
         assert_eq!(files.len(), count);
-        assert_eq!(count, 26);
+        assert_eq!(count, 28);
         // A scene is not a view of the app.
         assert!(TOUR_SCENES.iter().all(|scene| !TOUR_VIEWS.contains(scene)));
     }
@@ -1152,6 +1163,15 @@ mod tests {
         assert_eq!(last.role, "assistant");
         assert!(last.content.contains("\n|---|"));
         assert!(last.content.contains("```rust"));
+        // The build-card scene's: a request to build a page, answered in Ask.
+        let build = samples
+            .iter()
+            .find(|s| s.id == BUILD_CONVERSATION_ID)
+            .expect("the build request");
+        assert!(build
+            .messages
+            .first()
+            .is_some_and(|m| m.role == "user" && m.content.starts_with("Build me")));
         // Every conversation and message is its own.
         let mut ids: Vec<&str> = samples.iter().map(|s| s.id.as_str()).collect();
         let mut message_ids: Vec<&str> = samples

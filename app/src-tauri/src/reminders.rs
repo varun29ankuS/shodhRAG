@@ -132,7 +132,7 @@ pub fn pending<Tz: TimeZone>(data: &CalendarData, tz: &Tz) -> Vec<DueReminder> {
     let mut out: Vec<DueReminder> = data
         .tasks
         .iter()
-        .filter(|t| t.status != "completed" && t.reminder_fired_at.is_none())
+        .filter(|t| !crate::calendar_store::is_closed(&t.status) && t.reminder_fired_at.is_none())
         .filter_map(|t| {
             let reminder = t.snoozed_until.as_deref().or(t.reminder.as_deref())?;
             let at = resolve_local(tz, parse_reminder(reminder)?)?;

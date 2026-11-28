@@ -1,0 +1,78 @@
+{
+  "tasks": [
+    {
+      "id": "6f1d2c0e-5a43-4c6b-9d38-0b7a1f2e3c41",
+      "title": "Run baselines",
+      "description": "HNSW and IVF on the 1M set",
+      "dueDate": "2026-11-28T17:00",
+      "priority": "high",
+      "status": "in_progress",
+      "tags": ["experiments", "paper"],
+      "subtasks": [
+        { "id": "sub-1", "title": "HNSW", "completed": true },
+        { "id": "sub-2", "title": "IVF", "completed": false }
+      ],
+      "project": "Baselines",
+      "workspaceId": "ws-thesis",
+      "source": "agent",
+      "sourceRef": "conversation:c-42",
+      "createdAt": "2026-11-20T09:00:00+00:00",
+      "updatedAt": "2026-11-21T10:00:00+00:00",
+      "reminder": "2026-11-28T16:30",
+      "reminderFiredAt": "2026-11-21T08:00:00+00:00",
+      "snoozedUntil": "2026-11-28T16:45"
+    },
+    {
+      "id": "c2a7b1e4-0f3d-4c58-8a61-2d9e7f1b6a05",
+      "title": "Pay rent",
+      "description": "",
+      "status": "pending",
+      "tags": ["home"],
+      "subtasks": [],
+      "project": "Home",
+      "source": "user",
+      "createdAt": "2026-11-19T08:00:00+00:00",
+      "updatedAt": "2026-11-19T08:00:00+00:00"
+    },
+    {
+      "id": "rep-9b2f-202611230900",
+      "title": "Submit timesheet",
+      "description": "Every Monday",
+      "dueDate": "2026-11-23",
+      "priority": "medium",
+      "status": "completed",
+      "tags": [],
+      "subtasks": [{ "id": "sub-3", "title": "Hours", "completed": true }],
+      "workspaceId": "ws-thesis",
+      "source": "user",
+      "createdAt": "2026-11-16T09:00:00+00:00",
+      "updatedAt": "2026-11-23T11:00:00+00:00",
+      "completedAt": "2026-11-23T11:00:00+00:00"
+    },
+    {
+      "id": "legacy-1",
+      "title": "Read the draft",
+      "description": "",
+      "priority": "low",
+      "status": "waiting",
+      "tags": ["paper", "reading"],
+      "subtasks": [],
+      "source": "document",
+      "sourceRef": "C:/docs/draft.pdf",
+      "createdAt": "2026-10-01T08:00:00+00:00",
+      "updatedAt": "2026-10-02T08:00:00+00:00",
+      "reminder": "next week"
+    }
+  ],
+  "events": [
+    {
+      "id": "ev-1",
+      "title": "Reading group",
+      "description": "",
+      "startTime": "2026-11-27T15:00",
+      "allDay": false,
+      "source": "user",
+      "createdAt": "2026-11-18T08:00:00+00:00"
+    }
+  ]
+}

@@ -50,6 +50,7 @@ mod store_notices;
 mod system_jobs;
 mod table_commands;
 mod table_model_commands;
+mod task_db;
 mod task_repeat;
 mod ui_state_commands;
 mod updater;
@@ -290,6 +291,14 @@ pub fn run() {
             // Audit log first, so every later event can be recorded.
             let audit_state = audit_commands::AuditState::open(&app_data_dir);
             audit_state.spawn_retention();
+            // Tasks live in shodh.db from here on; the calendar file's are moved there on
+            // their first read. Without the database they stay in the file.
+            if let Some((path, key)) = audit_state.database() {
+                match task_db::TaskDb::open(&path, key.as_ref()) {
+                    Ok(db) => task_db::use_database(&app_data_dir, std::sync::Arc::new(db)),
+                    Err(e) => tracing::warn!(error = %e, "tasks stay in the calendar file"),
+                }
+            }
             app.manage(audit_state);
             // Desktop notifications, before anything that sends one.
             app.manage(notifications::NotificationState::load(&app_data_dir));

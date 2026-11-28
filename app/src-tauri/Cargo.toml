@@ -62,6 +62,9 @@ thiserror = "1"
 url = "2"
 sha2 = "0.10"
 uuid = { version = "1.0", features = ["v4", "serde"] }
+# Tasks in shodh.db (task_db.rs): the same SQLite the shodh-rag crate builds (bundled, or
+# SQLCipher with its `sqlcipher` feature), so no second copy.
+rusqlite = "0.42"
 chrono = { version = "0.4", features = ["serde"] }
 base64 = "0.21"
 # PNG encoding of clipboard images; decoding before OCR

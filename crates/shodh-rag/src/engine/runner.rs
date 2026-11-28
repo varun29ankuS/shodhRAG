@@ -1,6 +1,11 @@
 //! The engine: plans every job on each tick, runs what is due one at a time through the
 //! job kind's [`JobHandler`], waits on the backoff ladder after a transient failure, and
-//! puts a job on hold after [`FAILED_RUNS_BEFORE_HOLD`] failed runs in a row.
+//! puts a job on hold after [`FAILED_RUNS_BEFORE_HOLD`] failed runs in a row (never a
+//! system job: no one could resume it).
+//!
+//! A job without a schedule runs once at a due time its owner sets
+//! ([`EngineStore::set_due_at_most`]): the app's system work is due when its own state says
+//! (a reminder rings, a table fill's wait ends), to the second.
 //!
 //! The app drives it: a tick at launch, after every wake and at least every minute
 //! ([`plan::sleep_for`]), and [`Engine::event`] when something a job waits on happens.
@@ -219,20 +224,34 @@ impl Engine {
                     starts.push((at, job.id.clone(), run.id.clone()));
                 }
             }
-            if let Some(schedule) = &job.schedule {
-                let through = self.planned_through(&job)?;
-                let step = plan::plan(
-                    &Local,
-                    schedule,
-                    job.overlap,
-                    job.catch_up,
-                    active.as_ref(),
-                    through,
-                    now,
-                );
-                self.apply_step(handler, &job, step, now, &mut tick, &mut starts)
-                    .await?;
-            }
+            let Some(schedule) = &job.schedule else {
+                // A due time its owner set: taken when it has come, and served by the
+                // active run when there is one (it reads the same state).
+                let id = job.id.clone();
+                let due = blocking(&self.store, move |s| s.take_due(&id, now)).await?;
+                if let (Some(due), None) = (due, &active) {
+                    let step = Step::Start {
+                        trigger: Trigger::Schedule,
+                        scheduled_for: due,
+                        missed: 0,
+                    };
+                    self.apply_step(handler, &job, step, now, &mut tick, &mut starts)
+                        .await?;
+                }
+                continue;
+            };
+            let through = self.planned_through(&job)?;
+            let step = plan::plan(
+                &Local,
+                schedule,
+                job.overlap,
+                job.catch_up,
+                active.as_ref(),
+                through,
+                now,
+            );
+            self.apply_step(handler, &job, step, now, &mut tick, &mut starts)
+                .await?;
             let next = self.next_due(&job)?.map(timestamp);
             if next != job.next_due_at {
                 let id = job.id.clone();
@@ -531,7 +550,9 @@ impl Engine {
         };
         let job_id = job.id.clone();
         let streak = blocking(&self.store, move |s| s.record_failure(&job_id)).await?;
-        if streak >= FAILED_RUNS_BEFORE_HOLD {
+        // A system job is the app's own work, which no one sees and so no one could
+        // resume: it is never put on hold, and its next due time runs it again.
+        if streak >= FAILED_RUNS_BEFORE_HOLD && job.kind != JobKind::System {
             let job_id = job.id.clone();
             let held = blocking(&self.store, move |s| {
                 s.update_job(
@@ -763,6 +784,78 @@ mod tests {
             code: "calendar_unreadable".into(),
             detail: "locked".into(),
         }
+    }
+
+    /// An engine with one system job (no schedule) and a recording System handler.
+    fn system_env(start: DateTime<Utc>) -> (Env, Arc<Recording>, Arc<dyn JobHandler>) {
+        let e = env(start);
+        e.store
+            .create_job(
+                &NewJob {
+                    id: "table_tick".to_string(),
+                    kind: JobKind::System,
+                    subject: "table_tick".to_string(),
+                    title: "table_tick".to_string(),
+                    schedule: None,
+                    input: json!({ "system": "table_tick" }),
+                    overlap: Overlap::Skip,
+                    catch_up: CatchUp::Once,
+                    max_attempts: 3,
+                    created_by: CreatedBy::System,
+                    provenance: json!({}),
+                },
+                start,
+            )
+            .unwrap();
+        let recording = Arc::new(Recording::new(JobKind::System));
+        let handler: Arc<dyn JobHandler> = recording.clone();
+        (e, recording, handler)
+    }
+
+    #[tokio::test]
+    async fn a_due_time_set_by_its_owner_runs_at_that_time_and_once() {
+        let start = local(2026, 11, 20, 10, 0);
+        let (e, recording, handler) = system_env(start);
+        let due = start + TimeDelta::seconds(42);
+        assert!(e.store.set_due_at_most("table_tick", due).unwrap());
+        assert_eq!(
+            e.engine.next_wake(JobKind::System).unwrap(),
+            Some(due),
+            "the loop wakes at the due time itself, not at the next minute"
+        );
+        e.clock.set(due - TimeDelta::milliseconds(1));
+        e.engine.tick(&handler).await.unwrap();
+        assert!(recording.calls().is_empty(), "not before it");
+        e.clock.set(due);
+        let tick = e.engine.tick(&handler).await.unwrap();
+        assert_eq!(tick.ran.len(), 1);
+        assert_eq!(recording.calls()[0].scheduled_at(), Some(due));
+        e.clock.set(due + TimeDelta::minutes(5));
+        e.engine.tick(&handler).await.unwrap();
+        assert_eq!(recording.calls().len(), 1, "a due time runs once");
+        assert_eq!(e.engine.next_wake(JobKind::System).unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn a_failing_system_job_is_never_held() {
+        let start = local(2026, 11, 20, 10, 0);
+        let (e, recording, handler) = system_env(start);
+        let permanent = || Handled::Permanent {
+            code: "broken".into(),
+            detail: "it broke".into(),
+        };
+        recording.script(vec![permanent(), permanent(), permanent(), permanent()]);
+        for minute in 1..=4 {
+            let at = start + TimeDelta::minutes(minute);
+            e.clock.set(at);
+            e.store.set_due_at_most("table_tick", at).unwrap();
+            e.engine.tick(&handler).await.unwrap();
+        }
+        assert_eq!(recording.calls().len(), 4, "it ran every time it was due");
+        assert_eq!(recording.held(), 0);
+        let job = e.store.job("table_tick").unwrap().unwrap();
+        assert_eq!(job.hold_reason, None);
+        assert_eq!(job.failure_streak, 4, "the failures are still counted");
     }
 
     #[tokio::test]

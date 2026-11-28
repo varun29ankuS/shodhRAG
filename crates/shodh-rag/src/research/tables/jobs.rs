@@ -886,6 +886,17 @@ impl TableStore {
     /// due, running ones whose lease expired, and running ones under `token` (the caller
     /// leaves out those with a live run here; the flag says which these are). A paused job
     /// that waits for the user (no time) is never due. Oldest first.
+    /// The queued, running and paused jobs, each with the token of the run holding it.
+    pub(super) fn active_fill_jobs(&self) -> ResearchResult<Vec<(FillJob, Option<String>)>> {
+        let conn = self.conn().read()?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {JOB_COLS}, run_token FROM table_fill_job
+              WHERE state IN ('queued', 'running', 'paused') ORDER BY created_at, id"
+        ))?;
+        let rows = stmt.query_map([], |r| Ok((job_from(r)?, r.get(14)?)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
     pub(super) fn due_fill_jobs(
         &self,
         token: &str,
@@ -1124,6 +1135,67 @@ pub async fn wake_paused_jobs(
 /// [`JobRunner::resume_due`].
 pub async fn resume_due_jobs(store: Arc<TableStore>) -> ResearchResult<Vec<String>> {
     due_jobs(store, PROCESS_TOKEN.clone(), SystemClock.now()).await
+}
+
+/// How soon jobs waiting for a usable model are looked at again: fixing the model, the key
+/// or the setting lets them go on within this long.
+pub const MODEL_RECHECK_SECS: i64 = 60;
+
+/// When the scheduler's next check is due, on the computer's clock: see [`next_check`].
+pub async fn next_check_at(store: Arc<TableStore>) -> ResearchResult<Option<DateTime<Utc>>> {
+    let now = SystemClock.now();
+    let jobs = blocking(move || store.active_fill_jobs()).await?;
+    let token = PROCESS_TOKEN.clone();
+    Ok(next_check(&jobs, &token, now, |id| {
+        LiveRun::is_live(&token, id)
+    }))
+}
+
+fn instant(text: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(text)
+        .ok()
+        .map(|t| t.with_timezone(&Utc))
+}
+
+/// When a check of the scheduler holding `token` is next due for `jobs` (the active jobs,
+/// each with the token of the run holding it), at `now`; `None` when no job is waiting on
+/// time (each waits for the user, or runs here: a run's end asks for a check itself).
+///
+/// - a queued job, or one running with no live run (given back, or its run ended without
+///   writing its end): now;
+/// - a paused job with a time: that time; one waiting for a usable model: within
+///   [`MODEL_RECHECK_SECS`];
+/// - a job another process runs: when its lease runs out ([`LEASE_MINUTES`] after its last
+///   heartbeat).
+pub fn next_check(
+    jobs: &[(FillJob, Option<String>)],
+    token: &str,
+    now: DateTime<Utc>,
+    live_here: impl Fn(&str) -> bool,
+) -> Option<DateTime<Utc>> {
+    jobs.iter()
+        .filter_map(|(job, holder)| match job.state {
+            JobState::Queued => Some(now),
+            JobState::Paused => match (job.next_attempt_at.as_deref(), job.pause_reason) {
+                (Some(at), _) => Some(instant(at).unwrap_or(now)),
+                (None, Some(PauseReason::ModelUnavailable)) => {
+                    Some(now + TimeDelta::seconds(MODEL_RECHECK_SECS))
+                }
+                (None, _) => None,
+            },
+            JobState::Running => match holder.as_deref() {
+                Some(holder) if holder == token => (!live_here(&job.id)).then_some(now),
+                Some(_) => Some(
+                    job.heartbeat_at
+                        .as_deref()
+                        .and_then(instant)
+                        .map_or(now, |beat| beat + TimeDelta::minutes(LEASE_MINUTES)),
+                ),
+                None => Some(now),
+            },
+            JobState::Done | JobState::Cancelled | JobState::Failed => None,
+        })
+        .min()
 }
 
 /// The jobs due at `now` for a runner holding `token`, leaving out those this process is

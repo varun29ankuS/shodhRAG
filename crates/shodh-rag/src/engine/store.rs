@@ -9,7 +9,12 @@
 //! - Foreign keys are not enforced in this database, so deleting a job deletes its runs
 //!   in the same transaction.
 //! - Runs older than [`RETENTION_DAYS`] are pruned, but never the latest
-//!   [`KEEP_LATEST_RUNS`] of a job, and never an active run.
+//!   [`KEEP_LATEST_RUNS`] of a job, and never an active run. A system job's runs (the
+//!   app's own work, never shown to the user) are kept [`SYSTEM_RETENTION_DAYS`], and
+//!   always its newest run, which its schedule is planned from.
+//! - A job without a schedule may carry a **due time its owner sets**
+//!   ([`EngineStore::set_due_at_most`]): it runs once at that time, and the time is taken
+//!   when the run is planned ([`EngineStore::take_due`]).
 
 use std::path::Path;
 
@@ -27,6 +32,9 @@ use crate::audit::{open_shared_connection, AuditError, AuditKey, SharedConnectio
 pub const RETENTION_DAYS: i64 = 90;
 /// The runs of a job kept whatever their age.
 pub const KEEP_LATEST_RUNS: i64 = 20;
+/// Runs of a system job of the last this many days are kept: its history is for support,
+/// not for the user.
+pub const SYSTEM_RETENTION_DAYS: i64 = 7;
 
 /// Error of the engine's store.
 #[derive(Debug, thiserror::Error)]
@@ -921,12 +929,14 @@ impl EngineStore {
     }
 
     /// Deletes finished runs older than [`RETENTION_DAYS`], keeping the latest
-    /// [`KEEP_LATEST_RUNS`] of each job, and the steps and approvals of runs that are gone;
-    /// and the cached step results older than
+    /// [`KEEP_LATEST_RUNS`] of each job; finished runs of a system job older than
+    /// [`SYSTEM_RETENTION_DAYS`], keeping its newest; the steps and approvals of runs that
+    /// are gone; and the cached step results older than
     /// [`CACHE_RETENTION_DAYS`](super::cache::CACHE_RETENTION_DAYS). Returns how many runs
     /// went.
     pub fn prune(&self, now: DateTime<Utc>) -> EngineResult<usize> {
         let cutoff = timestamp(now - TimeDelta::days(RETENTION_DAYS));
+        let system_cutoff = timestamp(now - TimeDelta::days(SYSTEM_RETENTION_DAYS));
         let cache_cutoff = timestamp(now - TimeDelta::days(super::cache::CACHE_RETENTION_DAYS));
         let removed = self.conn.write(|tx| -> rusqlite::Result<usize> {
             tx.execute(
@@ -934,16 +944,24 @@ impl EngineStore {
                 params![cache_cutoff],
             )?;
             let removed = tx.execute(
-                "DELETE FROM engine_run
-                  WHERE state NOT IN ('queued', 'running', 'waiting') AND created_at < ?1
-                    AND rowid NOT IN (
-                        SELECT rowid FROM (
-                            SELECT rowid, ROW_NUMBER() OVER (
-                                PARTITION BY job_id ORDER BY created_at DESC, rowid DESC
-                            ) AS n FROM engine_run
-                        ) WHERE n <= ?2
-                    )",
-                params![cutoff, KEEP_LATEST_RUNS],
+                "DELETE FROM engine_run WHERE rowid IN (
+                    SELECT r.rowid FROM (
+                        SELECT rowid, job_id, state, created_at, ROW_NUMBER() OVER (
+                            PARTITION BY job_id ORDER BY created_at DESC, rowid DESC
+                        ) AS n FROM engine_run
+                    ) r LEFT JOIN engine_job j ON j.id = r.job_id
+                     WHERE r.state NOT IN ('queued', 'running', 'waiting')
+                       AND CASE WHEN j.kind = ?4
+                                THEN r.created_at < ?3 AND r.n > 1
+                                ELSE r.created_at < ?1 AND r.n > ?2
+                           END
+                 )",
+                params![
+                    cutoff,
+                    KEEP_LATEST_RUNS,
+                    system_cutoff,
+                    JobKind::System.as_str()
+                ],
             )?;
             if removed > 0 {
                 tx.execute(
@@ -997,6 +1015,50 @@ impl EngineStore {
             )
         })?;
         Ok(())
+    }
+
+    /// Makes a job without a schedule due at `at`, or sooner when it is due sooner
+    /// already: a due time set meanwhile is never pushed back. True when the job is there
+    /// and has no schedule (a scheduled job's due time is its schedule's).
+    pub fn set_due_at_most(&self, id: &str, at: DateTime<Utc>) -> EngineResult<bool> {
+        let at = timestamp(at);
+        let changed = self.conn.write(|tx| {
+            tx.execute(
+                "UPDATE engine_job
+                    SET next_due_at = CASE
+                        WHEN next_due_at IS NULL OR next_due_at > ?2 THEN ?2
+                        ELSE next_due_at END
+                  WHERE id = ?1 AND schedule_json IS NULL",
+                params![id, at],
+            )
+        })?;
+        Ok(changed > 0)
+    }
+
+    /// Takes the due time of a job without a schedule when it has come (at or before
+    /// `now`): it is cleared and returned, so it starts one run. `None` when it has not
+    /// come, or the job has none.
+    pub fn take_due(&self, id: &str, now: DateTime<Utc>) -> EngineResult<Option<DateTime<Utc>>> {
+        let now = timestamp(now);
+        let due = self.conn.write(|tx| -> rusqlite::Result<Option<String>> {
+            let due: Option<String> = tx
+                .query_row(
+                    "SELECT next_due_at FROM engine_job
+                      WHERE id = ?1 AND schedule_json IS NULL
+                        AND next_due_at IS NOT NULL AND next_due_at <= ?2",
+                    params![id, now],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if due.is_some() {
+                tx.execute(
+                    "UPDATE engine_job SET next_due_at = NULL WHERE id = ?1",
+                    params![id],
+                )?;
+            }
+            Ok(due)
+        })?;
+        Ok(due.as_deref().and_then(parse_instant))
     }
 
     /// Records the conversation that holds what a run's agent did.
@@ -1240,6 +1302,126 @@ mod tests {
         assert!(busy.iter().any(|r| r.id == "busy-new-0"));
         assert!(s.run("old-00").unwrap().is_none());
         assert!(s.run("old-24").unwrap().is_some());
+    }
+
+    fn system_job(store: &EngineStore, id: &str) -> Job {
+        store
+            .create_job(
+                &NewJob {
+                    id: id.to_string(),
+                    kind: JobKind::System,
+                    subject: id.to_string(),
+                    title: id.to_string(),
+                    schedule: None,
+                    input: json!({ "system": id }),
+                    overlap: Overlap::Skip,
+                    catch_up: CatchUp::Once,
+                    max_attempts: 3,
+                    created_by: CreatedBy::System,
+                    provenance: json!({}),
+                },
+                at(1, 8, 0),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn a_system_job_keeps_seven_days_of_runs_and_always_its_newest() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(&dir);
+        system_job(&s, "table_tick");
+        system_job(&s, "quiet");
+        job(&s, "user");
+        let now = at(20, 9, 0);
+        let eight_days = now - TimeDelta::days(8);
+        for i in 0..5 {
+            let run = NewRun {
+                state: RunState::Succeeded,
+                ..queued("table_tick", &format!("tick-old-{i}"))
+            };
+            s.insert_run(&run, eight_days + TimeDelta::minutes(i))
+                .unwrap()
+                .unwrap();
+        }
+        for i in 0..3 {
+            let run = NewRun {
+                state: RunState::Succeeded,
+                ..queued("table_tick", &format!("tick-new-{i}"))
+            };
+            s.insert_run(&run, now - TimeDelta::days(6) + TimeDelta::minutes(i))
+                .unwrap()
+                .unwrap();
+        }
+        for i in 0..3 {
+            let run = NewRun {
+                state: RunState::Succeeded,
+                ..queued("quiet", &format!("quiet-{i}"))
+            };
+            s.insert_run(&run, eight_days + TimeDelta::minutes(i))
+                .unwrap()
+                .unwrap();
+        }
+        let user = NewRun {
+            state: RunState::Succeeded,
+            ..queued("user", "user-old")
+        };
+        s.insert_run(&user, eight_days).unwrap().unwrap();
+        assert_eq!(
+            s.prune(now).unwrap(),
+            5 + 2,
+            "old system runs go, the user's stays"
+        );
+        let ticks: Vec<String> = s
+            .runs("table_tick", 100)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(ticks, ["tick-new-2", "tick-new-1", "tick-new-0"]);
+        let quiet: Vec<String> = s
+            .runs("quiet", 100)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(quiet, ["quiet-2"], "a system job keeps its newest run");
+        assert!(s.run("user-old").unwrap().is_some());
+    }
+
+    #[test]
+    fn an_owner_set_due_time_is_only_ever_brought_forward_and_taken_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(&dir);
+        system_job(&s, "reminder_plan");
+        job(&s, "scheduled");
+        assert!(s.set_due_at_most("reminder_plan", at(1, 10, 0)).unwrap());
+        assert!(s.set_due_at_most("reminder_plan", at(1, 11, 0)).unwrap());
+        assert_eq!(
+            s.job("reminder_plan")
+                .unwrap()
+                .unwrap()
+                .next_due_at
+                .as_deref(),
+            Some(timestamp(at(1, 10, 0)).as_str()),
+            "a later time never pushes a due time back"
+        );
+        assert!(s.set_due_at_most("reminder_plan", at(1, 9, 30)).unwrap());
+        assert!(
+            !s.set_due_at_most("scheduled", at(1, 9, 0)).unwrap(),
+            "a scheduled job's due time is its schedule's"
+        );
+        assert!(!s.set_due_at_most("nope", at(1, 9, 0)).unwrap());
+        assert_eq!(s.take_due("reminder_plan", at(1, 9, 29)).unwrap(), None);
+        assert_eq!(
+            s.take_due("reminder_plan", at(1, 9, 31)).unwrap(),
+            Some(at(1, 9, 30))
+        );
+        assert_eq!(
+            s.take_due("reminder_plan", at(1, 9, 32)).unwrap(),
+            None,
+            "taken once"
+        );
+        assert_eq!(s.job("reminder_plan").unwrap().unwrap().next_due_at, None);
     }
 
     #[test]

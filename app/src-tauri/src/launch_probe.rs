@@ -677,6 +677,35 @@ pub fn recall(found: usize, wanted: usize) -> f64 {
     Ok(())
 }
 
+/// Removes the `code-map` scene's sample project after its picture: its conversation,
+/// its workspace and its map.
+async fn remove_code_scene(app: &AppHandle, data_dir: &Path) -> Result<(), String> {
+    use crate::workspace_commands::WorkspaceState;
+
+    ConversationStore::in_dir(data_dir).update(|conversations| {
+        conversations.retain(|c| c.id != CODE_CONVERSATION_ID);
+        Ok(())
+    })?;
+    crate::conversation_commands::emit_changed(app, CODE_CONVERSATION_ID);
+    let workspaces = app.state::<WorkspaceState>().inner().clone();
+    workspaces
+        .run(|s| s.delete(CODE_WORKSPACE_ID))
+        .await
+        .map_err(|e| format!("the sample project's workspace: {}", e.message))?;
+    crate::workspace_commands::broadcast_change(app, Some(CODE_WORKSPACE_ID));
+    let maps = app
+        .state::<crate::code_map_commands::CodeMapState>()
+        .inner()
+        .clone();
+    let folder = data_dir.join("launch-probe-project");
+    tokio::task::spawn_blocking(move || {
+        maps.forget(CODE_WORKSPACE_ID, Some(folder.as_path()), false)
+    })
+    .await
+    .map_err(|e| format!("the sample project's map: {e}"))?;
+    Ok(())
+}
+
 /// Writes the sample conversations and the sample run's into the profile, as a
 /// window saves one, and tells the windows, which list them.
 fn write_sample_conversations(
@@ -723,12 +752,16 @@ async fn views_tour(app: &AppHandle, data_dir: &Path) -> Result<(), String> {
     };
     let run = sample_run()?;
     write_sample_conversations(app, data_dir, &run)?;
-    write_code_scene(app, data_dir).await?;
     let mut clipped_total: u32 = 0;
     let mut chats_short: u32 = 0;
     for theme in TOUR_THEMES {
         for view in TOUR_VIEWS.iter().chain(TOUR_SCENES.iter()) {
             let scene = TOUR_SCENES.contains(view);
+            // The sample project is there for its scene only: the other views keep the
+            // sidebar a user without it has.
+            if *view == "code-map" {
+                write_code_scene(app, data_dir).await?;
+            }
             let run_state = run_scene(&run, view)?;
             let conversation = if scene {
                 scene_conversation(view, &run, &run_state)
@@ -785,6 +818,9 @@ async fn views_tour(app: &AppHandle, data_dir: &Path) -> Result<(), String> {
                 captured.exists()
             })
             .await?;
+            if *view == "code-map" {
+                remove_code_scene(app, data_dir).await?;
+            }
         }
     }
     tracing::info!(
@@ -1240,7 +1276,7 @@ mod tests {
         files.sort();
         files.dedup();
         assert_eq!(files.len(), count);
-        assert_eq!(count, 34);
+        assert_eq!(count, 34, "9 views and 8 scenes, in 2 themes");
         // A scene is not a view of the app.
         assert!(TOUR_SCENES.iter().all(|scene| !TOUR_VIEWS.contains(scene)));
     }

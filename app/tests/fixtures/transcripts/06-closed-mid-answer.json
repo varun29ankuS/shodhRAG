@@ -1,0 +1,229 @@
+{
+  "name": "Shodh closed mid-answer: one search finished, part of the answer written, a page being read",
+  "seed": {
+    "providerError": null,
+    "fallback": null,
+    "runId": "run-6",
+    "sessionId": null,
+    "model": null,
+    "warning": null,
+    "status": "starting",
+    "startedAtMs": 1763000600000,
+    "durationMs": null,
+    "error": null,
+    "errorCode": null,
+    "blocks": [],
+    "steps": {},
+    "plan": null,
+    "usage": null,
+    "passages": [],
+    "groundings": [],
+    "interimIds": [],
+    "checking": false,
+    "thinking": "",
+    "interrupting": false,
+    "agentMode": "research"
+  },
+  "actions": [
+    {
+      "type": "run_started",
+      "runId": "run-6",
+      "sessionId": "sess-6",
+      "model": "openrouter/test-model",
+      "atMs": 1763000600100,
+      "warning": null
+    },
+    {
+      "type": "step_started",
+      "runId": "run-6",
+      "stepId": "step-1",
+      "parentStepId": null,
+      "tool": "search_documents",
+      "label": "Searching your documents",
+      "args": {
+        "query": "notice period and renewal fee"
+      },
+      "tier": "read",
+      "atMs": 1763000600300
+    },
+    {
+      "type": "step_finished",
+      "runId": "run-6",
+      "stepId": "step-1",
+      "ok": true,
+      "summary": "2 passages",
+      "detail": {
+        "passages": [
+          {
+            "n": 1,
+            "file": "lease.pdf",
+            "path": "c:/docs/lease.pdf",
+            "display_path": "C:/Docs/lease.pdf",
+            "page": 4,
+            "heading": "Termination",
+            "score": 0.82,
+            "text": "Either party may end the lease with 60 days notice."
+          },
+          {
+            "n": 2,
+            "file": "lease.pdf",
+            "path": "c:/docs/lease.pdf",
+            "page": 7,
+            "heading": "Renewal",
+            "score": 0.64,
+            "text": "Renewal is subject to the fee schedule published by the landlord."
+          }
+        ]
+      },
+      "durationMs": 210,
+      "invalidArguments": false
+    },
+    {
+      "type": "text_delta",
+      "runId": "run-6",
+      "messageId": "m1",
+      "delta": "The notice period is 60 days [1]. Renewal follows the landlord's fee schedule [2], which"
+    },
+    {
+      "type": "step_started",
+      "runId": "run-6",
+      "stepId": "step-2",
+      "parentStepId": null,
+      "tool": "fetch_url",
+      "label": "Reading a web page",
+      "args": {
+        "url": "https://example.com/fees"
+      },
+      "tier": "read",
+      "atMs": 1763000601900
+    },
+    {
+      "type": "step_progress",
+      "runId": "run-6",
+      "stepId": "step-2",
+      "text": "Waiting for example.com"
+    }
+  ],
+  "expectedText": "The notice period is 60 days [1]. Renewal follows the landlord's fee schedule [2], which",
+  "expected": {
+    "providerError": null,
+    "fallback": null,
+    "runId": "run-6",
+    "sessionId": "sess-6",
+    "model": "openrouter/test-model",
+    "warning": null,
+    "status": "running",
+    "startedAtMs": 1763000600000,
+    "durationMs": null,
+    "error": null,
+    "errorCode": null,
+    "blocks": [
+      {
+        "kind": "step",
+        "stepId": "step-1"
+      },
+      {
+        "kind": "text",
+        "id": "m1",
+        "text": "The notice period is 60 days [1]. Renewal follows the landlord's fee schedule [2], which"
+      },
+      {
+        "kind": "step",
+        "stepId": "step-2"
+      }
+    ],
+    "steps": {
+      "step-1": {
+        "id": "step-1",
+        "parentId": null,
+        "tool": "search_documents",
+        "label": "Searching your documents",
+        "args": {
+          "query": "notice period and renewal fee"
+        },
+        "tier": "read",
+        "startedAtMs": 1763000600300,
+        "status": "done",
+        "summary": "2 passages",
+        "detail": {
+          "passages": [
+            {
+              "n": 1,
+              "file": "lease.pdf",
+              "path": "c:/docs/lease.pdf",
+              "display_path": "C:/Docs/lease.pdf",
+              "page": 4,
+              "heading": "Termination",
+              "score": 0.82,
+              "text": "Either party may end the lease with 60 days notice."
+            },
+            {
+              "n": 2,
+              "file": "lease.pdf",
+              "path": "c:/docs/lease.pdf",
+              "page": 7,
+              "heading": "Renewal",
+              "score": 0.64,
+              "text": "Renewal is subject to the fee schedule published by the landlord."
+            }
+          ]
+        },
+        "durationMs": 210,
+        "progress": null,
+        "approval": null,
+        "children": []
+      },
+      "step-2": {
+        "id": "step-2",
+        "parentId": null,
+        "tool": "fetch_url",
+        "label": "Reading a web page",
+        "args": {
+          "url": "https://example.com/fees"
+        },
+        "tier": "read",
+        "startedAtMs": 1763000601900,
+        "status": "running",
+        "summary": null,
+        "detail": null,
+        "durationMs": null,
+        "progress": "Waiting for example.com",
+        "approval": null,
+        "children": []
+      }
+    },
+    "plan": null,
+    "usage": null,
+    "passages": [
+      {
+        "n": 1,
+        "file": "lease.pdf",
+        "path": "c:/docs/lease.pdf",
+        "page": "4",
+        "heading": "Termination",
+        "score": 0.82,
+        "text": "Either party may end the lease with 60 days notice.",
+        "section": null,
+        "regions": null,
+        "displayPath": "C:/Docs/lease.pdf"
+      },
+      {
+        "n": 2,
+        "file": "lease.pdf",
+        "path": "c:/docs/lease.pdf",
+        "page": "7",
+        "heading": "Renewal",
+        "score": 0.64,
+        "text": "Renewal is subject to the fee schedule published by the landlord.",
+        "section": null,
+        "regions": null
+      }
+    ],
+    "groundings": [],
+    "interimIds": [],
+    "checking": false,
+    "thinking": "",
+    "interrupting": false,
+    "agentMode": "research"
+  }
+}

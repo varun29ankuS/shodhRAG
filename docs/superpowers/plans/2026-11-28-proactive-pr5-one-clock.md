@@ -82,3 +82,23 @@ Builds on PR 4's engine (`crates/shodh-rag/src/engine`, `app/src-tauri/src/engin
      usually idle then, and the map is fresh in the morning.)*
    - B. Whenever the computer has been idle for 10 minutes, at most once a day.
    - C. No nightly refresh: only after file changes, as today.
+
+## Decided (2026-11-28)
+
+1A (Continue, nothing runs by itself), 2A (go on from where it stopped; the running step runs again;
+commands and outward actions ask again), 3A (02:00 local, once on wake). System-job history: 7 days.
+Settings › Background: "Scheduled work runs while Shodh is open or in the tray."
+
+## As built
+
+- The loop ticks each kind on a task of its own (one tick of a kind at a time), so an automation's run never
+  holds a reminder or a repeating task up; automations' approval expiry is part of their tick.
+- A job without a schedule runs at a due time its owner sets (`set_due_at_most`, taken by `take_due`), to the
+  second; `next_wake` counts only a kind's own retries. System jobs are never held.
+- Without `shodh.db` the loop still rings reminders from the calendar file; a change of time zone plans them
+  again at once. Reminders slept through: more than one late by over 5 minutes are told in one notification.
+- The idle agent-session sweep waits until the first session's limit runs out (at most 30 s) instead of an
+  interval timer.
+- Continue: `agent_send` takes `continues` (conversation and run); the stopped answer is read from the saved
+  conversation, and must be the latest answer and one Shodh closed during. A continued answer and the stopped
+  one replay as one answer.

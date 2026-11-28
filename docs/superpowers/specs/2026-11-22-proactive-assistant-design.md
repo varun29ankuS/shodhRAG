@@ -18,8 +18,8 @@ separate timers:
 - the evidence-table scheduler (`table_commands.rs::spawn_scheduler`, every minute);
 - memory consolidation (`memory_learn.rs`, when idle).
 
-A fourth and a fifth would make it worse. PR 5 folds the first two into the engine. Consolidation stays
-separate, because it is triggered by idleness, not by time.
+A fourth and a fifth would make it worse. PR 5 folds the first two into the engine, with the code map's
+nightly refresh. Consolidation stays separate, because it is triggered by idleness, not by time.
 
 The decision of 2026-10-31 stands: **one engine** serves both the
 work people do (Projects and Tasks) and the work Shodh does (Automations). The engine is never named in the UI.
@@ -85,7 +85,7 @@ Beyond local-first, Rust only (no new crate here), agent coverage and ideas-only
 | Agent safety | `harness/modes.rs` (`decide(mode, ToolClass)`, an always-ask floor), `UNTRUSTED_NOTICE`, `RiskTier` | The unattended-run rule (§5.5). |
 | Headless agent | `agent_transcript.rs` (folds `agent_event` as the UI does, with or without a window) | Playbook runs save a real transcript. |
 | Navigation | `navigate.rs` `VIEWS` = `lib/viewTabs.ts` `VIEW_TABS` (8; no Automations), `NavigationTarget::KINDS`, `agent_coverage.rs::kind_owner`, `navigation.ts`, `ChatSessionContext.followNavigation` (the gate) | The checklist in §12. |
-| Code map | `code_map_commands.rs::schedule`; the user asked for a nightly reconcile "through the new scheduler" | A system job (PR 5). |
+| Code map | `code_map_commands.rs::schedule`; the user asked for a nightly reconcile "through the new scheduler" | A system job (PR 5): 02:00 local, once on wake after a missed night. |
 
 ## 5. The engine
 
@@ -152,7 +152,11 @@ runs, steps, approvals and cache.
 
 - **One loop.** It sleeps until the earliest `next_due_at`, for at most 60 s (the reminders rule: suspend and
   clock changes are seen within a minute), and wakes early on any job change. Local schedules become instants on
-  every plan, so zone and DST changes apply at once.
+  every plan, so zone and DST changes apply at once. Each kind ticks on a task of its own, one tick of a kind at a
+  time, so an automation's agent run never holds a reminder up (PR 5).
+- **System jobs** (PR 5) are the app's own work: never shown, never held (no one could resume them), kept 7 days.
+  One without a schedule runs at a due time its owner sets, to the second: a fill's pause ending, the next
+  reminder. Without `shodh.db` the loop still rings reminders from the calendar file.
 - **Catch-up.** A run more than 5 minutes late means sleep or a closed app. With `once`, one run for the latest
   missed time, recording `missed` ("Ran when your computer woke; 2 earlier times were skipped"). With `skip`, a
   `skipped` run is recorded.
@@ -542,7 +546,7 @@ posts there.
 | **2. Attention/Info Inbox** | two tabs, badge, popover | Classification test per kind and status; repeat decisions and automation yields land in the right tab; tab counts and empty states (frontend model tests). |
 | **3. What's new** | `SyncReport.added`; `feed_item`; folder watch; paper alerts (arXiv, OpenAlex, Semantic Scholar); Library section; digests | First sync is a baseline. Added files show, changed don't. De-dup across APIs and against the library. The consent line names all three APIs. Local-only refuses alerts. Fixture API replies only. One Info item per run. `whats_new` navigation. |
 | **4. Automations** | ledger (migrates `table_calls`; counts chat); playbooks; steps; `automation` profile; durable approvals; chat-first yielding; Automations view with templates | Table counts survive and the table cap holds. Chat calls are counted and never refused. A run never exceeds its estimate. An automation call waits while a chat answer runs. After a 429 from any spender, automations wait for the reported reset; chat does not. With a provider-reported remainder at the chat reserve, automations pause and resume after the reset, with one updated Info item. The reserve equals the busiest chat day of the last 14 (at least 1). An agent Write becomes an approval and never runs, in every `AgentMode`; execution tools absent. Approvals survive restart and are re-posted; expiry cancels. Cache hit = 0 calls. Estimate and counter text. Recorded model replies only. `automation` coverage and navigation. |
-| **5. One clock** | the table tick, reminder planning and the nightly code-map reconcile as `system` jobs; `spawn_scheduler`'s interval removed | All `reminders.rs` and table scheduler tests pass; reminders ring once, missed ones are summarised once; code map shows "refreshed nightly, last 02:00". |
+| **5. One clock** | one engine loop for every kind; the table tick, reminder planning and the nightly code-map refresh as `system` jobs; `spawn_scheduler`'s interval removed; Continue for an answer Shodh closed during | All `reminders.rs` and table scheduler tests pass; reminders ring once, those slept through are told in one notification; a table job due at T runs at T; no interval timer, one loop (a source test); the nightly refresh at 02:00, once after a missed night, never twice; code map shows "Refreshed nightly · last 02:00"; Continue carries the finished steps, passages and text (fixture), commands ask again; tour scene of the stopped answer. |
 | **6. Tasks and projects in `shodh.db` + history** | `project`, `task`, `task_link`, `task_change`; import (free-text projects become projects); `TaskStore` with the project rules; `projectId` on the wire; History | Import round-trip of a fixture file (fields, ids, events kept, backup; projects made per workspace and name; workspace-less names kept as tags). Crash after commit: no duplicates. Failed import leaves the file. Phone wire golden JSON unchanged apart from the added `projectId`. Project rules: cross-workspace project refused; a workspace move clears the project; project delete keeps tasks with a change each; workspace delete removes its projects. Agent previews unchanged. Every write path records its actor. |
 | **7. Linear-like Projects** | Tasks view's workspace/project list, project page, List and Board, My work, At risk (tasks and projects), links, owner Shodh, keys; project tools | Cycle refusal; at-risk rules table for tasks and projects; `task_unblocked` once; key map; project tools' previews (delete counts tasks); `tasks` navigation with workspace and project; coverage. |
 | **8. Early assistant** | `propose_items` and cards; daily review; Review strip; the model-pass setting | Saved items carry turn and citations; proposals write nothing; review findings from fixtures; 14-day dismiss; no desktop notification; deterministic checks run with the model pass off; the pass is off by default, makes 1 call a day when on, counts in the ledger and yields to chat; the setting is refused to the agent. |
@@ -580,3 +584,12 @@ The user answered the open questions:
 5. **The daily review's model pass is off by default and can be turned on in Settings** (1 call a day). The
    deterministic checks always run (§10).
 6. **Paper alerts use arXiv, OpenAlex and Semantic Scholar**, all named in the consent line (§7).
+
+Decided 2026-11-28 for PR 5:
+
+7. **An answer Shodh closed during shows "Stopped when Shodh closed" with Continue.** Nothing runs by itself.
+8. **Continue goes on from where the run stopped.** Finished steps, their results and the text written are
+   kept; only the step that was running is run again. Commands, and anything leaving the computer, ask again.
+9. **The code map refreshes nightly at 02:00 local time**, or once on wake when the computer slept through it.
+10. **System-job history is kept 7 days.**
+11. **Settings › Background says "Scheduled work runs while Shodh is open or in the tray."**

@@ -179,3 +179,16 @@ Decision 5 sets how much of this the phone shows. In every option:
 6. **Who can be an assignee?**
    - A. **You or Shodh**, and a person's name as a label (no one is told). *(Recommended: as PR 6 stores it; real people come with team workspaces.)*
    - B. **You or Shodh only**, with no names until teams exist.
+
+## Decided (2026-11-28)
+
+All A:
+
+1. **Nav:** the item stays "Tasks", with issues and projects inside.
+2. **First screen:** My issues opens first.
+3. **Issue page:** an issue opens as a full page beside the list.
+4. **Saved views:** none for now. Filters and grouping are remembered per view.
+5. **Phone:** the list with ids, plus quick edits of status, priority, due date and checklist. Projects and relations are read-only.
+6. **Assignee:** you, Shodh, or a name kept as a plain label that notifies no one.
+
+Coding starts once PR 6 (#221) is green; this PR builds on it.

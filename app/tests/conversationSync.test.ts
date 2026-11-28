@@ -153,7 +153,7 @@ test('a question saved before its session starts comes back interrupted, with Re
   assert.deepEqual(restored.map(m => [m.id, m.role]), [['q1', 'user'], ['a1', 'assistant']]);
   assert.equal(restored[0].content, 'What is the notice period?');
   assert.equal(restored[1].transcript?.status, 'aborted', 'the answer is interrupted');
-  assert.equal(restored[1].transcript?.error, 'The app closed before this answer finished.', 'and offers Retry');
+  assert.equal(restored[1].transcript?.error, 'Stopped when Shodh closed', 'and offers Retry');
   assert.equal(saved.title, autoTitle('What is the notice period?'));
 
   // A retry of the latest answer asks no new question and removes the try it replaces.

@@ -333,7 +333,7 @@ test('a transcript stored live without a checkpoint keeps the existing interrupt
   const live = { ...initialTranscript('run-2', 1_000), status: 'running' as const };
   const restored = fromPersisted(JSON.parse(JSON.stringify(toPersisted(live))));
   assert.ok(restored);
-  assert.equal(restored.error, 'The app closed before this answer finished.');
+  assert.equal(restored.error, 'Stopped when Shodh closed');
 });
 
 test('only the messages a change touched are written: the store keeps every other one as it has it', () => {

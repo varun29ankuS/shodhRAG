@@ -10,8 +10,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { AgentEvent, GroundingReport } from '../src/features/agent/events.ts';
+import { readFileSync } from 'node:fs';
 import {
+  STOPPED_WHEN_CLOSED,
   answerIncomplete,
+  canContinue,
   showsGroundingChip,
   answerText,
   awaitingRetry,
@@ -195,6 +198,41 @@ test('a transcript persisted mid-run is restored as interrupted', () => {
   assert.equal(fromPersisted({ nope: true }), null);
   const done = reduceAll(initialTranscript(RUN, 1000), spikeRun());
   assert.deepEqual(fromPersisted(JSON.parse(JSON.stringify(toPersisted(done)))), done);
+});
+
+test('an answer Shodh closed during can be continued, and stays so when saved again', () => {
+  // The answer as it was saved when Shodh closed: a search done, part of the answer
+  // written, a web page being read.
+  const fixture = JSON.parse(
+    readFileSync(new URL('./fixtures/transcripts/06-closed-mid-answer.json', import.meta.url), 'utf8'),
+  );
+  const restored = fromPersisted(fixture.expected);
+  assert.ok(restored);
+  assert.equal(restored.status, 'aborted');
+  assert.equal(restored.error, STOPPED_WHEN_CLOSED);
+  assert.equal(restored.stoppedByClose, true);
+  assert.deepEqual(restored.interruptedStepIds, ['step-2'], 'the step that was running');
+  assert.equal(restored.steps['step-1'].status, 'done', 'the finished search is kept');
+  assert.equal(restored.passages.length, 2, 'with its passages');
+  assert.equal(answerText(restored), fixture.expectedText, 'and the text written so far');
+  assert.ok(canContinue(restored));
+  // Saved again as restored, then read: still stopped by the close, still continuable.
+  const again = fromPersisted(JSON.parse(JSON.stringify(toPersisted(restored))));
+  assert.ok(again);
+  assert.equal(again.stoppedByClose, true);
+  assert.deepEqual(again.interruptedStepIds, ['step-2']);
+  assert.ok(canContinue(again));
+  // An answer the user stopped, or one closed while only its check ran, is not continued.
+  const stopped = reduceAll(initialTranscript(RUN, 0), [
+    ...spikeRun().slice(0, 2),
+    { type: 'run_finished', runId: RUN, status: 'aborted', durationMs: 50, error: null },
+  ]);
+  assert.equal(canContinue(fromPersisted(JSON.parse(JSON.stringify(toPersisted(stopped))))), false);
+  const checking = fromPersisted({ ...fixture.expected, savedWhileChecking: true });
+  assert.ok(checking);
+  assert.equal(checking.status, 'aborted');
+  assert.equal(canContinue(checking), false);
+  assert.equal(checking.stoppedByClose, undefined);
 });
 
 function groundingReport(partial: Partial<GroundingReport>): GroundingReport {

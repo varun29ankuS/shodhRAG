@@ -32,7 +32,7 @@ import { designApi } from '../code/api';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useSidebar } from '../../contexts/SidebarContext';
 import { useChatSession } from '../ask/ChatSessionContext';
-import { reduceAll } from '../agent/reducer';
+import { fromPersisted, reduceAll, toPersisted } from '../agent/reducer';
 import type { TranscriptAction, TranscriptState } from '../agent/reducer';
 import { RUN_PANEL_TOGGLE } from '../agent/RunPanel';
 
@@ -40,23 +40,32 @@ import { RUN_PANEL_TOGGLE } from '../agent/RunPanel';
 export const LAUNCH_PROBE_EVENT = 'launch-probe';
 
 /** The tour's scenes (`launch_probe::TOUR_SCENES`): Ask with a sample conversation open. */
-const SCENES = new Set(['conversation', 'run-plan', 'run-progress', 'run-summary', 'build-card']);
+const SCENES = new Set(['conversation', 'run-plan', 'run-progress', 'run-stopped', 'run-summary', 'build-card']);
 
 /** How long the window waits for a scene's conversation to be open before setting its run. */
 const SCENE_OPEN_TRIES = 30;
 const SCENE_OPEN_INTERVAL_MS = 50;
 
-/** A `run-*` scene's run: the answer it is set on, its transcript's seed and actions, and whether its view opens. */
+/**
+ * A `run-*` scene's run: the answer it is set on, its transcript's seed and actions, whether
+ * its view opens, and whether Shodh closed there (shown as the app restores it).
+ */
 interface SceneRun {
   answerId: string;
   seed: unknown;
   actions: unknown[];
   open: boolean;
+  closed: boolean;
 }
 
 function sceneRunOf(value: unknown): SceneRun | null {
   if (!isRecord(value) || typeof value.answerId !== 'string' || !isRecord(value.seed) || !Array.isArray(value.actions)) return null;
-  return { answerId: value.answerId, seed: value.seed, actions: value.actions, open: value.open === true };
+  return { answerId: value.answerId, seed: value.seed, actions: value.actions, open: value.open === true, closed: value.closed === true };
+}
+
+/** A live answer as the app shows it after Shodh closed during it: saved, then restored. */
+function closedDuring(transcript: TranscriptState): TranscriptState {
+  return fromPersisted(JSON.parse(JSON.stringify(toPersisted(transcript)))) ?? transcript;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -104,6 +113,10 @@ export function LaunchProbeHost(): null {
         // The recorded run, its clock moved to now, so a live timer reads seconds.
         const timed = rebaseRun(structuredClone(run.seed), run.actions, Date.now());
         const transcript = reduceAll(timed.seed as TranscriptState, timed.actions as TranscriptAction[]);
+        if (run.closed) {
+          sessionRef.current.updateMessage(run.answerId, { transcript: closedDuring(transcript) });
+          return;
+        }
         sessionRef.current.updateMessage(run.answerId, { transcript });
         if (run.open) {
           await new Promise(resolve => window.setTimeout(resolve, SCENE_OPEN_INTERVAL_MS * 4));

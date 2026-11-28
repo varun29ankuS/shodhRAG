@@ -189,7 +189,7 @@ export function ConversationHistory({
                     aria-controls={listId}
                     aria-label={`${group.workspace.name}, ${group.items.length} ${group.items.length === 1 ? 'chat' : 'chats'}`}
                     className={cn(
-                      'flex-1 min-w-0 flex items-center gap-1.5 h-7 ps-1.5 pe-2 rounded-md text-start text-caption font-medium text-shodh-text-secondary hover:bg-shodh-raised-2/60 hover:text-shodh-text transition-colors duration-micro',
+                      'flex-1 min-w-0 flex items-center gap-1.5 h-7 short:h-6 ps-1.5 pe-2 rounded-md text-start text-caption font-medium text-shodh-text-secondary hover:bg-shodh-raised-2/60 hover:text-shodh-text transition-colors duration-micro',
                       FOCUS_RING,
                     )}
                   >
@@ -302,15 +302,15 @@ export function ConversationHistory({
             </div>
           )}
           {(named.length > 0 || fromConnectors.length > 0 || automationRuns.length > 0) && groups.length > 0 && (
-            <h3 className="px-3 pt-3 pb-0.5 text-caption font-semibold tracking-[0.06em] uppercase text-shodh-text-faint">
+            <h3 className="px-3 pt-3 short:pt-1.5 pb-0.5 text-caption font-semibold tracking-[0.06em] uppercase text-shodh-text-faint">
               {tr('shell.conversationHistory.noWorkspace')}
             </h3>
           )}
           {groups.map(group => (
-            <div key={group.id} role="group" aria-labelledby={`${headingId}-${group.id}`} className="pt-2 first:pt-0">
+            <div key={group.id} role="group" aria-labelledby={`${headingId}-${group.id}`} className="pt-2 short:pt-0.5 first:pt-0">
               <h3
                 id={`${headingId}-${group.id}`}
-                className="px-3 pt-1 pb-1 text-caption font-medium text-shodh-text-faint"
+                className="px-3 pt-1 short:pt-0 pb-1 short:pb-0.5 text-caption font-medium text-shodh-text-faint"
               >
                 {group.label}
               </h3>

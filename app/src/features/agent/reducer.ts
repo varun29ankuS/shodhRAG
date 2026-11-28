@@ -204,7 +204,19 @@ export interface TranscriptState {
    * Never present in a live or restored transcript.
    */
   savedWhileChecking?: boolean;
+  /**
+   * Shodh closed while this answer was being written (`fromPersisted`): it shows
+   * "Stopped when Shodh closed" and can be continued. Absent otherwise.
+   */
+  stoppedByClose?: boolean;
+  /** Steps that were running when Shodh closed: a continuation runs them again. */
+  interruptedStepIds?: string[];
+  /** The run of the stopped answer this one continues (Continue). */
+  continuesRunId?: string;
 }
+
+/** What an answer Shodh closed during says. */
+export const STOPPED_WHEN_CLOSED = 'Stopped when Shodh closed';
 
 /** Most characters of reasoning kept per answer (about 32 KB); the rest is dropped and marked. */
 export const MAX_REASONING_CHARS = 32 * 1024;
@@ -952,7 +964,15 @@ export function fromPersisted(value: unknown): TranscriptState | null {
   if (!isRecord(value) || typeof value.runId !== 'string' || typeof value.startedAtMs !== 'number') return null;
   if (!STATUSES.includes(value.status as TranscriptStatus)) return null;
   if (!Array.isArray(value.blocks) || !isRecord(value.steps)) return null;
-  const { reasoning: storedReasoning, savedWhileChecking, memoryIds: storedMemoryIds, ...state } = value as unknown as TranscriptState;
+  const {
+    reasoning: storedReasoning,
+    savedWhileChecking,
+    memoryIds: storedMemoryIds,
+    stoppedByClose: storedStopped,
+    interruptedStepIds: storedInterrupted,
+    continuesRunId: storedContinues,
+    ...state
+  } = value as unknown as TranscriptState;
   const reasoning = readReasoning(storedReasoning);
   const memoryIds = memoryIdsOf(storedMemoryIds);
   const restored: TranscriptState = {
@@ -965,21 +985,49 @@ export function fromPersisted(value: unknown): TranscriptState | null {
     interimIds: Array.isArray(state.interimIds) ? state.interimIds.filter(id => typeof id === 'string') : [],
     ...(Array.isArray(state.priorRunIds) ? { priorRunIds: state.priorRunIds.filter(id => typeof id === 'string') } : {}),
     ...(memoryIds.length > 0 ? { memoryIds } : {}),
+    ...(typeof storedContinues === 'string' && storedContinues.length > 0 ? { continuesRunId: storedContinues } : {}),
     checking: false,
     thinking: '',
     interrupting: false,
   };
   restored.steps = restoreCommands(restored.steps);
-  if (!isLive(restored)) return restored;
+  if (!isLive(restored)) {
+    // Restored once already (and saved again): it keeps what it was stopped with.
+    if (restored.status !== 'aborted' || storedStopped !== true) return restored;
+    const kept = Array.isArray(storedInterrupted)
+      ? storedInterrupted.filter((id): id is string => typeof id === 'string' && id in restored.steps)
+      : [];
+    return { ...restored, stoppedByClose: true, ...(kept.length > 0 ? { interruptedStepIds: kept } : {}) };
+  }
   const atMs = restored.startedAtMs + (restored.durationMs ?? 0);
+  if (savedWhileChecking === true) {
+    // The answer was written; only its check was lost.
+    return {
+      ...restored,
+      status: 'aborted',
+      error: 'The app closed while this answer was being checked against its sources, so it was not checked.',
+      steps: closeOpenSteps(restored.steps, 'Interrupted', atMs),
+    };
+  }
+  const interrupted = Object.values(restored.steps)
+    .filter(step => step.status === 'running' || step.status === 'awaiting_approval')
+    .map(step => step.id);
   return {
     ...restored,
     status: 'aborted',
-    error: savedWhileChecking === true
-      ? 'The app closed while this answer was being checked against its sources, so it was not checked.'
-      : 'The app closed before this answer finished.',
+    error: STOPPED_WHEN_CLOSED,
+    stoppedByClose: true,
+    ...(interrupted.length > 0 ? { interruptedStepIds: interrupted } : {}),
     steps: closeOpenSteps(restored.steps, 'Interrupted', atMs),
   };
+}
+
+/**
+ * Whether `state` is an answer Shodh closed during that can be continued: it stopped
+ * with the app, not because the user stopped it or it failed.
+ */
+export function canContinue(state: TranscriptState | null | undefined): boolean {
+  return !!state && state.status === 'aborted' && state.stoppedByClose === true;
 }
 
 /** Plan progress, e.g. { done: 3, total: 5 }. */

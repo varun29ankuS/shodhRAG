@@ -32,31 +32,43 @@ import { designApi } from '../code/api';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useSidebar } from '../../contexts/SidebarContext';
 import { useChatSession } from '../ask/ChatSessionContext';
-import { reduceAll } from '../agent/reducer';
+import { fromPersisted, reduceAll, toPersisted } from '../agent/reducer';
 import type { TranscriptAction, TranscriptState } from '../agent/reducer';
 import { RUN_PANEL_TOGGLE } from '../agent/RunPanel';
+import { CODE_MAP_CHIP } from '../codeIntel/CodeMapChip';
+import { BACKGROUND_SETTINGS } from '../../components/BackgroundSettings';
+import { requestSettingsSection } from '../memory/navigation';
 
 /** Rust → main only (`launch_probe::LAUNCH_PROBE_EVENT`). */
 export const LAUNCH_PROBE_EVENT = 'launch-probe';
 
 /** The tour's scenes (`launch_probe::TOUR_SCENES`): Ask with a sample conversation open. */
-const SCENES = new Set(['conversation', 'run-plan', 'run-progress', 'run-summary', 'build-card']);
+const SCENES = new Set(['conversation', 'run-plan', 'run-progress', 'run-stopped', 'run-summary', 'build-card', 'code-map']);
 
 /** How long the window waits for a scene's conversation to be open before setting its run. */
 const SCENE_OPEN_TRIES = 30;
 const SCENE_OPEN_INTERVAL_MS = 50;
 
-/** A `run-*` scene's run: the answer it is set on, its transcript's seed and actions, and whether its view opens. */
+/**
+ * A `run-*` scene's run: the answer it is set on, its transcript's seed and actions, whether
+ * its view opens, and whether Shodh closed there (shown as the app restores it).
+ */
 interface SceneRun {
   answerId: string;
   seed: unknown;
   actions: unknown[];
   open: boolean;
+  closed: boolean;
 }
 
 function sceneRunOf(value: unknown): SceneRun | null {
   if (!isRecord(value) || typeof value.answerId !== 'string' || !isRecord(value.seed) || !Array.isArray(value.actions)) return null;
-  return { answerId: value.answerId, seed: value.seed, actions: value.actions, open: value.open === true };
+  return { answerId: value.answerId, seed: value.seed, actions: value.actions, open: value.open === true, closed: value.closed === true };
+}
+
+/** A live answer as the app shows it after Shodh closed during it: saved, then restored. */
+function closedDuring(transcript: TranscriptState): TranscriptState {
+  return fromPersisted(JSON.parse(JSON.stringify(toPersisted(transcript)))) ?? transcript;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -104,6 +116,10 @@ export function LaunchProbeHost(): null {
         // The recorded run, its clock moved to now, so a live timer reads seconds.
         const timed = rebaseRun(structuredClone(run.seed), run.actions, Date.now());
         const transcript = reduceAll(timed.seed as TranscriptState, timed.actions as TranscriptAction[]);
+        if (run.closed) {
+          sessionRef.current.updateMessage(run.answerId, { transcript: closedDuring(transcript) });
+          return;
+        }
         sessionRef.current.updateMessage(run.answerId, { transcript });
         if (run.open) {
           await new Promise(resolve => window.setTimeout(resolve, SCENE_OPEN_INTERVAL_MS * 4));
@@ -117,6 +133,21 @@ export function LaunchProbeHost(): null {
   };
   const showRunRef = useRef(showRun);
   showRunRef.current = showRun;
+
+  /** Waits for the element `selector` finds (a view loading its data), then acts on it. */
+  const whenShown = async (selector: string, act: (element: HTMLElement) => void) => {
+    for (let tries = 0; tries < SCENE_OPEN_TRIES * 4; tries++) {
+      const element = document.querySelector<HTMLElement>(selector);
+      if (element) {
+        act(element);
+        return;
+      }
+      await new Promise(resolve => window.setTimeout(resolve, SCENE_OPEN_INTERVAL_MS));
+    }
+    console.error(`Launch probe: ${selector} did not show`);
+  };
+  const whenShownRef = useRef(whenShown);
+  whenShownRef.current = whenShown;
 
   useEffect(() => {
     let disposed = false;
@@ -153,6 +184,25 @@ export function LaunchProbeHost(): null {
         window.dispatchEvent(new CustomEvent('switchTab', { detail: 'ask' }));
         const run = sceneRunOf(payload.run);
         if (run) void showRunRef.current(conversationId, run);
+        // The code map's details, opened by its chip as a click opens them.
+        if (payload.view === 'code-map') {
+          void whenShownRef.current(`[data-testid="${CODE_MAP_CHIP}"][aria-expanded="false"]`, chip => chip.click());
+        }
+      } else if (payload.kind === 'show' && payload.view === 'settings-background') {
+        // Settings at its Background part, as the section's menu opens it.
+        reviewRef.current?.close();
+        if ((payload.theme === 'light' || payload.theme === 'dark') && payload.theme !== themeRef.current.theme) {
+          themeRef.current.toggleTheme();
+        }
+        const before = beforeSceneRef.current;
+        if (before) {
+          beforeSceneRef.current = null;
+          sidebarRef.current.setSidebarCollapsed(before.collapsed);
+          if (before.conversationId) sessionRef.current.switchConversation(before.conversationId);
+        }
+        requestSettingsSection('general');
+        window.dispatchEvent(new CustomEvent('switchTab', { detail: 'settings' }));
+        void whenShownRef.current(`[data-testid="${BACKGROUND_SETTINGS}"]`, part => part.scrollIntoView({ block: 'start' }));
       } else if (payload.kind === 'show' && typeof payload.view === 'string') {
         const tab = normalizeViewTab(payload.view);
         if (!tab) return;

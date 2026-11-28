@@ -47,6 +47,7 @@ mod space_manager;
 mod startup;
 mod storage_commands;
 mod store_notices;
+mod system_jobs;
 mod table_commands;
 mod table_model_commands;
 mod task_repeat;
@@ -617,7 +618,6 @@ pub fn run() {
                     },
                 ));
             }
-            table_commands::spawn_scheduler(app.handle().clone());
 
             app.manage(RagState {
                 rag: rag_engine,
@@ -653,15 +653,16 @@ pub fn run() {
             search_model_switch::resume_at_start(app.handle());
             // Task reminders: native notifications while the app runs.
             app.manage(reminders::ReminderState::default());
-            reminders::spawn(app.handle().clone());
-            // Repeating tasks, on the scheduler engine (shodh.db): one loop, woken by
-            // every task change.
+            // Scheduled work, on the scheduler engine (shodh.db): one loop for repeating
+            // tasks, automations, reminders, table fills and the nightly code map refresh,
+            // woken by every change.
             app.manage(engine_commands::EngineState::new(
                 &app.state::<audit_commands::AuditState>(),
             ));
             // Automations wait after a rate limit or a used-up quota on their model's limit.
             app.manage(automation_agent::PoolCooldowns::default());
             engine_commands::spawn(app.handle().clone());
+            table_commands::first_check_when_loaded(app.handle().clone());
 
             // Tray icon: the window can hide there and reminders keep ringing.
             app.manage(background::BackgroundState::with_pause(pause));

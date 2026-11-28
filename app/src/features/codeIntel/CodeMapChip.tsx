@@ -27,6 +27,9 @@ const TONE_DOT: Record<CodeMapTone, string> = {
   bad: 'bg-shodh-error',
 };
 
+/** The chip's button (the launch tour opens its details by it). */
+export const CODE_MAP_CHIP = 'code-map-chip';
+
 interface CodeMapChipProps {
   /** The Code conversation's workspace, whose folder is the project. */
   workspaceId: string;
@@ -128,23 +131,24 @@ export function CodeMapChip({ workspaceId }: CodeMapChipProps) {
   const details = codeMapDetails(view, new Date());
 
   return (
-    <div className="relative shrink-0">
+    <div className="relative min-w-0">
       <button
         ref={buttonRef}
         type="button"
+        data-testid={CODE_MAP_CHIP}
         onClick={() => setOpen(o => !o)}
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-controls={open ? popoverId : undefined}
         title={`${label}. The assistant uses it to find definitions and uses.`}
         className={cn(
-          'inline-flex items-center gap-1.5 h-[26px] px-2 rounded-full text-caption font-medium border border-shodh-border',
+          'inline-flex max-w-full min-w-0 items-center gap-1.5 h-[26px] px-2 rounded-full text-caption font-medium border border-shodh-border',
           'text-shodh-text-muted hover:text-shodh-text hover:bg-shodh-raised transition-colors duration-micro tabular-nums',
           FOCUS_RING,
         )}
       >
         <Network className="w-3 h-3 shrink-0" aria-hidden="true" />
-        <span className="whitespace-nowrap">{label}</span>
+        <span className="truncate" title={label}>{label}</span>
         <span aria-hidden="true" className={cn('inline-block w-1.5 h-1.5 rounded-full shrink-0', TONE_DOT[codeMapTone(view)])} />
       </button>
       {open && (

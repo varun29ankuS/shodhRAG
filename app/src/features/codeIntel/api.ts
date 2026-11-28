@@ -114,6 +114,8 @@ export interface CodeMapView {
   watching: boolean;
   map: CodeMapCounts | null;
   lastRun: CodeMapRefresh | null;
+  /** When the nightly refresh last ran (RFC 3339); null before its first night. */
+  nightly?: string | null;
   /** The hold `open` took on the map; `close` gives it back. */
   lease?: number | null;
 }

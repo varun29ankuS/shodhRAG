@@ -207,13 +207,23 @@ impl Engine {
 
     /// One tick for the jobs of `handler`'s kind (see the module documentation).
     pub async fn tick(&self, handler: &Arc<dyn JobHandler>) -> EngineResult<Tick> {
+        self.tick_where(handler, &|_: &Job| true).await
+    }
+
+    /// One tick for the jobs of `handler`'s kind that `wanted` picks: the app ticks each of
+    /// its own pieces of work apart, so a slow one never holds another up.
+    pub async fn tick_where(
+        &self,
+        handler: &Arc<dyn JobHandler>,
+        wanted: &(dyn Fn(&Job) -> bool + Send + Sync),
+    ) -> EngineResult<Tick> {
         let mut tick = Tick::default();
         let now = self.clock.now();
         let kind = handler.kind();
         let jobs = blocking(&self.store, move |s| s.jobs(kind)).await?;
         let mut starts: Vec<(DateTime<Utc>, String, String)> = Vec::new();
         for job in jobs {
-            if !job.enabled || job.hold_reason.is_some() {
+            if !job.enabled || job.hold_reason.is_some() || !wanted(&job) {
                 continue;
             }
             let id = job.id.clone();
@@ -718,6 +728,31 @@ impl Engine {
         }
         Ok(next)
     }
+
+    /// [`Self::next_wake`] for the jobs of `kind` that `wanted` picks: their due times, and
+    /// the retry times of their waiting runs.
+    pub fn next_wake_where(
+        &self,
+        kind: JobKind,
+        wanted: &(dyn Fn(&Job) -> bool + Send + Sync),
+    ) -> EngineResult<Option<DateTime<Utc>>> {
+        let mut next: Option<DateTime<Utc>> = None;
+        for job in self.store.jobs(kind)? {
+            if !job.enabled || job.hold_reason.is_some() || !wanted(&job) {
+                continue;
+            }
+            let retry = self
+                .store
+                .active_run(&job.id)?
+                .filter(|run| run.state == RunState::Waiting)
+                .and_then(|run| run.next_attempt_at.as_deref().and_then(parse_instant));
+            let due = job.next_due_at.as_deref().and_then(parse_instant);
+            for at in [due, retry].into_iter().flatten() {
+                next = Some(next.map_or(at, |n| n.min(at)));
+            }
+        }
+        Ok(next)
+    }
 }
 
 #[cfg(test)]
@@ -843,6 +878,56 @@ mod tests {
         e.engine.tick(&handler).await.unwrap();
         assert_eq!(recording.calls().len(), 1, "a due time runs once");
         assert_eq!(e.engine.next_wake(JobKind::System).unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn a_tick_of_some_jobs_leaves_the_others_due() {
+        let start = local(2026, 11, 20, 10, 0);
+        let (e, recording, handler) = system_env(start);
+        e.store
+            .create_job(
+                &NewJob {
+                    id: "reminder_plan".to_string(),
+                    kind: JobKind::System,
+                    subject: "reminder_plan".to_string(),
+                    title: "reminder_plan".to_string(),
+                    schedule: None,
+                    input: json!({ "system": "reminder_plan" }),
+                    overlap: Overlap::Skip,
+                    catch_up: CatchUp::Once,
+                    max_attempts: 1,
+                    created_by: CreatedBy::System,
+                    provenance: json!({}),
+                },
+                start,
+            )
+            .unwrap();
+        let due = start + TimeDelta::seconds(5);
+        e.store.set_due_at_most("table_tick", due).unwrap();
+        e.store.set_due_at_most("reminder_plan", due).unwrap();
+        let reminders = |job: &Job| job.id == "reminder_plan";
+        assert_eq!(
+            e.engine
+                .next_wake_where(JobKind::System, &reminders)
+                .unwrap(),
+            Some(due)
+        );
+        e.clock.set(due);
+        e.engine.tick_where(&handler, &reminders).await.unwrap();
+        let ran: Vec<String> = recording.calls().into_iter().map(|r| r.job_id).collect();
+        assert_eq!(ran, ["reminder_plan"], "only the work asked for");
+        assert_eq!(
+            e.engine
+                .next_wake_where(JobKind::System, &reminders)
+                .unwrap(),
+            None
+        );
+        let tables = |job: &Job| job.id == "table_tick";
+        assert_eq!(
+            e.engine.next_wake_where(JobKind::System, &tables).unwrap(),
+            Some(due),
+            "the other is still due"
+        );
     }
 
     #[tokio::test]

@@ -10,6 +10,9 @@
 //! - **`code_map_reconcile`**: every code map refreshed nightly at [`NIGHTLY_AT`] local
 //!   time, once on wake when the computer slept through it ([`crate::code_map_commands`]).
 //!
+//! Each ticks in a lane of its own ([`SystemWork::lane`]), so a slow one (a table check
+//! loading its model) never holds another (a reminder) up.
+//!
 //! The first two have no schedule: each run says when the work is next due, and anything
 //! that changes their state makes them due now ([`crate::engine_commands::due_now`]). A
 //! system job is never put on hold (no one could resume it) and does not wait on the
@@ -59,6 +62,16 @@ impl SystemWork {
 
     pub fn parse(name: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|work| work.name() == name)
+    }
+
+    /// Its lane in the loop: each piece of work ticks apart, so a slow one never holds
+    /// another up.
+    pub fn lane(self) -> &'static str {
+        match self {
+            Self::TableTick => "system:table_tick",
+            Self::ReminderPlan => "system:reminder_plan",
+            Self::CodeMapReconcile => "system:code_map_reconcile",
+        }
     }
 
     /// The id of its job.

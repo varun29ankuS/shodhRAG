@@ -4,9 +4,10 @@
 //!
 //! - **One loop.** It sleeps until the earliest due time, for at most a minute (a
 //!   suspended computer or a clock change is seen within a minute), and wakes early on
-//!   every change ([`wake`], [`due_now`]). Each kind's tick runs on a task of its own, one
-//!   tick of a kind at a time ([`Dispatcher`]): an automation's agent run takes minutes,
-//!   and a reminder or a repeating task's question never waits for it. A scheduled run
+//!   every change ([`wake`], [`due_now`]). Each lane (a kind of job, or one piece of the
+//!   app's own work) ticks on a task of its own, one tick of a lane at a time
+//!   ([`Dispatcher`]): an automation's agent run or a table check loading its model never
+//!   holds a reminder or a repeating task's question up. A scheduled run
 //!   never moves the screen: it posts to the Inbox and rings the reminder alert.
 //! - **System work** ([`crate::system_jobs`]): table fills, task reminders and the
 //!   nightly code map refresh are system jobs on the same engine, never shown in
@@ -30,7 +31,7 @@ use shodh_rag::engine::clock::{next_utc_midnight, utc_day};
 use shodh_rag::engine::ledger::{DayCalls, Ledger, Spender, SpenderCalls};
 use shodh_rag::engine::plan::sleep_for;
 use shodh_rag::engine::runner::{Engine, JobHandler};
-use shodh_rag::engine::store::{EngineResult, EngineStore, JobKind};
+use shodh_rag::engine::store::{EngineResult, EngineStore, Job, JobKind};
 use shodh_rag::inbox::NewInboxItem;
 use shodh_rag::whats_new::store::FeedStore;
 use tauri::{AppHandle, Emitter, Manager};
@@ -448,14 +449,15 @@ pub async fn model_usage_today(app: AppHandle) -> Result<ModelUsageToday, String
     read_usage_today(&app).await
 }
 
-/// One kind's tick: its handler's, with what the kind does first.
+/// One lane's tick: a kind's handler, or one piece of the app's own work, with what it
+/// does first. Lanes tick side by side, each one tick at a time.
 #[async_trait]
 pub trait Ticker: Send + Sync {
-    fn kind(&self) -> JobKind;
-    /// A due time of its own besides its jobs' (an approval that expires).
-    fn own_due(&self) -> Option<DateTime<Utc>> {
-        None
-    }
+    /// Its lane: a kind of job (`task_repeat`), or a piece of system work
+    /// (`system:reminder_plan`).
+    fn lane(&self) -> &'static str;
+    /// When it is next due.
+    fn next_due(&self, engine: &Engine) -> EngineResult<Option<DateTime<Utc>>>;
     async fn tick(&self, engine: &Engine) -> EngineResult<()>;
 }
 
@@ -464,8 +466,12 @@ pub struct HandlerTicker(pub Arc<dyn JobHandler>);
 
 #[async_trait]
 impl Ticker for HandlerTicker {
-    fn kind(&self) -> JobKind {
-        self.0.kind()
+    fn lane(&self) -> &'static str {
+        self.0.kind().as_str()
+    }
+
+    fn next_due(&self, engine: &Engine) -> EngineResult<Option<DateTime<Utc>>> {
+        engine.next_wake(self.0.kind())
     }
 
     async fn tick(&self, engine: &Engine) -> EngineResult<()> {
@@ -481,12 +487,13 @@ struct AutomationsTicker {
 
 #[async_trait]
 impl Ticker for AutomationsTicker {
-    fn kind(&self) -> JobKind {
-        JobKind::Playbook
+    fn lane(&self) -> &'static str {
+        JobKind::Playbook.as_str()
     }
 
-    fn own_due(&self) -> Option<DateTime<Utc>> {
-        self.automations.next_expiry()
+    fn next_due(&self, engine: &Engine) -> EngineResult<Option<DateTime<Utc>>> {
+        let jobs = engine.next_wake(JobKind::Playbook)?;
+        Ok(jobs.into_iter().chain(self.automations.next_expiry()).min())
     }
 
     async fn tick(&self, engine: &Engine) -> EngineResult<()> {
@@ -495,29 +502,59 @@ impl Ticker for AutomationsTicker {
     }
 }
 
-/// Starts each kind's tick on a task of its own, one tick of a kind at a time: an
-/// automation's agent run takes minutes, and a reminder or a repeating task's question
-/// never waits for it.
+/// The tick of one piece of the app's own work, in a lane of its own: a table check that
+/// resolves its model, or a code map refresh being asked for, never holds a reminder up.
+pub struct SystemTicker {
+    pub handler: Arc<dyn JobHandler>,
+    pub work: SystemWork,
+}
+
+impl SystemTicker {
+    fn picks(&self) -> impl Fn(&Job) -> bool + Send + Sync {
+        let id = self.work.job_id();
+        move |job: &Job| job.id == id
+    }
+}
+
+#[async_trait]
+impl Ticker for SystemTicker {
+    fn lane(&self) -> &'static str {
+        self.work.lane()
+    }
+
+    fn next_due(&self, engine: &Engine) -> EngineResult<Option<DateTime<Utc>>> {
+        engine.next_wake_where(JobKind::System, &self.picks())
+    }
+
+    async fn tick(&self, engine: &Engine) -> EngineResult<()> {
+        let picks = self.picks();
+        engine.tick_where(&self.handler, &picks).await.map(|_| ())
+    }
+}
+
+/// Starts each lane's tick on a task of its own, one tick of a lane at a time: an
+/// automation's agent run takes minutes, a table check may load a model, and a reminder or
+/// a repeating task's question never waits for either.
 pub struct Dispatcher {
     engine: Arc<Engine>,
     tickers: Mutex<Vec<Arc<dyn Ticker>>>,
-    ticking: Arc<Mutex<HashSet<JobKind>>>,
-    /// Kinds to tick at the next turn whether or not anything is due (something changed,
+    ticking: Arc<Mutex<HashSet<&'static str>>>,
+    /// Lanes to tick at the next turn whether or not anything is due (something changed,
     /// or the loop slept its longest).
-    dirty: Mutex<HashSet<JobKind>>,
+    dirty: Mutex<HashSet<&'static str>>,
     ticked: Arc<Notify>,
 }
 
-/// A kind's place among the ticking, given back when its tick's task ends, however.
+/// A lane's place among the ticking, given back when its tick's task ends, however.
 struct Ticking {
-    kind: JobKind,
-    ticking: Arc<Mutex<HashSet<JobKind>>>,
+    lane: &'static str,
+    ticking: Arc<Mutex<HashSet<&'static str>>>,
     ticked: Arc<Notify>,
 }
 
 impl Drop for Ticking {
     fn drop(&mut self) {
-        locked(&self.ticking).remove(&self.kind);
+        locked(&self.ticking).remove(self.lane);
         self.ticked.notify_one();
     }
 }
@@ -541,50 +578,44 @@ impl Dispatcher {
         &self.engine
     }
 
-    /// Adds a kind; its first tick is at the next turn.
+    /// Adds a lane; its first tick is at the next turn.
     pub fn add(&self, ticker: Arc<dyn Ticker>) {
-        locked(&self.dirty).insert(ticker.kind());
+        locked(&self.dirty).insert(ticker.lane());
         locked(&self.tickers).push(ticker);
         self.ticked.notify_one();
     }
 
-    /// Every kind ticks at the next turn.
+    /// Every lane ticks at the next turn.
     pub fn mark_all(&self) {
-        let kinds: Vec<JobKind> = locked(&self.tickers).iter().map(|t| t.kind()).collect();
-        locked(&self.dirty).extend(kinds);
+        let lanes: Vec<&'static str> = locked(&self.tickers).iter().map(|t| t.lane()).collect();
+        locked(&self.dirty).extend(lanes);
     }
 
-    /// Told when a tick ends (and when a kind is added).
+    /// Told when a tick ends (and when a lane is added).
     pub fn ticked(&self) -> Arc<Notify> {
         self.ticked.clone()
     }
 
-    pub fn is_ticking(&self, kind: JobKind) -> bool {
-        locked(&self.ticking).contains(&kind)
+    pub fn is_ticking(&self, lane: &str) -> bool {
+        locked(&self.ticking).contains(lane)
     }
 
-    /// Starts the tick of every kind not ticking now that is marked, or due at `now`.
-    /// Returns the earliest due time of the kinds left waiting; a ticking kind's is looked
+    /// Starts the tick of every lane not ticking now that is marked, or due at `now`.
+    /// Returns the earliest due time of the lanes left waiting; a ticking lane's is looked
     /// at again when its tick ends.
     pub fn dispatch(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
         let tickers: Vec<Arc<dyn Ticker>> = locked(&self.tickers).clone();
         let mut next: Option<DateTime<Utc>> = None;
         for ticker in tickers {
-            let kind = ticker.kind();
-            if self.is_ticking(kind) {
+            let lane = ticker.lane();
+            if self.is_ticking(lane) {
                 continue;
             }
-            let due = self
-                .engine
-                .next_wake(kind)
-                .unwrap_or_else(|e| {
-                    tracing::warn!(kind = kind.as_str(), error = %e, "scheduled work: the next due time could not be read");
-                    None
-                })
-                .into_iter()
-                .chain(ticker.own_due())
-                .min();
-            let marked = locked(&self.dirty).remove(&kind);
+            let due = ticker.next_due(&self.engine).unwrap_or_else(|e| {
+                tracing::warn!(lane, error = %e, "scheduled work: the next due time could not be read");
+                None
+            });
+            let marked = locked(&self.dirty).remove(lane);
             if marked || due.is_some_and(|due| due <= now) {
                 self.start(ticker);
             } else if let Some(due) = due {
@@ -595,10 +626,10 @@ impl Dispatcher {
     }
 
     fn start(&self, ticker: Arc<dyn Ticker>) {
-        let kind = ticker.kind();
-        locked(&self.ticking).insert(kind);
+        let lane = ticker.lane();
+        locked(&self.ticking).insert(lane);
         let place = Ticking {
-            kind,
+            lane,
             ticking: self.ticking.clone(),
             ticked: self.ticked.clone(),
         };
@@ -606,7 +637,7 @@ impl Dispatcher {
         tokio::spawn(async move {
             let _place = place;
             if let Err(e) = ticker.tick(&engine).await {
-                tracing::warn!(kind = kind.as_str(), error = %e, "scheduled work could not be planned");
+                tracing::warn!(lane, error = %e, "scheduled work could not be planned");
                 // A database that keeps failing is not tried again in a tight loop,
                 // however often things change meanwhile.
                 tokio::time::sleep(TICK_ERROR_WAIT).await;
@@ -687,10 +718,17 @@ pub fn spawn(app: AppHandle) {
                         .and_then(|made| made.map_err(|e| e.to_string()));
                 let direct = match ensured {
                     Ok(()) => {
-                        dispatcher.add(Arc::new(HandlerTicker(Arc::new(SystemHandler::new(
+                        // One handler, a lane for each piece of work.
+                        let handler: Arc<dyn JobHandler> = Arc::new(SystemHandler::new(
                             engine.store().clone(),
                             AppWork::all(&app),
-                        )))));
+                        ));
+                        for work in SystemWork::ALL {
+                            dispatcher.add(Arc::new(SystemTicker {
+                                handler: handler.clone(),
+                                work,
+                            }));
+                        }
                         Vec::new()
                     }
                     Err(e) => {
@@ -979,13 +1017,15 @@ mod tests {
     }
 
     /// Waits until no kind but those of `busy` is ticking.
-    async fn settle(dispatcher: &Dispatcher, busy: &[JobKind]) {
+    async fn settle(dispatcher: &Dispatcher, busy: &[&str]) {
         let kinds = [
-            JobKind::TaskRepeat,
-            JobKind::FolderWatch,
-            JobKind::PaperAlert,
-            JobKind::Playbook,
-            JobKind::System,
+            JobKind::TaskRepeat.as_str(),
+            JobKind::FolderWatch.as_str(),
+            JobKind::PaperAlert.as_str(),
+            JobKind::Playbook.as_str(),
+            SystemWork::TableTick.lane(),
+            SystemWork::ReminderPlan.lane(),
+            SystemWork::CodeMapReconcile.lane(),
         ];
         for _ in 0..500 {
             if kinds
@@ -1103,18 +1143,18 @@ mod tests {
         dispatcher.add(Arc::new(HandlerTicker(repeats.clone())));
         dispatcher.dispatch(local(23, 9, 30));
         slow.started.notified().await;
-        settle(&dispatcher, &[JobKind::Playbook]).await;
+        settle(&dispatcher, &[JobKind::Playbook.as_str()]).await;
         // A repeating task falls due while the automation runs: its tick goes ahead.
         daily(&store, "repeat", JobKind::TaskRepeat, 9);
         dispatcher.mark_all();
         dispatcher.dispatch(local(23, 9, 30));
-        settle(&dispatcher, &[JobKind::Playbook]).await;
+        settle(&dispatcher, &[JobKind::Playbook.as_str()]).await;
         assert_eq!(
             *repeats.ran.lock().unwrap_or_else(|e| e.into_inner()),
             ["repeat"]
         );
         assert!(
-            dispatcher.is_ticking(JobKind::Playbook),
+            dispatcher.is_ticking(JobKind::Playbook.as_str()),
             "the automation is still running"
         );
         // One automation tick at a time: a second is not started beside it.
@@ -1129,6 +1169,91 @@ mod tests {
         );
     }
 
+    /// System work that waits until it is let go (a table check loading its model).
+    struct SlowWork {
+        started: Notify,
+        go: Notify,
+    }
+
+    #[async_trait]
+    impl Work for SlowWork {
+        async fn run(&self) -> system_jobs::WorkDone {
+            self.started.notify_one();
+            self.go.notified().await;
+            system_jobs::WorkDone::did("Checked".into(), None)
+        }
+    }
+
+    /// System work that counts its runs (the reminders' plan).
+    struct CountingWork(Mutex<usize>);
+
+    #[async_trait]
+    impl Work for CountingWork {
+        async fn run(&self) -> system_jobs::WorkDone {
+            *self.0.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+            system_jobs::WorkDone::did("Rang".into(), None)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_long_table_check_never_holds_a_due_reminder_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(EngineStore::open(&dir.path().join("shodh.db"), None).unwrap());
+        let now = local(23, 9, 0);
+        system_jobs::ensure_jobs(&store, now).unwrap();
+        let engine = Arc::new(Engine::with_clock(
+            store.clone(),
+            Arc::new(FixedClock(now)),
+            "engine-commands-test",
+        ));
+        let table = Arc::new(SlowWork {
+            started: Notify::new(),
+            go: Notify::new(),
+        });
+        let reminders = Arc::new(CountingWork(Mutex::new(0)));
+        let handler: Arc<dyn JobHandler> = Arc::new(SystemHandler::new(
+            store.clone(),
+            vec![
+                (SystemWork::TableTick, table.clone() as Arc<dyn Work>),
+                (SystemWork::ReminderPlan, reminders.clone() as Arc<dyn Work>),
+            ],
+        ));
+        let dispatcher = Dispatcher::new(engine);
+        for work in [SystemWork::TableTick, SystemWork::ReminderPlan] {
+            dispatcher.add(Arc::new(SystemTicker {
+                handler: handler.clone(),
+                work,
+            }));
+        }
+        // The table check is due first and takes long.
+        store
+            .set_due_at_most(&SystemWork::TableTick.job_id(), now)
+            .unwrap();
+        dispatcher.dispatch(now);
+        table.started.notified().await;
+        settle(&dispatcher, &[SystemWork::TableTick.lane()]).await;
+        // A reminder falls due while it runs: it rings now, not when the check ends.
+        store
+            .set_due_at_most(&SystemWork::ReminderPlan.job_id(), now)
+            .unwrap();
+        dispatcher.dispatch(now);
+        settle(&dispatcher, &[SystemWork::TableTick.lane()]).await;
+        assert_eq!(*reminders.0.lock().unwrap_or_else(|e| e.into_inner()), 1);
+        assert!(
+            dispatcher.is_ticking(SystemWork::TableTick.lane()),
+            "the table check is still running"
+        );
+        table.go.notify_one();
+        settle(&dispatcher, &[]).await;
+        assert_eq!(
+            store
+                .runs(&SystemWork::TableTick.job_id(), 10)
+                .unwrap()
+                .len(),
+            1,
+            "the check ran once"
+        );
+    }
     /// The text of every Rust file under `dir`, with its path.
     fn sources(dir: &std::path::Path, out: &mut Vec<(PathBuf, String)>) {
         for entry in std::fs::read_dir(dir).unwrap() {

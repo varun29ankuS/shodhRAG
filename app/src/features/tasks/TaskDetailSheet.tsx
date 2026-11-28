@@ -5,6 +5,7 @@ import DetailSheet from './DetailSheet';
 import { ChipInput, DateTimeField, FIELD_LABEL, FOCUS_RING, INLINE_INPUT, InlineText, Segmented } from './fields';
 import { ReminderField } from './ReminderField';
 import { RepeatField, RepeatHistory, useRepeat } from './RepeatField';
+import { TaskHistory } from './TaskHistory';
 import { useTasksStore } from './TasksStore';
 import { useChatSession } from '../ask/ChatSessionContext';
 import { useFocus } from '../focus/focusHost';
@@ -17,9 +18,11 @@ import type { TodoItem } from './types';
 import { IS_MAC_PLATFORM, shortcutText, withShortcut } from '../../lib/shortcuts';
 
 const PRIORITY_SELECTED: Record<string, string> = {
+  urgent: 'text-shodh-error',
   high: 'text-shodh-error',
   medium: 'text-shodh-warning',
   low: 'text-shodh-success',
+  none: 'text-shodh-text-muted',
 };
 
 function formatStamp(iso: string): string {
@@ -324,6 +327,9 @@ export default function TaskDetailSheet({ task, onClose }: { task: TodoItem | nu
         onCommit={title => void updateTask(shown.id, { title })}
         className="h-auto py-1.5 text-subhead font-semibold"
       />
+      {shown.key && (
+        <span className="px-2.5 text-caption font-mono text-shodh-text-muted" data-testid="task-key">{shown.key}</span>
+      )}
       <Provenance source={shown.source} sourceRef={shown.sourceRef} />
       <AskAboutTask task={shown} />
       <div className="px-2.5 flex flex-wrap gap-x-6 gap-y-3">
@@ -392,6 +398,7 @@ export default function TaskDetailSheet({ task, onClose }: { task: TodoItem | nu
       <div className="px-2.5">
         <RepeatHistory repeat={repeat} />
       </div>
+      <TaskHistory task={shown} />
     </DetailSheet>
   );
 }

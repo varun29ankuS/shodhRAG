@@ -653,6 +653,9 @@ struct Inner {
     /// Runs the code review pane sent (a fix or a check, by run id): every edit and
     /// write they make asks, whatever the mode ([`OmpSession::mark_review_run`]).
     review_runs: Mutex<HashSet<String>>,
+    /// Runs that continue an answer Shodh closed during (by run id): every command they
+    /// run asks again, whatever the mode ([`OmpSession::mark_continued_run`]).
+    continued_runs: Mutex<HashSet<String>>,
     /// What the user limited the active run to.
     scope: Mutex<Arc<RunScope>>,
     next_id: AtomicU64,
@@ -1197,7 +1200,14 @@ impl Inner {
         if let (true, Some(map)) = (review_asks, approval.preview.as_object_mut()) {
             map.insert(REVIEW_RUN_KEY.to_string(), json!(REVIEW_RUN_NOTE));
         }
-        let auto = if review_asks {
+        // A continued answer's commands ask again: what was approved before Shodh closed
+        // is not taken for approved now.
+        let continued_asks =
+            continued_command_asks(lock(&self.continued_runs).contains(&run_id), &request.tool);
+        if let (true, Some(map)) = (continued_asks, approval.preview.as_object_mut()) {
+            map.insert(CONTINUED_RUN_KEY.to_string(), json!(CONTINUED_RUN_NOTE));
+        }
+        let auto = if review_asks || continued_asks {
             None
         } else {
             auto_approval(mode, &settings, request, &plan, target, &gate)
@@ -2635,6 +2645,7 @@ impl OmpSession {
             grounding,
             grounding_run: Mutex::new(GroundingRun::default()),
             review_runs: Mutex::new(HashSet::new()),
+            continued_runs: Mutex::new(HashSet::new()),
             scope: Mutex::new(Arc::new(RunScope::default())),
             next_id: AtomicU64::new(0),
             closing: AtomicBool::new(false),
@@ -2846,10 +2857,33 @@ impl OmpSession {
         }
         runs.insert(run_id.to_string());
     }
+
+    /// Mark run `run_id` (before it starts) as continuing an answer Shodh closed during:
+    /// every command it runs asks again, in every mode ([`continued_command_asks`]). Its
+    /// web calls ask through the run's private context, set by the app.
+    pub fn mark_continued_run(&self, run_id: &str) {
+        let mut runs = lock(&self.inner.continued_runs);
+        if runs.len() >= MAX_REVIEW_RUNS {
+            runs.clear();
+        }
+        runs.insert(run_id.to_string());
+    }
 }
 
 /// Review-run marks a session keeps before it forgets them.
 const MAX_REVIEW_RUNS: usize = 64;
+
+/// What a command of a continued answer says on its prompt.
+pub const CONTINUED_RUN_NOTE: &str = "Asks again: the answer was continued after Shodh closed.";
+
+/// Key of [`CONTINUED_RUN_NOTE`] on a prompt's preview.
+pub const CONTINUED_RUN_KEY: &str = "continued";
+
+/// Whether a guarded `tool` call of a run that continues an answer Shodh closed during
+/// (`continued_run`) must ask in every mode: commands always do.
+pub fn continued_command_asks(continued_run: bool, tool: &str) -> bool {
+    continued_run && tool == RUN_COMMAND
+}
 
 /// What an edit or write of a run sent from the code review pane says on its
 /// prompt: it asks whatever the mode.
@@ -3122,6 +3156,7 @@ mod tests {
             grounding,
             grounding_run: Mutex::new(GroundingRun::default()),
             review_runs: Mutex::new(HashSet::new()),
+            continued_runs: Mutex::new(HashSet::new()),
             scope: Mutex::new(Arc::new(RunScope::default())),
             next_id: AtomicU64::new(0),
             closing: AtomicBool::new(false),
@@ -6429,5 +6464,14 @@ mod tests {
         assert!(review_change_asks(true, "write"));
         assert!(!review_change_asks(true, RUN_COMMAND));
         assert!(!review_change_asks(false, "edit"));
+    }
+
+    #[test]
+    fn a_continued_answer_asks_again_before_any_command() {
+        assert!(continued_command_asks(true, RUN_COMMAND));
+        assert!(!continued_command_asks(false, RUN_COMMAND));
+        // Edits keep the mode's rule; only commands are re-asked.
+        assert!(!continued_command_asks(true, "edit"));
+        assert!(!continued_command_asks(true, "write"));
     }
 }

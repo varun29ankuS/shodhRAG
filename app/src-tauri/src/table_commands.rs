@@ -12,11 +12,14 @@
 //!   read by every run and hand fill at every check, so a change applies from the next
 //!   paper. Hand fills (`table_fill_paper`, `cell_refill`) count against it too. Raising
 //!   the cap wakes the jobs paused for it.
-//! - **Scheduler** ([`Scheduler`]). Once the app has loaded its model settings, and then
-//!   every [`SCHEDULER_TICK`], the due jobs are run; a job that cannot get a model is
-//!   paused (`model_unavailable`) and the user told once, and each check looks again, so
-//!   fixing the model, the key or the setting lets it go on within a minute.
-//!   `fill_start` runs its job at once and says honestly when it could not.
+//! - **Scheduler** ([`Scheduler`]). Its checks are a system job of the engine's one loop
+//!   ([`crate::system_jobs`], `table_tick`): the first once the app has loaded its model
+//!   settings, then whenever a job can go on ([`next_check_at`]: a pause's end, to the
+//!   second; another process's lease running out) and after every change of a fill. A
+//!   job that cannot get a model is paused (`model_unavailable`) and the user told once,
+//!   and it is looked at again within [`MODEL_RECHECK_SECS`] seconds, so fixing the model,
+//!   the key or the setting lets it go on within a minute. `fill_start` runs its job at
+//!   once and says honestly when it could not.
 //! - **Exit.** When the app exits, the jobs its runs hold are given back (queued, no run
 //!   token), so the next start takes them up at once instead of waiting out their lease.
 //! - **Hand fills** run one per row at a time, and never on a table whose fill is running,
@@ -33,7 +36,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::Serialize;
@@ -49,8 +51,9 @@ use shodh_rag::research::tables::calls::{
 };
 use shodh_rag::research::tables::fill::{Filler, Halt, PaperFill, PaperRequest};
 use shodh_rag::research::tables::jobs::{
-    cancel_job, job_hold, release_held_jobs, wake_paused_jobs, FillEstimate, FillJob, Hold,
-    JobOutcome, JobRunner, JobState, PauseReason, ResultSource, RunReport,
+    cancel_job, job_hold, next_check_at, release_held_jobs, wake_paused_jobs, FillEstimate,
+    FillJob, Hold, JobOutcome, JobRunner, JobState, PauseReason, ResultSource, RunReport,
+    MODEL_RECHECK_SECS,
 };
 use shodh_rag::research::tables::parse::{parse_cut_reply, parse_reply};
 use shodh_rag::research::tables::passages::PaperIndex;
@@ -73,12 +76,11 @@ use crate::notifications::{
     announce_table, once_a_day_key, table_outcome, OncePerDay, TableRunEnd,
 };
 use crate::research_commands::{ResearchCommandError, ResearchCommandResult, ResearchState};
+use crate::system_jobs::{SystemWork, WorkDone};
 
 /// Emitted with `{ "tableId": … }` after anything in a table changed, and after every
 /// run of its fill ends.
 pub const TABLE_CHANGED_EVENT: &str = "table_changed";
-/// How often the scheduler looks for due jobs (and at jobs waiting for a model).
-pub const SCHEDULER_TICK: Duration = Duration::from_secs(60);
 /// Longest id a command accepts (ids are UUIDs).
 pub const MAX_ID_CHARS: usize = 64;
 /// Most papers one `rows_add` adds.
@@ -887,29 +889,37 @@ impl TableState {
         })
     }
 
-    /// One check of the scheduler now.
-    async fn check(&self, app: &AppHandle) {
+    /// One check of the scheduler now, and when the next is due (`None`: when a fill
+    /// changes). `None` for the check when the tables are unavailable.
+    async fn check(&self, app: &AppHandle) -> (Option<usize>, Option<DateTime<Utc>>) {
         let store = match self.store().await {
             Ok(store) => store,
             Err(e) => {
                 tracing::debug!(error = %e.message, "evidence tables unavailable; no fill resumed");
-                return;
+                return (None, None);
             }
         };
-        if let Err(e) = self
+        let checked = match self
             .inner
             .scheduler
-            .tick(store, self, self.events(app))
+            .tick(store.clone(), self, self.events(app))
             .await
         {
-            tracing::warn!(error = %e, "evidence table fills could not be checked");
-        }
-    }
-
-    /// A check of the scheduler on a task of its own (after a setting changed).
-    fn check_soon(&self, app: &AppHandle) {
-        let (state, app) = (self.clone(), app.clone());
-        tauri::async_runtime::spawn(async move { state.check(&app).await });
+            Ok(tick) => Some(tick.due),
+            Err(e) => {
+                tracing::warn!(error = %e, "evidence table fills could not be checked");
+                None
+            }
+        };
+        let next = match next_check_at(store).await {
+            Ok(next) => next,
+            Err(e) => {
+                // Looked at again within a minute rather than never.
+                tracing::warn!(error = %e, "the next check of evidence table fills could not be read");
+                Some(Utc::now() + chrono::TimeDelta::seconds(MODEL_RECHECK_SECS))
+            }
+        };
+        (checked, next)
     }
 
     /// Holds the row for a fill by hand: refused while the table's fill runs
@@ -1048,6 +1058,8 @@ struct AppEvents {
 impl RunEvents for AppEvents {
     fn changed(&self, table_id: &str) {
         emit_changed(&self.app, table_id);
+        // A run ended or a job paused: the next check is planned from where they stand.
+        crate::engine_commands::due_now(&self.app, SystemWork::TableTick);
     }
 
     fn ended(&self, job: &FillJob, report: &RunReport, by_user: bool) {
@@ -1171,20 +1183,35 @@ pub async fn models_loaded(mut loaded: watch::Receiver<bool>) {
     let _ = loaded.wait_for(|done| *done).await;
 }
 
-/// Starts the scheduler: once the model settings are loaded (so a job is never run, and
-/// its calls counted, before the app knows its model and key), then every
-/// [`SCHEDULER_TICK`].
-pub fn spawn_scheduler(app: AppHandle) {
+/// The scheduler's first check, once the model settings are loaded (so a job is never
+/// run, and its calls counted, before the app knows its model and key). From then on its
+/// checks are due when a fill can go on ([`system_tick`]).
+pub fn first_check_when_loaded(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
-        let state = app.state::<TableState>().inner().clone();
+        let Some(state) = app.try_state::<TableState>().map(|s| s.inner().clone()) else {
+            return;
+        };
         models_loaded(state.inner.models_loaded.clone()).await;
-        let mut tick = tokio::time::interval(SCHEDULER_TICK);
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            tick.tick().await;
-            state.check(&app).await;
-        }
+        crate::engine_commands::due_now(&app, SystemWork::TableTick);
     });
+}
+
+/// One check of the scheduler (the `table_tick` system job), and when the next is due.
+/// Before the model settings are loaded nothing is checked: the first check comes once
+/// they are ([`first_check_when_loaded`]).
+pub async fn system_tick(app: &AppHandle) -> WorkDone {
+    let Some(state) = app.try_state::<TableState>().map(|s| s.inner().clone()) else {
+        return WorkDone::nothing(None);
+    };
+    if !*state.inner.models_loaded.borrow() {
+        return WorkDone::nothing(None);
+    }
+    match state.check(app).await {
+        (Some(due), next) if due > 0 => {
+            WorkDone::did(format!("{due} evidence table fills were due"), next)
+        }
+        (_, next) => WorkDone::nothing(next),
+    }
 }
 
 /// Gives back the jobs this process's runs hold, when the app exits: the next start
@@ -1787,7 +1814,7 @@ pub async fn tables_settings_set(
             emit_changed(&app, &job.table_id);
         }
         if !woken.is_empty() {
-            tables.check_soon(&app);
+            crate::engine_commands::due_now(&app, SystemWork::TableTick);
         }
     }
     Ok(settings_view(
@@ -1801,6 +1828,7 @@ mod tests {
     use super::*;
     use shodh_rag::research::tables::calls::DEFAULT_DAILY_CAP;
     use shodh_rag::research::tables::{CellValue, MAX_OPTIONS, MIN_OPTIONS};
+    use std::time::Duration;
 
     fn spec(kind: ColumnKind, options: usize) -> ColumnSpec {
         ColumnSpec {

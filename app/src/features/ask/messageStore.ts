@@ -197,10 +197,12 @@ export function startedAnswer(
   startedAtMs: number,
   fallback: Parameters<typeof initialTranscript>[2] = null,
   priorRunIds: readonly string[] = [],
+  continuesRunId: string | null = null,
 ): StartedAnswer {
   const transcript: TranscriptState = {
     ...initialTranscript(runId, startedAtMs, fallback),
     ...(priorRunIds.length > 0 ? { priorRunIds: [...priorRunIds] } : {}),
+    ...(continuesRunId ? { continuesRunId } : {}),
   };
   const message: ChatMessage = {
     id,

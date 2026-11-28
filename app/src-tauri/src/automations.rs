@@ -2315,7 +2315,7 @@ pub async fn automation_create(
     })
     .await
     .map_err(|e| e.to_string())??;
-    crate::engine_commands::wake_automations(&app);
+    crate::engine_commands::wake(&app);
     Ok(view)
 }
 
@@ -2330,7 +2330,7 @@ pub async fn automation_update(
     let view = tokio::task::spawn_blocking(move || automations.update(&id, draft))
         .await
         .map_err(|e| e.to_string())??;
-    crate::engine_commands::wake_automations(&app);
+    crate::engine_commands::wake(&app);
     Ok(view)
 }
 
@@ -2344,7 +2344,7 @@ pub async fn automation_delete(app: tauri::AppHandle, id: String) -> Result<bool
 #[tauri::command]
 pub async fn automation_pause(app: tauri::AppHandle, id: String) -> Result<AutomationView, String> {
     let view = service(&app).await?.set_enabled(&id, false).await?;
-    crate::engine_commands::wake_automations(&app);
+    crate::engine_commands::wake(&app);
     Ok(view)
 }
 
@@ -2355,7 +2355,7 @@ pub async fn automation_resume(
     id: String,
 ) -> Result<AutomationView, String> {
     let view = service(&app).await?.set_enabled(&id, true).await?;
-    crate::engine_commands::wake_automations(&app);
+    crate::engine_commands::wake(&app);
     Ok(view)
 }
 
@@ -2373,7 +2373,7 @@ pub async fn engine_approval_decide(
     decision: Decision,
 ) -> Result<RunView, String> {
     let view = service(&app).await?.decide(decision).await?;
-    crate::engine_commands::wake_automations(&app);
+    crate::engine_commands::wake(&app);
     Ok(view)
 }
 
@@ -2407,7 +2407,7 @@ pub async fn automations_model_set(
         })
         .map_err(|e| e.to_string())?;
     crate::app_settings::broadcast(&app, &settings);
-    crate::engine_commands::wake_automations(&app);
+    crate::engine_commands::wake(&app);
     Ok(settings)
 }
 
@@ -2435,7 +2435,7 @@ pub async fn dispatch_event(app: &tauri::AppHandle, trigger: EventTrigger, subje
     };
     match automations.event(&trigger, subjects).await {
         Ok(0) => {}
-        Ok(_) => crate::engine_commands::wake_automations(app),
+        Ok(_) => crate::engine_commands::wake(app),
         Err(e) => tracing::warn!(error = %e, "an event did not reach its automations"),
     }
 }

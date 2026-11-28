@@ -1886,7 +1886,7 @@ jobs:
             # and TOUR_THEMES; scripts/release/test/release-jobs.test.mjs keeps them equal).
             # After a failure Wait-Line returns at once and no picture is taken.
             $tourViews = 'ask', 'artifacts', 'library', 'workspaces', 'connectors', 'tasks', 'automations', 'activity', 'settings'
-            $tourScenes = 'conversation', 'run-plan', 'run-progress', 'run-summary', 'build-card'
+            $tourScenes = 'conversation', 'run-plan', 'run-progress', 'run-stopped', 'run-summary', 'build-card', 'settings-background', 'code-map', 'task-sheet'
             $tourThemes = 'dark', 'light'
             $tourShots = 0
             foreach ($theme in $tourThemes) {

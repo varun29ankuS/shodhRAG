@@ -42,6 +42,9 @@ function isStatus(value: unknown): value is BackgroundStatus {
  * Settings → General: how Shodh runs when its window is closed. Only the
  * user can change these (the assistant has no tool for them).
  */
+/** The part's root (the launch tour scrolls to it). */
+export const BACKGROUND_SETTINGS = 'background-settings';
+
 export default function BackgroundSettings() {
   const [status, setStatus] = useState<BackgroundStatus | null>(null);
   const [saving, setSaving] = useState(false);
@@ -80,7 +83,7 @@ export default function BackgroundSettings() {
   }
 
   return (
-    <div className="flex flex-col gap-5">
+    <div className="flex flex-col gap-5" data-testid={BACKGROUND_SETTINGS}>
       <SwitchRow
         label="Keep running in the tray when the window is closed"
         description={'Closing hides to the tray, so reminders still ring.'}
@@ -120,6 +123,7 @@ export default function BackgroundSettings() {
           ))}
         </select>
       </div>
+      <p className="m-0 text-small text-shodh-text-muted">{tr('settings.backgroundSettings.scheduledWorkRunsWhileShodh')}</p>
       {status.paused && (
         <p className="m-0 text-small text-shodh-warning" role="status">
           {tr('settings.backgroundSettings.backgroundWorkIsPausedFrom')}

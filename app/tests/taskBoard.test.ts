@@ -52,37 +52,44 @@ test('the board shows only its workspace, one column per backend status', () => 
     ],
     'ws-1',
   );
-  assert.deepEqual(columns.map(c => c.status), ['pending', 'in_progress', 'completed']);
-  assert.deepEqual(columns.map(c => c.label), ['To do', 'In progress', 'Done']);
-  assert.deepEqual(columns.map(c => c.tasks.map(t => t.id)), [['a'], ['b'], ['c']]);
+  assert.deepEqual(columns.map(c => c.status), ['backlog', 'pending', 'in_progress', 'completed', 'canceled']);
+  assert.deepEqual(columns.map(c => c.label), ['Backlog', 'Todo', 'In progress', 'Done', 'Canceled']);
+  assert.deepEqual(columns.map(c => c.tasks.map(t => t.id)), [[], ['a'], ['b'], ['c'], []]);
 });
 
-test('a status the board does not know shows under To do, never hidden', () => {
+test('a status the board does not know shows under Todo, never hidden', () => {
   assert.equal(columnOf({ status: 'waiting' }), 'pending');
   assert.equal(columnOf({ status: 'in_progress' }), 'in_progress');
-  const [todo] = boardColumns([task('x', { status: 'waiting' })], 'ws-1');
+  assert.equal(columnOf({ status: 'backlog' }), 'backlog');
+  assert.equal(columnOf({ status: 'canceled' }), 'canceled');
+  const todo = boardColumns([task('x', { status: 'waiting' })], 'ws-1').find(c => c.status === 'pending')!;
   assert.deepEqual(todo.tasks.map(t => t.id), ['x']);
 });
 
 test('cards are ordered by due date, then priority, then newest', () => {
-  const [todo] = boardColumns(
+  const todo = boardColumns(
     [
       task('later', { dueDate: '2026-10-20' }),
       task('soon', { dueDate: '2026-10-05' }),
       task('low', { priority: 'low' }),
       task('high-old', { priority: 'high', createdAt: '2026-09-01T00:00:00Z' }),
       task('high-new', { priority: 'high', createdAt: '2026-09-02T00:00:00Z' }),
+      task('urgent', { priority: 'urgent' }),
+      task('unsorted', { priority: 'none' }),
     ],
     'ws-1',
-  );
-  assert.deepEqual(todo.tasks.map(t => t.id), ['soon', 'later', 'high-new', 'high-old', 'low']);
+  ).find(c => c.status === 'pending')!;
+  // Urgent first, No priority last, as Linear sorts them.
+  assert.deepEqual(todo.tasks.map(t => t.id), ['soon', 'later', 'urgent', 'high-new', 'high-old', 'low', 'unsorted']);
 });
 
 test('the keyboard moves a card one column at a time and stops at the edges', () => {
   assert.equal(adjacentStatus('pending', 1), 'in_progress');
   assert.equal(adjacentStatus('in_progress', 1), 'completed');
-  assert.equal(adjacentStatus('completed', 1), null);
-  assert.equal(adjacentStatus('pending', -1), null);
+  assert.equal(adjacentStatus('completed', 1), 'canceled');
+  assert.equal(adjacentStatus('canceled', 1), null);
+  assert.equal(adjacentStatus('pending', -1), 'backlog');
+  assert.equal(adjacentStatus('backlog', -1), null);
   assert.equal(adjacentStatus('in_progress', -1), 'pending');
   assert.equal(adjacentStatus('waiting', 1), null);
 });

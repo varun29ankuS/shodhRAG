@@ -31,3 +31,31 @@ export function replayedContent(message: ReplayedMessage): string {
     ? composeQuestion(message.content, message.attachedContext)
     : message.content;
 }
+
+/** The parts of a message `withContinuations` reads. */
+interface ContinuedMessage {
+  role: string;
+  content: string;
+  transcript?: { runId?: string; continuesRunId?: string } | null;
+}
+
+/**
+ * Messages as the conversation reads them: an answer Shodh closed during and the answer
+ * that continued it (Continue) are one answer, its text then the rest, in the continued
+ * answer's place. The stopped answer stays on the screen; only what is replayed joins.
+ */
+export function withContinuations<M extends ContinuedMessage>(messages: readonly M[]): M[] {
+  const out: M[] = [];
+  for (const message of messages) {
+    const continues = message.role === 'assistant' ? message.transcript?.continuesRunId : undefined;
+    const previous = out[out.length - 1];
+    if (continues && previous && previous.role === 'assistant' && previous.transcript?.runId === continues) {
+      const before = previous.content.trimEnd();
+      const rest = message.content.trimStart();
+      out[out.length - 1] = { ...message, content: before && rest ? `${before} ${rest}` : before || rest };
+      continue;
+    }
+    out.push(message);
+  }
+  return out;
+}

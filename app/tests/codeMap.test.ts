@@ -8,6 +8,7 @@ import {
   codeMapChipLabel,
   codeMapDetails,
   codeMapTone,
+  nightlyLine,
   readCodeMapView,
   sinceText,
   symbolRow,
@@ -63,6 +64,23 @@ test('the details say what is indexed, when, and what the last check did', () =>
   assert.deepEqual(codeMapDetails(view({ map: null, lastRun: null }), NOW), ['Nothing indexed yet.']);
   const failed = codeMapDetails(view({ state: 'failed', error: 'disk full' }), NOW);
   assert.equal(failed[failed.length - 1], 'Error: disk full');
+});
+
+test('the details say when the nightly refresh last ran', () => {
+  const twoAm = new Date(2026, 10, 8, 2, 0);
+  const morning = new Date(2026, 10, 8, 9, 30);
+  const time = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(twoAm);
+  assert.equal(nightlyLine(view({ nightly: twoAm.toISOString() }), morning), `Refreshed nightly · last ${time}`);
+  assert.equal(time.replace(/\D/g, ''), '0200', 'two in the morning, on a 24-hour clock');
+  assert.equal(nightlyLine(view({ nightly: null }), morning), 'Refreshed nightly · not yet');
+  const days = new Date(2026, 10, 10, 9, 30);
+  const day = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short' }).format(twoAm);
+  assert.equal(nightlyLine(view({ nightly: twoAm.toISOString() }), days), `Refreshed nightly · last ${day}, ${time}`);
+  // A view that does not say has no line.
+  assert.equal(nightlyLine(view(), morning), null);
+  const lines = codeMapDetails(view({ nightly: twoAm.toISOString(), state: 'failed', error: 'disk full' }), morning);
+  assert.equal(lines[lines.length - 2], `Refreshed nightly · last ${time}`);
+  assert.equal(lines[lines.length - 1], 'Error: disk full', 'the error stays last');
 });
 
 test('times read in plain words', () => {

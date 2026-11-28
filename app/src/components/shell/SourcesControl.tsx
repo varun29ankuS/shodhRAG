@@ -54,7 +54,7 @@ export function SourcesControl({ label, title, onOpen, searchAll }: SourcesContr
         )}
       >
         <Database className="w-3 h-3 shrink-0" aria-hidden="true" />
-        <span className="truncate max-w-[220px]">{label}</span>
+        <span className="truncate" title={label}>{label}</span>
       </button>
     </div>
   );

@@ -15,16 +15,70 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+use std::sync::Arc;
+
 use crate::durable_file::{self, Loaded, Origin};
 use crate::store_notices::{self, NoticeKind, StoreNotice};
+use crate::task_db::{Actor, TaskDb};
 
 pub const CALENDAR_FILE: &str = "calendar_data.json";
 
-/// Task priorities the calendar shows.
-pub const PRIORITIES: [&str; 3] = ["low", "medium", "high"];
+/// Task priorities, Linear's five: no priority, urgent, high, medium, low.
+pub const PRIORITIES: [&str; 5] = ["none", "urgent", "high", "medium", "low"];
 
-/// Task states the calendar shows.
-pub const STATUSES: [&str; 3] = ["pending", "in_progress", "completed"];
+/// Task states: Backlog, Todo (`pending`, the word older clients read), In progress, Done
+/// (`completed`) and Canceled.
+pub const STATUSES: [&str; 5] = ["backlog", "pending", "in_progress", "completed", "canceled"];
+
+/// Whether a task in `status` is closed: done or canceled. A closed task's reminder never
+/// rings.
+pub fn is_closed(status: &str) -> bool {
+    matches!(status, "completed" | "canceled")
+}
+
+/// Who a task is for: the user, a person (a name; no one is told), or Shodh.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OwnerKind {
+    #[default]
+    Me,
+    Person,
+    Shodh,
+}
+
+impl OwnerKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Me => "me",
+            Self::Person => "person",
+            Self::Shodh => "shodh",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "me" => Some(Self::Me),
+            "person" => Some(Self::Person),
+            "shodh" => Some(Self::Shodh),
+            _ => None,
+        }
+    }
+}
+
+/// A task's owner (its assignee).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Owner {
+    pub kind: OwnerKind,
+    /// A person's name.
+    #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
+}
+
+impl Owner {
+    pub fn is_me(&self) -> bool {
+        self.kind == OwnerKind::Me
+    }
+}
 
 /// Serialises every read-modify-write of the calendar file.
 static CALENDAR_LOCK: Mutex<()> = Mutex::new(());
@@ -51,6 +105,8 @@ pub enum CalendarError {
     },
     #[error("The calendar could not be read: {message}")]
     Unreadable { path: PathBuf, message: String },
+    #[error("Tasks could not be saved: {0}")]
+    Store(String),
 }
 
 pub type CalendarResult<T> = Result<T, CalendarError>;
@@ -111,6 +167,19 @@ pub struct TodoItem {
     /// (`YYYY-MM-DDTHH:MM`) instead of at `reminder`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snoozed_until: Option<String>,
+    /// The task's id in its workspace (`THE-12`), given when it is first stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    /// The project the task is in, when it has a workspace and a project (its name is
+    /// `project`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    /// The task this one is a sub-issue of, in the same workspace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
+    /// Who the task is for; absent means the user.
+    #[serde(default, skip_serializing_if = "Owner::is_me")]
+    pub owner: Owner,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -142,6 +211,10 @@ pub struct CalendarEvent {
     pub updated_at: Option<String>,
 }
 
+/// The priority of a task made without one.
+pub const NEW_TASK_PRIORITY: &str = "none";
+
+/// The priority of a stored task written without one (before priorities could be absent).
 fn default_priority() -> String {
     "medium".to_string()
 }
@@ -324,17 +397,92 @@ fn optional_text(value: Option<String>) -> Option<String> {
 
 // ── File access ──────────────────────────────────────────────────
 
-/// The calendar file of one app data directory.
+/// Where the calendar's original file is kept once its tasks moved to `shodh.db`.
+pub const PRE_TASKS_FILE: &str = "calendar_data.pre-tasks.json";
+
+/// The calendar of one app data directory: its events in the calendar file, its tasks in
+/// `shodh.db` once the app gave it the database ([`crate::task_db::use_database`]), else
+/// in the file too.
 #[derive(Debug, Clone)]
 pub struct CalendarStore {
     path: PathBuf,
+    tasks: Option<Arc<TaskDb>>,
 }
 
 impl CalendarStore {
     pub fn in_dir(data_dir: &Path) -> Self {
         Self {
             path: data_dir.join(CALENDAR_FILE),
+            tasks: crate::task_db::database_of(data_dir),
         }
+    }
+
+    /// The calendar of `data_dir`, its tasks in `tasks` (the app registers its database
+    /// instead, [`crate::task_db::use_database`]).
+    #[cfg(test)]
+    pub fn with_tasks(data_dir: &Path, tasks: Arc<TaskDb>) -> Self {
+        Self {
+            path: data_dir.join(CALENDAR_FILE),
+            tasks: Some(tasks),
+        }
+    }
+
+    /// The task database, when tasks are kept there.
+    pub fn task_db(&self) -> Option<&Arc<TaskDb>> {
+        self.tasks.as_ref()
+    }
+
+    /// The calendar as stored, and where its tasks are: the file's events, and its tasks
+    /// from the database. Tasks still in the file (an older version's, or written while
+    /// the database could not be opened) are imported first; the original file is kept
+    /// as [`PRE_TASKS_FILE`], and the tasks leave the file only once they are stored. An
+    /// import that fails leaves the file as it is, says so, and keeps the tasks there.
+    fn read_all(&self) -> CalendarResult<(Loaded<CalendarData>, Option<Arc<TaskDb>>)> {
+        let mut loaded = self.read_unlocked()?;
+        let Some(db) = self.tasks.clone() else {
+            return Ok((loaded, None));
+        };
+        if !loaded.value.tasks.is_empty() {
+            if let Err(e) = self.import_file_tasks(&db, &loaded) {
+                tracing::warn!(error = %e, "tasks could not move to the app database; they stay in the calendar file");
+                store_notices::report(StoreNotice::new(
+                    "calendar",
+                    NoticeKind::Unreadable,
+                    &self.path,
+                    "Tasks stay in the calendar file for now",
+                    format!("{e}. They are moved again at the next start; nothing is lost."),
+                ));
+                return Ok((loaded, None));
+            }
+        }
+        loaded.value.tasks = db.load().map_err(|message| CalendarError::Unreadable {
+            path: self.path.clone(),
+            message,
+        })?;
+        Ok((loaded, Some(db)))
+    }
+
+    fn import_file_tasks(&self, db: &TaskDb, loaded: &Loaded<CalendarData>) -> CalendarResult<()> {
+        let kept = self.path.with_file_name(PRE_TASKS_FILE);
+        if !kept.exists() && self.path.exists() {
+            std::fs::copy(&self.path, &kept).map_err(|source| CalendarError::Io {
+                path: kept.clone(),
+                source,
+            })?;
+        }
+        let written = db
+            .import(&loaded.value.tasks)
+            .map_err(CalendarError::Store)?;
+        tracing::info!(
+            tasks = loaded.value.tasks.len(),
+            written,
+            "tasks moved to the app database"
+        );
+        let events_only = CalendarData {
+            tasks: Vec::new(),
+            events: loaded.value.events.clone(),
+        };
+        self.write_unlocked(&events_only, &loaded.origin)
     }
 
     /// The calendar and the file it came from: the backup when the file is
@@ -388,22 +536,49 @@ impl CalendarStore {
     /// Current tasks and events.
     pub fn load(&self) -> CalendarResult<CalendarData> {
         let _guard = CALENDAR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        self.read_unlocked().map(|loaded| loaded.value)
+        self.read_all().map(|(loaded, _)| loaded.value)
     }
 
-    /// Apply `change` to the stored data and save it. Nothing is written
-    /// when `change` fails.
+    /// Apply `change` to the stored data and save it, as the user's change. Nothing is
+    /// written when `change` fails.
     pub fn update<R>(
         &self,
         change: impl FnOnce(&mut CalendarData) -> CalendarResult<R>,
     ) -> CalendarResult<R> {
+        self.update_as(&Actor::user(), change)
+    }
+
+    /// [`Self::update`] as `actor`'s change: each task it changes records who did it.
+    pub fn update_as<R>(
+        &self,
+        actor: &Actor,
+        change: impl FnOnce(&mut CalendarData) -> CalendarResult<R>,
+    ) -> CalendarResult<R> {
         let _guard = CALENDAR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let Loaded {
-            value: mut data,
-            origin,
-        } = self.read_unlocked()?;
+        let (
+            Loaded {
+                value: mut data,
+                origin,
+            },
+            db,
+        ) = self.read_all()?;
+        let Some(db) = db else {
+            let result = change(&mut data)?;
+            self.write_unlocked(&data, &origin)?;
+            return Ok(result);
+        };
+        let tasks_before = data.tasks.clone();
+        let events_before = data.events.clone();
         let result = change(&mut data)?;
-        self.write_unlocked(&data, &origin)?;
+        db.save(&tasks_before, &mut data.tasks, actor)
+            .map_err(CalendarError::Store)?;
+        if data.events != events_before {
+            let events_only = CalendarData {
+                tasks: Vec::new(),
+                events: data.events,
+            };
+            self.write_unlocked(&events_only, &origin)?;
+        }
         Ok(result)
     }
 }
@@ -455,6 +630,10 @@ pub struct TaskPatch {
     pub reminder: Option<Option<String>>,
     /// Replaces the subtask list.
     pub subtasks: Option<Vec<SubtaskSpec>>,
+    /// Makes the task a sub-issue of another of its workspace (`Some(None)`: of none).
+    pub parent_id: Option<Option<String>>,
+    /// Who the task is for.
+    pub owner: Option<Owner>,
 }
 
 impl TaskPatch {
@@ -588,9 +767,9 @@ pub fn apply_task_patch(
         task.priority = v;
     }
     if let Some(v) = status {
-        if v == "completed" && task.status != "completed" {
+        if is_closed(&v) && !is_closed(&task.status) {
             task.completed_at = Some(now());
-        } else if v != "completed" {
+        } else if !is_closed(&v) {
             task.completed_at = None;
         }
         task.status = v;
@@ -614,6 +793,19 @@ pub fn apply_task_patch(
     }
     if let Some(v) = subtasks {
         task.subtasks = v;
+    }
+    if let Some(v) = &patch.parent_id {
+        task.parent_id = optional_text(v.clone());
+    }
+    if let Some(v) = &patch.owner {
+        task.owner = Owner {
+            kind: v.kind,
+            reference: if v.kind == OwnerKind::Person {
+                optional_text(v.reference.clone())
+            } else {
+                None
+            },
+        };
     }
 
     let mut changes = Vec::new();
@@ -644,6 +836,8 @@ pub fn apply_task_patch(
         subtasks_json(&before.subtasks),
         subtasks_json(&task.subtasks),
     );
+    diff("parent", json!(before.parent_id), json!(task.parent_id));
+    diff("owner", json!(before.owner), json!(task.owner));
     if !changes.is_empty() {
         task.updated_at = now();
     }
@@ -681,9 +875,11 @@ impl CalendarData {
 
     pub fn insert_task(&mut self, new: NewTask) -> CalendarResult<TodoItem> {
         let title = check_title(&new.title)?;
+        // A new task starts at No priority; a stored task without one is Medium, as it
+        // always was ([`default_priority`]).
         let priority = match new.priority.as_deref() {
             Some(p) => check_one_of("priority", p, &PRIORITIES)?,
-            None => default_priority(),
+            None => NEW_TASK_PRIORITY.to_string(),
         };
         let due_date = new
             .due_date
@@ -711,6 +907,10 @@ impl CalendarData {
             reminder,
             reminder_fired_at: None,
             snoozed_until: None,
+            key: None,
+            project_id: None,
+            parent_id: None,
+            owner: Owner::default(),
         };
         self.tasks.push(task.clone());
         Ok(task)
@@ -750,15 +950,93 @@ impl CalendarData {
     }
 
     /// Apply `patch` to task `id`; returns the task before and after.
+    ///
+    /// A task moved to another workspace leaves its project and its parent behind (unless
+    /// the patch gives new ones), and its sub-issues stay where they were, without it.
     pub fn patch_task(
         &mut self,
         id: &str,
         patch: &TaskPatch,
     ) -> CalendarResult<(TodoItem, TodoItem, Vec<FieldChange>)> {
+        let current = self.task(id)?.clone();
+        let workspace_after = match &patch.workspace_id {
+            Some(v) => optional_text(v.clone()),
+            None => current.workspace_id.clone(),
+        };
+        if let Some(Some(parent)) = &patch.parent_id {
+            self.check_parent(id, parent.trim(), workspace_after.as_deref())?;
+        }
         let task = self.task_mut(id)?;
         let before = task.clone();
-        let changes = apply_task_patch(task, patch)?;
-        Ok((before, task.clone(), changes))
+        let mut changes = apply_task_patch(task, patch)?;
+        if before.workspace_id != task.workspace_id {
+            if patch.project.is_none() && task.project.is_some() {
+                changes.push(FieldChange {
+                    field: "project",
+                    before: json!(task.project),
+                    after: Value::Null,
+                });
+                task.project = None;
+                task.project_id = None;
+            }
+            if patch.parent_id.is_none() && task.parent_id.is_some() {
+                changes.push(FieldChange {
+                    field: "parent",
+                    before: json!(task.parent_id),
+                    after: Value::Null,
+                });
+                task.parent_id = None;
+            }
+        }
+        let after = task.clone();
+        if before.workspace_id != after.workspace_id {
+            let stamp = now();
+            for child in self.tasks.iter_mut().filter(|t| {
+                t.parent_id.as_deref() == Some(id) && t.workspace_id != after.workspace_id
+            }) {
+                child.parent_id = None;
+                child.updated_at = stamp.clone();
+            }
+        }
+        Ok((before, after, changes))
+    }
+
+    /// Whether task `id` may be a sub-issue of `parent`, in `workspace`: the parent exists,
+    /// is in the same workspace, and is not the task or one of its sub-issues.
+    fn check_parent(&self, id: &str, parent: &str, workspace: Option<&str>) -> CalendarResult<()> {
+        let title = |task_id: &str| {
+            self.tasks
+                .iter()
+                .find(|t| t.id == task_id)
+                .map_or_else(|| task_id.to_string(), |t| t.title.clone())
+        };
+        let found = self.task(parent)?;
+        if found.workspace_id.as_deref() != workspace {
+            return Err(CalendarError::Invalid(format!(
+                "A sub-issue is in its parent's workspace: {} is in another one.",
+                found.title
+            )));
+        }
+        let mut at = Some(parent.to_string());
+        let mut steps = 0;
+        while let Some(current) = at {
+            if current == id {
+                return Err(CalendarError::Invalid(format!(
+                    "That would make {} a sub-issue of itself.",
+                    title(id)
+                )));
+            }
+            steps += 1;
+            if steps > self.tasks.len() {
+                break;
+            }
+            at = self
+                .tasks
+                .iter()
+                .find(|t| t.id == current)
+                .and_then(|t| t.parent_id.clone());
+        }
+        Ok(())
     }
 
     /// Take the tasks of a deleted workspace out of it. The tasks are kept,
@@ -769,7 +1047,9 @@ impl CalendarData {
             .iter_mut()
             .filter(|t| t.workspace_id.as_deref() == Some(workspace_id))
             .map(|t| {
+                // Its projects go with the workspace; the names stay with the tasks.
                 t.workspace_id = None;
+                t.project_id = None;
                 t.updated_at = stamp.clone();
                 t.clone()
             })

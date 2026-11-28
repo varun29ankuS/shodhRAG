@@ -1183,6 +1183,185 @@ fn end_steps(s: &mut Map<String, Value>, summary: &str, at_ms: f64) {
     }
 }
 
+// ── Continue ─────────────────────────────────────────────────────
+
+/// Most steps a continuation lists.
+const MAX_CONTINUED_STEPS: usize = 30;
+/// Most characters of one step's line in a continuation.
+const MAX_CONTINUED_STEP_CHARS: usize = 300;
+/// Most characters of the answer so far a continuation carries: its end, where the
+/// answer goes on.
+const MAX_CONTINUED_TEXT_CHARS: usize = 12_000;
+
+/// What a run that continues an answer Shodh closed during is given: the note put in
+/// front of its question, and the stopped run's passages, under their numbers.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Continuation {
+    pub note: String,
+    pub passages: Vec<Value>,
+}
+
+/// Whether a stored transcript is of an answer Shodh closed during: still live as it was
+/// saved (the window shows it stopped), or restored as stopped by the close and saved
+/// again. One closed while only its check ran had its answer written: it is not one.
+pub fn stopped_by_close(stored: &Value) -> bool {
+    let status = stored.get("status").and_then(Value::as_str);
+    let checking = stored.get("savedWhileChecking") == Some(&Value::Bool(true));
+    match status {
+        Some("starting" | "running") => !checking,
+        Some("aborted") => stored.get("stoppedByClose") == Some(&Value::Bool(true)),
+        _ => false,
+    }
+}
+
+/// `text` cut to its first `max` characters.
+fn clipped(text: &str, max: usize) -> String {
+    let text = text.trim();
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(max).collect();
+    format!("{}…", kept.trim_end())
+}
+
+/// The last `max` characters of `text`.
+fn ending(text: &str, max: usize) -> String {
+    let count = text.chars().count();
+    if count <= max {
+        return text.to_string();
+    }
+    let kept: String = text.chars().skip(count - max).collect();
+    format!("…{}", kept.trim_start())
+}
+
+/// One step as a continuation lists it: what it did, with what, and what it gave.
+fn step_line(step: &Value, with_result: bool) -> String {
+    let label = step
+        .get("label")
+        .and_then(Value::as_str)
+        .unwrap_or("A step");
+    let tool = step.get("tool").and_then(Value::as_str).unwrap_or("");
+    let args = step
+        .get("args")
+        .filter(|a| a.as_object().is_some_and(|o| !o.is_empty()))
+        .map(Value::to_string);
+    let mut line = match args {
+        Some(args) => format!("{label} ({tool} {args})"),
+        None => format!("{label} ({tool})"),
+    };
+    if with_result {
+        if let Some(summary) = step.get("summary").and_then(Value::as_str) {
+            if !summary.trim().is_empty() {
+                line = format!("{line}: {}", summary.trim());
+            }
+        }
+    }
+    format!("- {}", clipped(&line, MAX_CONTINUED_STEP_CHARS))
+}
+
+/// What the run of `stored` (an answer Shodh closed during) had, for the run that
+/// continues it: the steps that finished, with their results, are kept and not run
+/// again; the step that was running is run again if it is still needed (anything that
+/// needs the user's approval asks again); the text written so far is carried, and the
+/// answer goes on from its last words; its passages keep their numbers.
+///
+/// `earlier` are the answers `stored` itself went on from, oldest first (Shodh closed
+/// during a continuation too): what they had is kept the same way, their text first.
+pub fn continuation(earlier: &[&Value], stored: &Value) -> Continuation {
+    let mut finished: Vec<String> = Vec::new();
+    let mut failed: Vec<String> = Vec::new();
+    let mut unfinished: Vec<String> = Vec::new();
+    let mut passages: Vec<Value> = Vec::new();
+    let mut texts: Vec<String> = Vec::new();
+    let links = earlier.len() + 1;
+    for (i, link) in earlier.iter().copied().chain([stored]).enumerate() {
+        let last = i + 1 == links;
+        let steps = link.get("steps").and_then(Value::as_object);
+        let interrupted: Vec<&str> = link
+            .get("interruptedStepIds")
+            .and_then(Value::as_array)
+            .map(|ids| ids.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        let blocks = link.get("blocks").and_then(Value::as_array);
+        for block in blocks.into_iter().flatten() {
+            if block.get("kind").and_then(Value::as_str) != Some("step") {
+                continue;
+            }
+            let Some(id) = block.get("stepId").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(step) = steps.and_then(|s| s.get(id)) else {
+                continue;
+            };
+            let status = step.get("status").and_then(Value::as_str).unwrap_or("");
+            if interrupted.contains(&id) || matches!(status, "running" | "awaiting_approval") {
+                // An earlier link's unfinished step was the next link's to run again.
+                if last {
+                    unfinished.push(step_line(step, false));
+                }
+            } else if status == "done" {
+                finished.push(step_line(step, true));
+            } else if status == "failed" {
+                failed.push(step_line(step, true));
+            }
+        }
+        if let Some(found) = link.get("passages").and_then(Value::as_array) {
+            merge_passages(&mut passages, found.clone());
+        }
+        let text = Transcript::new(link).answer_text();
+        if !text.trim().is_empty() {
+            texts.push(text.trim().to_string());
+        }
+    }
+    let text = texts.join(" ");
+
+    let mut note = vec![
+        "Shodh closed while you were answering this question. Go on from where your answer \
+         stopped; do not start again."
+            .to_string(),
+    ];
+    if finished.is_empty() {
+        note.push("No step had finished.".to_string());
+    } else {
+        note.push(
+            "Steps that finished (their results are kept; do not run them again):".to_string(),
+        );
+        note.extend(finished.into_iter().take(MAX_CONTINUED_STEPS));
+    }
+    if !failed.is_empty() {
+        note.push("Steps that did not work:".to_string());
+        note.extend(failed.into_iter().take(MAX_CONTINUED_STEPS));
+    }
+    if !unfinished.is_empty() {
+        note.push(
+            "Steps that were running when Shodh closed and did not finish (run them again if \
+             they are still needed; anything that needs the user's approval asks again):"
+                .to_string(),
+        );
+        note.extend(unfinished.into_iter().take(MAX_CONTINUED_STEPS));
+    }
+    if text.trim().is_empty() {
+        note.push("No part of the answer had been written.".to_string());
+    } else {
+        note.push(format!(
+            "The answer written so far (go on from its last words; do not repeat it):\n\
+             \"\"\"\n{}\n\"\"\"",
+            ending(text.trim(), MAX_CONTINUED_TEXT_CHARS)
+        ));
+    }
+    if !passages.is_empty() {
+        note.push(
+            "The passages those steps found are in this message under their numbers: cite them \
+             as [n], as before."
+                .to_string(),
+        );
+    }
+    Continuation {
+        note: note.join("\n"),
+        passages,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1341,5 +1520,148 @@ mod tests {
         // A tail never starts inside a surrogate pair.
         let emoji = format!("x{}", "\u{1F600}".repeat(3));
         assert_eq!(tail(&emoji, 3), "\u{1F600}");
+    }
+
+    /// The transcript of fixture `name` as it was saved, before the window read it.
+    fn saved(name: &str) -> Value {
+        let text = std::fs::read_to_string(fixtures_dir().join(name)).expect("a readable fixture");
+        let fixture: Value = serde_json::from_str(&text).expect("a JSON fixture");
+        fixture["expected"].clone()
+    }
+
+    #[test]
+    fn a_continuation_carries_the_finished_steps_their_passages_and_the_text_so_far() {
+        // Shodh closed mid-answer: one search done, part of the answer written, a page
+        // being read (the same fixture the window restores as stopped).
+        let stored = saved("06-closed-mid-answer.json");
+        assert!(stopped_by_close(&stored));
+        let continued = continuation(&[], &stored);
+        let note = &continued.note;
+        assert!(note.starts_with("Shodh closed while you were answering this question."));
+        assert!(
+            note.contains(
+                "- Searching your documents (search_documents {\"query\":\"notice period and \
+                 renewal fee\"}): 2 passages"
+            ),
+            "the finished search, with what it found: {note}"
+        );
+        assert!(note.contains("do not run them again"));
+        assert!(
+            note.contains(
+                "did not finish (run them again if they are still needed; anything that needs \
+                 the user's approval asks again):\n- Reading a web page (fetch_url \
+                 {\"url\":\"https://example.com/fees\"})"
+            ),
+            "the step that was running is run again: {note}"
+        );
+        assert!(
+            note.contains(
+                "\"\"\"\nThe notice period is 60 days [1]. Renewal follows the landlord's fee \
+                 schedule [2], which\n\"\"\""
+            ),
+            "the text written so far: {note}"
+        );
+        assert!(note.contains("cite them as [n], as before"));
+        let numbers: Vec<u64> = continued
+            .passages
+            .iter()
+            .filter_map(|p| p["n"].as_u64())
+            .collect();
+        assert_eq!(numbers, [1, 2], "the passages keep their numbers");
+        assert_eq!(
+            continued.passages[0]["text"],
+            "Either party may end the lease with 60 days notice."
+        );
+    }
+
+    #[test]
+    fn a_restored_and_saved_again_answer_continues_the_same_and_others_do_not() {
+        let stored = saved("06-closed-mid-answer.json");
+        // As the window restores it, then saves it again.
+        let mut restored = stored.clone();
+        restored["status"] = json!("aborted");
+        restored["error"] = json!("Stopped when Shodh closed");
+        restored["stoppedByClose"] = json!(true);
+        restored["interruptedStepIds"] = json!(["step-2"]);
+        restored["steps"]["step-2"]["status"] = json!("failed");
+        restored["steps"]["step-2"]["summary"] = json!("Interrupted");
+        assert!(stopped_by_close(&restored));
+        assert_eq!(continuation(&[], &restored), continuation(&[], &stored));
+        // Stopped by the user, closed while only its check ran, or finished: not continued.
+        let mut by_user = restored.clone();
+        by_user
+            .as_object_mut()
+            .expect("an object")
+            .remove("stoppedByClose");
+        assert!(!stopped_by_close(&by_user));
+        let mut checking = stored.clone();
+        checking["savedWhileChecking"] = json!(true);
+        assert!(!stopped_by_close(&checking));
+        let finished = saved("01-cited-answer.json");
+        assert!(!stopped_by_close(&finished));
+    }
+
+    #[test]
+    fn a_continuation_closed_during_keeps_what_the_first_answer_had_too() {
+        let first = saved("06-closed-mid-answer.json");
+        // The continuation read the page again, wrote the rest of a sentence, then Shodh
+        // closed during its next search.
+        let second = json!({
+            "runId": "run-7",
+            "status": "running",
+            "continuesRunId": "run-6",
+            "blocks": [
+                { "kind": "step", "stepId": "c1" },
+                { "kind": "text", "id": "t1", "text": "is published each January [3]." },
+                { "kind": "step", "stepId": "c2" }
+            ],
+            "steps": {
+                "c1": { "id": "c1", "tool": "fetch_url", "label": "Reading a web page",
+                        "args": { "url": "https://example.com/fees" }, "status": "done",
+                        "summary": "1 page" },
+                "c2": { "id": "c2", "tool": "search_documents", "label": "Searching your documents",
+                        "args": { "query": "deposit" }, "status": "running", "summary": null }
+            },
+            "passages": [{ "n": 3, "file": "Fees", "path": "https://example.com/fees",
+                           "page": null, "text": "Fees are published each January.", "web": true }]
+        });
+        let continued = continuation(&[&first], &second);
+        let note = &continued.note;
+        assert!(
+            note.contains("which is published each January [3]."),
+            "{note}"
+        );
+        assert!(
+            note.contains("2 passages"),
+            "the first answer's search: {note}"
+        );
+        assert!(note.contains(
+            "- Reading a web page (fetch_url {\"url\":\"https://example.com/fees\"}): 1 page"
+        ));
+        // Only the last answer's unfinished step is run again; the first's was done since.
+        let rerun = note
+            .split("did not finish")
+            .nth(1)
+            .expect("a step to run again");
+        assert!(rerun.contains("\"deposit\""));
+        assert!(!rerun.contains("example.com"));
+        let numbers: Vec<u64> = continued
+            .passages
+            .iter()
+            .filter_map(|p| p["n"].as_u64())
+            .collect();
+        assert_eq!(numbers, [1, 2, 3]);
+    }
+
+    #[test]
+    fn a_continuation_of_an_answer_that_had_done_nothing_says_so() {
+        let stored = json!({ "runId": "run-x", "status": "running", "blocks": [], "steps": {} });
+        let continued = continuation(&[], &stored);
+        assert!(continued.note.contains("No step had finished."));
+        assert!(continued
+            .note
+            .contains("No part of the answer had been written."));
+        assert!(continued.passages.is_empty());
+        assert!(!continued.note.contains("cite them"));
     }
 }

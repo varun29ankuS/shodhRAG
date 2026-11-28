@@ -47,8 +47,10 @@ mod space_manager;
 mod startup;
 mod storage_commands;
 mod store_notices;
+mod system_jobs;
 mod table_commands;
 mod table_model_commands;
+mod task_db;
 mod task_repeat;
 mod ui_state_commands;
 mod updater;
@@ -289,6 +291,14 @@ pub fn run() {
             // Audit log first, so every later event can be recorded.
             let audit_state = audit_commands::AuditState::open(&app_data_dir);
             audit_state.spawn_retention();
+            // Tasks live in shodh.db from here on; the calendar file's are moved there on
+            // their first read. Without the database they stay in the file.
+            if let Some((path, key)) = audit_state.database() {
+                match task_db::TaskDb::open(&path, key.as_ref()) {
+                    Ok(db) => task_db::use_database(&app_data_dir, std::sync::Arc::new(db)),
+                    Err(e) => tracing::warn!(error = %e, "tasks stay in the calendar file"),
+                }
+            }
             app.manage(audit_state);
             // Desktop notifications, before anything that sends one.
             app.manage(notifications::NotificationState::load(&app_data_dir));
@@ -617,7 +627,6 @@ pub fn run() {
                     },
                 ));
             }
-            table_commands::spawn_scheduler(app.handle().clone());
 
             app.manage(RagState {
                 rag: rag_engine,
@@ -653,15 +662,16 @@ pub fn run() {
             search_model_switch::resume_at_start(app.handle());
             // Task reminders: native notifications while the app runs.
             app.manage(reminders::ReminderState::default());
-            reminders::spawn(app.handle().clone());
-            // Repeating tasks, on the scheduler engine (shodh.db): one loop, woken by
-            // every task change.
+            // Scheduled work, on the scheduler engine (shodh.db): one loop for repeating
+            // tasks, automations, reminders, table fills and the nightly code map refresh,
+            // woken by every change.
             app.manage(engine_commands::EngineState::new(
                 &app.state::<audit_commands::AuditState>(),
             ));
             // Automations wait after a rate limit or a used-up quota on their model's limit.
             app.manage(automation_agent::PoolCooldowns::default());
             engine_commands::spawn(app.handle().clone());
+            table_commands::first_check_when_loaded(app.handle().clone());
 
             // Tray icon: the window can hide there and reminders keep ringing.
             app.manage(background::BackgroundState::with_pause(pause));
@@ -1084,6 +1094,11 @@ pub fn run() {
             calendar_commands::create_task,
             calendar_commands::update_task,
             calendar_commands::delete_task,
+            calendar_commands::task_history,
+            calendar_commands::task_issue_key_get,
+            calendar_commands::task_issue_key_set,
+            calendar_commands::task_link,
+            calendar_commands::task_project_delete,
             calendar_commands::add_subtask,
             calendar_commands::toggle_subtask,
             calendar_commands::rename_subtask,

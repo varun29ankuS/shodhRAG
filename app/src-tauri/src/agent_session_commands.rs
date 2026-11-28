@@ -97,8 +97,9 @@ const MAX_SIDE_SESSIONS: usize = 2;
 /// agent idle period is shorter).
 const SIDE_IDLE_CLOSE: Duration = Duration::from_secs(5 * 60);
 
-/// How often idle sessions are looked for.
-const IDLE_SWEEP_INTERVAL: Duration = Duration::from_secs(30);
+/// Longest wait between two looks for idle sessions: a session started meanwhile is seen
+/// within it (its limit is minutes away).
+const MAX_IDLE_SWEEP_WAIT: Duration = Duration::from_secs(30);
 
 /// Tauri event carrying [`SessionCounts`] whenever sessions start or stop.
 pub const AGENT_SESSIONS_EVENT: &str = "agent_sessions_changed";
@@ -366,6 +367,31 @@ fn expired_sessions(
         .filter(|c| !c.busy && idle_expired(c.focus, c.last_used_ms, now_ms, main))
         .map(|c| c.session_id.clone())
         .collect()
+}
+
+/// How long the idle sweep may wait at `now_ms`: until the first session's limit runs
+/// out, at most [`MAX_IDLE_SWEEP_WAIT`]. A session with an answer running is looked at
+/// again after the longest wait (its answer's events keep it in use).
+fn idle_sweep_wait(
+    candidates: &[EvictionCandidate],
+    now_ms: u64,
+    main: Option<Duration>,
+) -> Duration {
+    let longest = u64::try_from(MAX_IDLE_SWEEP_WAIT.as_millis()).unwrap_or(u64::MAX);
+    let wait_ms = candidates
+        .iter()
+        .filter(|c| !c.busy)
+        .filter_map(|c| {
+            let limit = idle_limit(c.focus, main)?;
+            let limit_ms = u64::try_from(limit.as_millis()).unwrap_or(u64::MAX);
+            Some(
+                c.last_used_ms
+                    .saturating_add(limit_ms)
+                    .saturating_sub(now_ms),
+            )
+        })
+        .fold(longest, u64::min);
+    Duration::from_millis(wait_ms)
 }
 
 /// Live sessions by kind, for the activity tray.
@@ -1482,6 +1508,7 @@ pub(crate) async fn send_automation(
         None,
         None,
         Some(turn),
+        None,
         app.state(),
         app.state(),
         app.state(),
@@ -2790,21 +2817,18 @@ fn agent_idle_period(app: &AppHandle) -> Option<Duration> {
 }
 
 /// Stops sessions idle past their limit (five minutes unless the user chose
-/// another; see [`AgentSessions::close_idle_sessions`]), checking every 30
-/// seconds.
+/// another; see [`AgentSessions::close_idle_sessions`]), each when its limit runs out
+/// ([`idle_sweep_wait`]).
 pub fn start_idle_reaper(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
-        let mut tick = tokio::time::interval(IDLE_SWEEP_INTERVAL);
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            tick.tick().await;
             let sessions = app.state::<AgentSessions>();
-            if sessions.is_empty() {
-                continue;
-            }
-            if sessions.close_idle_sessions(agent_idle_period(&app)).await > 0 {
+            let main = agent_idle_period(&app);
+            if !sessions.is_empty() && sessions.close_idle_sessions(main).await > 0 {
                 emit_counts(&app, &sessions);
             }
+            let wait = idle_sweep_wait(&sessions.candidates(), now_ms(), main);
+            tokio::time::sleep(wait).await;
         }
     });
 }
@@ -2833,6 +2857,10 @@ pub fn start_idle_reaper(app: AppHandle) {
 /// this conversation (worked out by the app from the conversation's answers), so the
 /// agent suggests none again ([`RunScope::suggestion_ignored`]).
 ///
+/// `continues` names the answer Shodh closed during that this run goes on from
+/// ([`ContinueFrom`], Continue): it is read from the conversation before anything is
+/// written, and the model is given what that run had ([`continued_answer`]).
+///
 /// `turn` is the question as the window stores it and the answer as it starts
 /// ([`SendTurn`]): with it the conversation is saved by the backend, not the window. The
 /// question and the starting answer are written now, the answer as it is checked and when
@@ -2857,6 +2885,7 @@ pub async fn agent_send(
     review_action: Option<bool>,
     suggestion_ignored: Option<bool>,
     turn: Option<SendTurn>,
+    continues: Option<ContinueFrom>,
     sessions: State<'_, AgentSessions>,
     audit: State<'_, AuditState>,
     memory: State<'_, MemoryState>,
@@ -2865,6 +2894,10 @@ pub async fn agent_send(
     research: State<'_, ResearchState>,
 ) -> CommandResult<String> {
     check_id("request id", &request_id)?;
+    let continued = match &continues {
+        Some(from) => Some(continued_answer(&app, from, &request_id)?),
+        None => None,
+    };
     let recorded = match turn {
         Some(turn) => {
             record_question(&app, &sessions, &session_id, &request_id, turn)?;
@@ -2885,6 +2918,7 @@ pub async fn agent_send(
         prior_run_ids,
         review_action,
         suggestion_ignored,
+        continued,
         &sessions,
         &audit,
         &memory,
@@ -3001,6 +3035,7 @@ async fn send_question(
     prior_run_ids: Option<Vec<String>>,
     review_action: Option<bool>,
     suggestion_ignored: Option<bool>,
+    continued: Option<ContinuedAnswer>,
     sessions: &AgentSessions,
     audit: &AuditState,
     memory: &MemoryState,
@@ -3009,6 +3044,14 @@ async fn send_question(
     research: &ResearchState,
 ) -> CommandResult<String> {
     let search_all = scope.as_ref().is_some_and(|s| s.search_all);
+    // A continued answer's passages keep their numbers in the run that goes on from it.
+    let scope = match &continued {
+        Some(continued) => Some(SendScope {
+            passages: Some(continued.passages.clone()),
+            ..scope.unwrap_or_default()
+        }),
+        None => scope,
+    };
     let scope = scope
         .map(SendScope::validated)
         .transpose()?
@@ -3084,16 +3127,18 @@ async fn send_question(
     };
     // The carried passages' text is read once per agent session: with the replayed
     // conversation that cites them. Later questions of the session have it already (and the
-    // run is seeded with the passages every time).
-    let passages_block = if replay {
+    // run is seeded with the passages every time). A continued answer's passages go with
+    // its continuation, whatever the session has seen.
+    let passages_block = if replay || continued.is_some() {
         carried_passages_block(&scope.carried)
     } else {
         None
     };
     // A fix or a check sent from the code review pane is the app's text, never the
-    // user's own words, and every edit or write of its run asks in every mode.
+    // user's own words, and every edit or write of its run asks in every mode. So is a
+    // continuation: the question was asked (and learned from) before.
     let review_action = review_action == Some(true);
-    let text_origin = if review_action {
+    let text_origin = if review_action || continued.is_some() {
         Some(TextOrigin::Composed)
     } else {
         text_origin
@@ -3136,7 +3181,10 @@ async fn send_question(
         workspace_block.as_deref(),
         search_all && workspace.is_some(),
         passages_block.as_deref(),
-        memory_turn.as_ref().map(|t| t.note.as_str()),
+        memory_turn
+            .as_ref()
+            .map(|t| t.note.as_str())
+            .or(continued.as_ref().map(|c| c.note.as_str())),
     );
     // What the web tools may send away unasked: only the user's own words, and only
     // while the session has seen nothing private (memories, instructions, carried
@@ -3149,7 +3197,8 @@ async fn send_question(
             || passages_block.is_some()
             || entry.parent_conversation_id.is_some()
             || (replay && history.as_ref().is_some_and(|h| !h.is_empty()))
-            || carries_connector_context(attached_context.as_deref()),
+            || carries_connector_context(attached_context.as_deref())
+            || continued.is_some(),
     );
     let scoped = !scope.is_empty();
     // Registered before prompting: the run id is `request_id`, and the first events may
@@ -3168,6 +3217,10 @@ async fn send_question(
     let message = with_attached_context(message, attached_context.as_deref());
     if review_action {
         entry.session.mark_review_run(&request_id);
+    }
+    if continued.is_some() {
+        // What was approved before Shodh closed is not taken for approved now.
+        entry.session.mark_continued_run(&request_id);
     }
     let run_id = match entry
         .session
@@ -3193,6 +3246,120 @@ async fn send_question(
         replay && history.as_ref().is_some_and(|h| !h.is_empty()),
     ));
     Ok(run_id)
+}
+
+/// The answer Shodh closed during that a run continues (Continue): `agent_send`'s
+/// `continues`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContinueFrom {
+    pub conversation_id: String,
+    /// The stopped answer's run id.
+    pub run_id: String,
+}
+
+/// What a continuing run is given: the note in front of its question
+/// ([`crate::agent_transcript::continuation`]) and the stopped run's passages.
+#[derive(Debug, Clone)]
+pub struct ContinuedAnswer {
+    note: String,
+    passages: Vec<CarriedPassage>,
+}
+
+/// Most answers a continuation goes back through (Shodh closed during a continuation).
+const MAX_CONTINUED_LINKS: usize = 8;
+
+/// The stopped answer `from` names, read from its saved conversation, for run `run_id`
+/// that continues it. Refused unless it is the conversation's latest answer (only this
+/// run's own starting answer may follow it) and Shodh closed while it was written.
+fn continued_answer(
+    app: &AppHandle,
+    from: &ContinueFrom,
+    run_id: &str,
+) -> CommandResult<ContinuedAnswer> {
+    check_id("conversation id", &from.conversation_id)?;
+    check_id("run id", &from.run_id)?;
+    refuse_connector_conversation(&from.conversation_id)?;
+    let record = crate::conversation_commands::store(app)
+        .and_then(|store| store.get(&from.conversation_id))
+        .map_err(|e| {
+            AgentCommandError::invalid(format!("The conversation could not be read: {e}"))
+        })?
+        .ok_or_else(|| AgentCommandError::invalid("This conversation is not saved."))?;
+    continued_from(&record.messages, &from.run_id, run_id)
+}
+
+/// [`continued_answer`] over a conversation's `messages`.
+fn continued_from(
+    messages: &[crate::conversation_commands::ConversationMessage],
+    stopped_run: &str,
+    run_id: &str,
+) -> CommandResult<ContinuedAnswer> {
+    let run_of = |m: &crate::conversation_commands::ConversationMessage| {
+        m.transcript
+            .as_ref()
+            .and_then(|t| t.get("runId"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    };
+    let at = messages
+        .iter()
+        .rposition(|m| m.role == "assistant" && run_of(m).as_deref() == Some(stopped_run))
+        .ok_or_else(|| {
+            AgentCommandError::invalid("The answer to continue is not in this conversation.")
+        })?;
+    if messages[at + 1..]
+        .iter()
+        .any(|m| run_of(m).as_deref() != Some(run_id))
+    {
+        return Err(AgentCommandError::invalid(
+            "Only the latest answer can be continued.",
+        ));
+    }
+    let stored = messages[at]
+        .transcript
+        .as_ref()
+        .ok_or_else(|| AgentCommandError::invalid("The answer to continue has no transcript."))?;
+    if !crate::agent_transcript::stopped_by_close(stored) {
+        return Err(AgentCommandError::invalid(
+            "Only an answer Shodh closed during can be continued.",
+        ));
+    }
+    // The answers it went on from, oldest first: Shodh closed during a continuation too.
+    let mut earlier: Vec<&serde_json::Value> = Vec::new();
+    let mut link = at;
+    while earlier.len() < MAX_CONTINUED_LINKS {
+        let Some(previous) = messages[link]
+            .transcript
+            .as_ref()
+            .and_then(|t| t.get("continuesRunId"))
+            .and_then(serde_json::Value::as_str)
+        else {
+            break;
+        };
+        let Some(index) = messages[..link]
+            .iter()
+            .rposition(|m| m.role == "assistant" && run_of(m).as_deref() == Some(previous))
+        else {
+            break;
+        };
+        let Some(transcript) = messages[index].transcript.as_ref() else {
+            break;
+        };
+        earlier.push(transcript);
+        link = index;
+    }
+    earlier.reverse();
+    let continuation = crate::agent_transcript::continuation(&earlier, stored);
+    let passages = continuation
+        .passages
+        .into_iter()
+        .filter_map(|p| serde_json::from_value::<CarriedPassage>(p).ok())
+        .collect();
+    Ok(ContinuedAnswer {
+        note: continuation.note,
+        passages,
+    })
 }
 
 /// Most earlier tries of one question carried with a Retry.
@@ -4233,6 +4400,106 @@ mod tests {
         assert_eq!(run.iter().filter(|e| counts_a_call(e)).count(), 2);
     }
 
+    /// A saved message of the conversation: `role`'s, with `transcript`.
+    fn saved_message(
+        id: &str,
+        role: &str,
+        content: &str,
+        transcript: Option<serde_json::Value>,
+    ) -> ConversationMessage {
+        ConversationMessage {
+            id: id.to_string(),
+            role: role.to_string(),
+            content: content.to_string(),
+            timestamp: "2026-11-28T10:00:00.000Z".to_string(),
+            artifacts: None,
+            search_results: None,
+            metadata: None,
+            run: None,
+            transcript,
+        }
+    }
+
+    /// The answer of transcript fixture 06 as it was saved when Shodh closed.
+    fn closed_mid_answer() -> serde_json::Value {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../tests/fixtures/transcripts/06-closed-mid-answer.json");
+        let fixture: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        fixture["expected"].clone()
+    }
+
+    #[test]
+    fn a_continued_turn_carries_what_the_stopped_run_had() {
+        let question = saved_message("q1", "user", "Notice period and renewal fee?", None);
+        let stopped = saved_message(
+            "a1",
+            "assistant",
+            "The notice period is 60 days [1].",
+            Some(closed_mid_answer()),
+        );
+        // The window saves the continuing answer as it starts, before `agent_send`.
+        let starting = saved_message(
+            "a2",
+            "assistant",
+            "",
+            Some(json!({ "runId": "run-7", "status": "starting", "continuesRunId": "run-6" })),
+        );
+        let messages = vec![question.clone(), stopped.clone(), starting.clone()];
+        let continued = continued_from(&messages, "run-6", "run-7").unwrap();
+        // The finished step, the text so far and the step to run again, in its note.
+        assert!(continued.note.contains("Searching your documents"));
+        assert!(continued.note.contains("2 passages"));
+        assert!(continued
+            .note
+            .contains("Renewal follows the landlord's fee schedule [2], which"));
+        assert!(continued.note.contains("- Reading a web page"));
+        // Its passages, under their numbers, for the run's scope.
+        let numbers: Vec<u32> = continued.passages.iter().map(|p| p.n).collect();
+        assert_eq!(numbers, [1, 2]);
+        assert_eq!(continued.passages[1].page.as_deref(), Some("7"));
+        let scope = SendScope {
+            passages: Some(continued.passages.clone()),
+            ..SendScope::default()
+        }
+        .validated()
+        .unwrap();
+        assert_eq!(
+            scope.carried.len(),
+            2,
+            "the run cites them as the stopped one did"
+        );
+        // Without the window's starting answer saved yet, it is the latest answer too.
+        assert!(continued_from(&messages[..2], "run-6", "run-7").is_ok());
+    }
+
+    #[test]
+    fn only_the_latest_answer_shodh_closed_during_is_continued() {
+        let question = saved_message("q1", "user", "Notice period?", None);
+        let stopped = saved_message("a1", "assistant", "", Some(closed_mid_answer()));
+        let later = saved_message("q2", "user", "And the deposit?", None);
+        assert!(
+            continued_from(
+                &[question.clone(), stopped.clone(), later],
+                "run-6",
+                "run-7"
+            )
+            .is_err(),
+            "a question came after it"
+        );
+        assert!(continued_from(&[question.clone(), stopped.clone()], "run-9", "run-7").is_err());
+        let mut by_user = closed_mid_answer();
+        by_user["status"] = json!("aborted");
+        let stopped_by_user = saved_message("a1", "assistant", "", Some(by_user));
+        assert!(
+            continued_from(&[question.clone(), stopped_by_user], "run-6", "run-7").is_err(),
+            "the user stopped it"
+        );
+        let mut done = closed_mid_answer();
+        done["status"] = json!("completed");
+        let finished = saved_message("a1", "assistant", "Done.", Some(done));
+        assert!(continued_from(&[question, finished], "run-6", "run-7").is_err());
+    }
     /// A store that refuses every write.
     struct FailingSink;
 
@@ -4788,6 +5055,42 @@ mod tests {
                 "s-old",
                 "s-recent"
             ]
+        );
+    }
+
+    #[test]
+    fn the_idle_sweep_wakes_when_the_first_limit_runs_out() {
+        let minute = 60_000;
+        let now = 100 * minute;
+        let five = Some(Duration::from_secs(5 * 60));
+        let live = [
+            // Its five minutes run out in 90 s.
+            candidate("s-main", "c-main", false, false, now - 3 * minute - 30_000),
+            // A side thread's in 4 minutes.
+            candidate("s-side", "c--focus--a", true, false, now - minute),
+            // An answer running for an hour is never what the sweep waits for.
+            candidate("s-busy", "c-busy", false, true, now - 60 * minute),
+        ];
+        assert_eq!(idle_sweep_wait(&live, now, five), MAX_IDLE_SWEEP_WAIT);
+        let soon = [candidate(
+            "s-main",
+            "c-main",
+            false,
+            false,
+            now - 5 * minute + 12_000,
+        )];
+        assert_eq!(
+            idle_sweep_wait(&soon, now, five),
+            Duration::from_secs(12),
+            "the sweep comes when the limit runs out, not at the next half minute"
+        );
+        // "Keep running": conversations have no limit; nothing to wait for but new ones.
+        assert_eq!(idle_sweep_wait(&soon, now, None), MAX_IDLE_SWEEP_WAIT);
+        assert_eq!(idle_sweep_wait(&[], now, five), MAX_IDLE_SWEEP_WAIT);
+        assert_eq!(
+            idle_sweep_wait(&live[2..], now, five),
+            MAX_IDLE_SWEEP_WAIT,
+            "a busy session is looked at again after the longest wait"
         );
     }
 

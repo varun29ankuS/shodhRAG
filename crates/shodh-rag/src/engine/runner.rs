@@ -1,6 +1,11 @@
 //! The engine: plans every job on each tick, runs what is due one at a time through the
 //! job kind's [`JobHandler`], waits on the backoff ladder after a transient failure, and
-//! puts a job on hold after [`FAILED_RUNS_BEFORE_HOLD`] failed runs in a row.
+//! puts a job on hold after [`FAILED_RUNS_BEFORE_HOLD`] failed runs in a row (never a
+//! system job: no one could resume it).
+//!
+//! A job without a schedule runs once at a due time its owner sets
+//! ([`EngineStore::set_due_at_most`]): the app's system work is due when its own state says
+//! (a reminder rings, a table fill's wait ends), to the second.
 //!
 //! The app drives it: a tick at launch, after every wake and at least every minute
 //! ([`plan::sleep_for`]), and [`Engine::event`] when something a job waits on happens.
@@ -202,13 +207,23 @@ impl Engine {
 
     /// One tick for the jobs of `handler`'s kind (see the module documentation).
     pub async fn tick(&self, handler: &Arc<dyn JobHandler>) -> EngineResult<Tick> {
+        self.tick_where(handler, &|_: &Job| true).await
+    }
+
+    /// One tick for the jobs of `handler`'s kind that `wanted` picks: the app ticks each of
+    /// its own pieces of work apart, so a slow one never holds another up.
+    pub async fn tick_where(
+        &self,
+        handler: &Arc<dyn JobHandler>,
+        wanted: &(dyn Fn(&Job) -> bool + Send + Sync),
+    ) -> EngineResult<Tick> {
         let mut tick = Tick::default();
         let now = self.clock.now();
         let kind = handler.kind();
         let jobs = blocking(&self.store, move |s| s.jobs(kind)).await?;
         let mut starts: Vec<(DateTime<Utc>, String, String)> = Vec::new();
         for job in jobs {
-            if !job.enabled || job.hold_reason.is_some() {
+            if !job.enabled || job.hold_reason.is_some() || !wanted(&job) {
                 continue;
             }
             let id = job.id.clone();
@@ -219,20 +234,43 @@ impl Engine {
                     starts.push((at, job.id.clone(), run.id.clone()));
                 }
             }
-            if let Some(schedule) = &job.schedule {
-                let through = self.planned_through(&job)?;
-                let step = plan::plan(
-                    &Local,
-                    schedule,
-                    job.overlap,
-                    job.catch_up,
-                    active.as_ref(),
-                    through,
-                    now,
-                );
-                self.apply_step(handler, &job, step, now, &mut tick, &mut starts)
-                    .await?;
-            }
+            let Some(schedule) = &job.schedule else {
+                // A due time its owner set: taken when it has come, and served by the
+                // active run when there is one (it reads the same state). Most jobs without
+                // a schedule have none, and are not written to.
+                let come = job
+                    .next_due_at
+                    .as_deref()
+                    .and_then(parse_instant)
+                    .is_some_and(|due| due <= now);
+                if !come {
+                    continue;
+                }
+                let id = job.id.clone();
+                let due = blocking(&self.store, move |s| s.take_due(&id, now)).await?;
+                if let (Some(due), None) = (due, &active) {
+                    let step = Step::Start {
+                        trigger: Trigger::Schedule,
+                        scheduled_for: due,
+                        missed: 0,
+                    };
+                    self.apply_step(handler, &job, step, now, &mut tick, &mut starts)
+                        .await?;
+                }
+                continue;
+            };
+            let through = self.planned_through(&job)?;
+            let step = plan::plan(
+                &Local,
+                schedule,
+                job.overlap,
+                job.catch_up,
+                active.as_ref(),
+                through,
+                now,
+            );
+            self.apply_step(handler, &job, step, now, &mut tick, &mut starts)
+                .await?;
             let next = self.next_due(&job)?.map(timestamp);
             if next != job.next_due_at {
                 let id = job.id.clone();
@@ -531,7 +569,9 @@ impl Engine {
         };
         let job_id = job.id.clone();
         let streak = blocking(&self.store, move |s| s.record_failure(&job_id)).await?;
-        if streak >= FAILED_RUNS_BEFORE_HOLD {
+        // A system job is the app's own work, which no one sees and so no one could
+        // resume: it is never put on hold, and its next due time runs it again.
+        if streak >= FAILED_RUNS_BEFORE_HOLD && job.kind != JobKind::System {
             let job_id = job.id.clone();
             let held = blocking(&self.store, move |s| {
                 s.update_job(
@@ -674,16 +714,41 @@ impl Engine {
         self.execute(handler, job_id, run_id, false).await
     }
 
-    /// When the next tick should be: the earliest due time of an enabled, unheld job, or
-    /// of a retry.
+    /// When the next tick of `kind` should be: the earliest due time of an enabled, unheld
+    /// job of that kind, or of a retry of one (a tick of one kind never takes up another's).
     pub fn next_wake(&self, kind: JobKind) -> EngineResult<Option<DateTime<Utc>>> {
-        let mut next = self.store.next_retry_at()?;
+        let mut next = self.store.next_retry_at(kind)?;
         for job in self.store.jobs(kind)? {
             if !job.enabled || job.hold_reason.is_some() {
                 continue;
             }
             if let Some(due) = job.next_due_at.as_deref().and_then(parse_instant) {
                 next = Some(next.map_or(due, |n| n.min(due)));
+            }
+        }
+        Ok(next)
+    }
+
+    /// [`Self::next_wake`] for the jobs of `kind` that `wanted` picks: their due times, and
+    /// the retry times of their waiting runs.
+    pub fn next_wake_where(
+        &self,
+        kind: JobKind,
+        wanted: &(dyn Fn(&Job) -> bool + Send + Sync),
+    ) -> EngineResult<Option<DateTime<Utc>>> {
+        let mut next: Option<DateTime<Utc>> = None;
+        for job in self.store.jobs(kind)? {
+            if !job.enabled || job.hold_reason.is_some() || !wanted(&job) {
+                continue;
+            }
+            let retry = self
+                .store
+                .active_run(&job.id)?
+                .filter(|run| run.state == RunState::Waiting)
+                .and_then(|run| run.next_attempt_at.as_deref().and_then(parse_instant));
+            let due = job.next_due_at.as_deref().and_then(parse_instant);
+            for at in [due, retry].into_iter().flatten() {
+                next = Some(next.map_or(at, |n| n.min(at)));
             }
         }
         Ok(next)
@@ -763,6 +828,128 @@ mod tests {
             code: "calendar_unreadable".into(),
             detail: "locked".into(),
         }
+    }
+
+    /// An engine with one system job (no schedule) and a recording System handler.
+    fn system_env(start: DateTime<Utc>) -> (Env, Arc<Recording>, Arc<dyn JobHandler>) {
+        let e = env(start);
+        e.store
+            .create_job(
+                &NewJob {
+                    id: "table_tick".to_string(),
+                    kind: JobKind::System,
+                    subject: "table_tick".to_string(),
+                    title: "table_tick".to_string(),
+                    schedule: None,
+                    input: json!({ "system": "table_tick" }),
+                    overlap: Overlap::Skip,
+                    catch_up: CatchUp::Once,
+                    max_attempts: 3,
+                    created_by: CreatedBy::System,
+                    provenance: json!({}),
+                },
+                start,
+            )
+            .unwrap();
+        let recording = Arc::new(Recording::new(JobKind::System));
+        let handler: Arc<dyn JobHandler> = recording.clone();
+        (e, recording, handler)
+    }
+
+    #[tokio::test]
+    async fn a_due_time_set_by_its_owner_runs_at_that_time_and_once() {
+        let start = local(2026, 11, 20, 10, 0);
+        let (e, recording, handler) = system_env(start);
+        let due = start + TimeDelta::seconds(42);
+        assert!(e.store.set_due_at_most("table_tick", due).unwrap());
+        assert_eq!(
+            e.engine.next_wake(JobKind::System).unwrap(),
+            Some(due),
+            "the loop wakes at the due time itself, not at the next minute"
+        );
+        e.clock.set(due - TimeDelta::milliseconds(1));
+        e.engine.tick(&handler).await.unwrap();
+        assert!(recording.calls().is_empty(), "not before it");
+        e.clock.set(due);
+        let tick = e.engine.tick(&handler).await.unwrap();
+        assert_eq!(tick.ran.len(), 1);
+        assert_eq!(recording.calls()[0].scheduled_at(), Some(due));
+        e.clock.set(due + TimeDelta::minutes(5));
+        e.engine.tick(&handler).await.unwrap();
+        assert_eq!(recording.calls().len(), 1, "a due time runs once");
+        assert_eq!(e.engine.next_wake(JobKind::System).unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn a_tick_of_some_jobs_leaves_the_others_due() {
+        let start = local(2026, 11, 20, 10, 0);
+        let (e, recording, handler) = system_env(start);
+        e.store
+            .create_job(
+                &NewJob {
+                    id: "reminder_plan".to_string(),
+                    kind: JobKind::System,
+                    subject: "reminder_plan".to_string(),
+                    title: "reminder_plan".to_string(),
+                    schedule: None,
+                    input: json!({ "system": "reminder_plan" }),
+                    overlap: Overlap::Skip,
+                    catch_up: CatchUp::Once,
+                    max_attempts: 1,
+                    created_by: CreatedBy::System,
+                    provenance: json!({}),
+                },
+                start,
+            )
+            .unwrap();
+        let due = start + TimeDelta::seconds(5);
+        e.store.set_due_at_most("table_tick", due).unwrap();
+        e.store.set_due_at_most("reminder_plan", due).unwrap();
+        let reminders = |job: &Job| job.id == "reminder_plan";
+        assert_eq!(
+            e.engine
+                .next_wake_where(JobKind::System, &reminders)
+                .unwrap(),
+            Some(due)
+        );
+        e.clock.set(due);
+        e.engine.tick_where(&handler, &reminders).await.unwrap();
+        let ran: Vec<String> = recording.calls().into_iter().map(|r| r.job_id).collect();
+        assert_eq!(ran, ["reminder_plan"], "only the work asked for");
+        assert_eq!(
+            e.engine
+                .next_wake_where(JobKind::System, &reminders)
+                .unwrap(),
+            None
+        );
+        let tables = |job: &Job| job.id == "table_tick";
+        assert_eq!(
+            e.engine.next_wake_where(JobKind::System, &tables).unwrap(),
+            Some(due),
+            "the other is still due"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failing_system_job_is_never_held() {
+        let start = local(2026, 11, 20, 10, 0);
+        let (e, recording, handler) = system_env(start);
+        let permanent = || Handled::Permanent {
+            code: "broken".into(),
+            detail: "it broke".into(),
+        };
+        recording.script(vec![permanent(), permanent(), permanent(), permanent()]);
+        for minute in 1..=4 {
+            let at = start + TimeDelta::minutes(minute);
+            e.clock.set(at);
+            e.store.set_due_at_most("table_tick", at).unwrap();
+            e.engine.tick(&handler).await.unwrap();
+        }
+        assert_eq!(recording.calls().len(), 4, "it ran every time it was due");
+        assert_eq!(recording.held(), 0);
+        let job = e.store.job("table_tick").unwrap().unwrap();
+        assert_eq!(job.hold_reason, None);
+        assert_eq!(job.failure_streak, 4, "the failures are still counted");
     }
 
     #[tokio::test]

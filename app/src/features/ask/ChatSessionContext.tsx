@@ -10,6 +10,7 @@ import { navigationFromEvent, publishTarget } from '../agent/navigation';
 import { recordAnswerVisuals } from '../visuals/recording';
 import {
   answerText,
+  canContinue,
   initialTranscript,
   isLive,
   reduceAll,
@@ -18,11 +19,11 @@ import type { TranscriptAction, TranscriptState } from '../agent/reducer';
 import { toAgentError } from '../agent/agentApi';
 import { useAgentSession } from '../agent/useAgentSession';
 import { useRuntimeSetup } from '../setup/runtimeSetupHost';
-import type { HistoryTurn } from '../agent/agentApi';
+import type { ContinueFrom, HistoryTurn } from '../agent/agentApi';
 import type { FocusThread } from '../focus/focusTypes';
 import { metadataWithThreads, threadsFromMetadata } from '../focus/threadStore';
 import { summaryPrompt } from '../focus/summary';
-import { replayedContent } from './chatHistory';
+import { replayedContent, withContinuations } from './chatHistory';
 import { isConnectorConversation, readSeed, seedGoesWithNextQuestion } from '../connectors/conversations';
 import type { AttachedContext } from './imageAttachments';
 import {
@@ -265,6 +266,11 @@ export interface ChatSessionValue {
    * `fallback`, that one answer runs with the fallback model.
    */
   retry: (assistantMessageId: string, options: SendOptions, fallback?: FallbackRun | null) => void;
+  /**
+   * Continue the latest answer, which Shodh closed during: a new answer below it goes on
+   * from where it stopped (its finished steps, passages and text are kept).
+   */
+  continueAnswer: (assistantMessageId: string, options: SendOptions) => void;
   /** Redirect the running answer. */
   steer: (text: string) => void;
   /** Interrupt the running answer. */
@@ -321,7 +327,8 @@ function newId(prefix: string): string {
 }
 
 function historyOf(messages: readonly ChatMessage[]): HistoryTurn[] {
-  return messages
+  // An answer Shodh closed during and the answer that continued it are one answer.
+  return withContinuations(messages)
     .filter((m): m is ChatMessage & { role: 'user' | 'assistant' } => m.role === 'user' || m.role === 'assistant')
     // A failed answer's partial text is not an answer the model gave.
     .filter(m => m.content.trim().length > 0 && isPersistable(m) && m.transcript?.status !== 'error')
@@ -752,6 +759,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     priorRunIds: string[] = [],
     question: ChatMessage | null = null,
     replaces: string | null = null,
+    continues: ContinueFrom | null = null,
   ) => {
     const runId = newId('run');
     // Saved from its start (`startedAnswer`) by the agent session when it takes the
@@ -770,6 +778,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
           }
         : null,
       priorRunIds,
+      continues?.runId ?? null,
     );
     const { message } = started;
     const transcript = message.transcript as TranscriptState;
@@ -857,6 +866,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
                 replaces,
               }
             : null,
+          continues,
         });
       } catch (error) {
         live.savedByBackend = backendSavesTurn(sendsTurn, toAgentError(error));
@@ -955,6 +965,35 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       });
     }
   }, [runAgent, send]);
+
+  const continueAnswer = useCallback((assistantMessageId: string, options: SendOptions) => {
+    const { conversationId, messages } = viewRef.current;
+    if (!conversationId || liveRef.current || sideRunRef.current) return;
+    if (isConnectorConversation(activeConversationRef.current?.id === conversationId ? activeConversationRef.current : { id: conversationId })) return;
+    // Only the latest answer, and only one Shodh closed during.
+    const index = messages.length - 1;
+    const stopped = messages[index];
+    if (!stopped || stopped.id !== assistantMessageId || !stopped.transcript || !canContinue(stopped.transcript)) return;
+    const userIndex = questionIndexBefore(messages, index);
+    if (userIndex < 0) return;
+    const asked = messages[userIndex];
+    const prompt = asked.sideSummary ? summaryPrompt(asked.sideSummary, asked.content) : asked.content;
+    // The app's words, never learned from; a question from the code review stays one.
+    const origin = originOf(asked) === 'review' ? 'review' : 'composed';
+    void runAgent(
+      conversationId,
+      prompt,
+      messages.slice(0, userIndex),
+      retryOptions(options, asked),
+      origin,
+      null,
+      asked.attachedContext ?? [],
+      [],
+      null,
+      null,
+      { conversationId, runId: stopped.transcript.runId },
+    );
+  }, [runAgent]);
 
   const steer = useCallback((text: string) => {
     const message = text.trim();
@@ -1133,6 +1172,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     prewarm,
     send,
     retry,
+    continueAnswer,
     steer,
     cancel,
     approve,
@@ -1144,7 +1184,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     releaseSideRun,
     updateThreads,
     updateFocusThreads: conv.updateFocusThreads,
-  }), [conv, view, streamingConversationId, liveRun, navigation, heldNavigation, goToHeldNavigation, dismissHeldNavigation, noteViewOpened, runtimeInstalled, prewarm, send, retry, steer, cancel, approve, appendMessage, appendMessageTo, updateMessage, sideRun, claimSideRun, releaseSideRun, updateThreads]);
+  }), [conv, view, streamingConversationId, liveRun, navigation, heldNavigation, goToHeldNavigation, dismissHeldNavigation, noteViewOpened, runtimeInstalled, prewarm, send, retry, continueAnswer, steer, cancel, approve, appendMessage, appendMessageTo, updateMessage, sideRun, claimSideRun, releaseSideRun, updateThreads]);
 
   return (
     <ChatSessionContext.Provider value={value}>

@@ -31,6 +31,26 @@ export interface TodoItem {
   reminderFiredAt?: string | null;
   /** A snoozed reminder rings again at this local time instead. */
   snoozedUntil?: string | null;
+  /** Its id in its workspace (`THE-12`); absent until the task is stored. */
+  key?: string | null;
+  /** The project it is in (its name is `project`). */
+  projectId?: string | null;
+  /** The task it is a sub-issue of. */
+  parentId?: string | null;
+  /** Who it is for; absent means you. */
+  owner?: { kind: 'me' | 'person' | 'shodh'; ref?: string | null } | null;
+}
+
+/** One recorded change of a task (`task_db.rs::TaskChange`). */
+export interface TaskChange {
+  at: string;
+  /** `user`, `agent`, `phone`, `automation`, `import` or `system`. */
+  actor: string;
+  actorRef?: string | null;
+  field: string;
+  before: unknown;
+  after: unknown;
+  reason?: string | null;
 }
 
 export interface CalendarEvent {
@@ -47,24 +67,36 @@ export interface CalendarEvent {
   createdAt: string;
 }
 
-/** Priorities the backend and agent use (`default_priority` is `medium`). */
-export const PRIORITIES = ['high', 'medium', 'low'] as const;
+/** Priorities, in the order they sort (`calendar_store.rs::PRIORITIES`); a new task has `none`. */
+export const PRIORITIES = ['urgent', 'high', 'medium', 'low', 'none'] as const;
 
-/** Statuses the backend accepts (`calendar_store.rs::STATUSES`); only `completed` is special-cased there. */
-export const STATUSES = ['pending', 'in_progress', 'completed'] as const;
+/**
+ * Statuses the backend accepts (`calendar_store.rs::STATUSES`): Todo is stored as `pending`
+ * and Done as `completed`, the words older clients read.
+ */
+export const STATUSES = ['backlog', 'pending', 'in_progress', 'completed', 'canceled'] as const;
 
 export const STATUS_LABELS: Record<string, string> = {
-  pending: 'To do',
+  backlog: 'Backlog',
+  pending: 'Todo',
   in_progress: 'In progress',
   completed: 'Done',
+  canceled: 'Canceled',
 };
 
 export const PRIORITY_LABELS: Record<string, string> = {
+  urgent: 'Urgent',
   high: 'High',
   medium: 'Medium',
   low: 'Low',
+  none: 'No priority',
 };
 
 export function isDone(task: Pick<TodoItem, 'status'>): boolean {
   return task.status === 'completed';
+}
+
+/** Done or canceled: nothing more to do. */
+export function isClosed(task: Pick<TodoItem, 'status'>): boolean {
+  return task.status === 'completed' || task.status === 'canceled';
 }

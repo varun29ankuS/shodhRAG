@@ -1725,3 +1725,76 @@ async fn a_run_counts_the_papers_it_took_up_and_those_not_indexed() {
     assert_eq!(report.outcome, JobOutcome::Done);
     assert_eq!((report.papers, report.not_indexed), (3, 1));
 }
+
+fn active(id: &str, state: JobState) -> FillJob {
+    FillJob {
+        id: id.to_string(),
+        table_id: format!("table-{id}"),
+        state,
+        planned_calls: 10,
+        done_calls: 0,
+        created_at: timestamp(utc(2026, 11, 1, 9, 0)),
+        next_attempt_at: None,
+        pause_reason: None,
+        last_error: None,
+        cancel_requested: false,
+        heartbeat_at: None,
+        backoff_step: 0,
+        failure_streak: 0,
+        panics: 0,
+    }
+}
+
+#[test]
+fn the_next_check_is_due_when_a_job_can_go_on_to_the_second() {
+    let now = utc(2026, 11, 1, 10, 0);
+    let mine = "this-process";
+    let at = |t: DateTime<Utc>| Some(timestamp(t));
+    let quota = FillJob {
+        next_attempt_at: at(now + TimeDelta::seconds(97)),
+        pause_reason: Some(PauseReason::Quota),
+        ..active("quota", JobState::Paused)
+    };
+    let for_user = FillJob {
+        pause_reason: Some(PauseReason::Auth),
+        ..active("auth", JobState::Paused)
+    };
+    let no_model = FillJob {
+        pause_reason: Some(PauseReason::ModelUnavailable),
+        ..active("model", JobState::Paused)
+    };
+    let elsewhere = FillJob {
+        heartbeat_at: at(now - TimeDelta::minutes(3)),
+        ..active("elsewhere", JobState::Running)
+    };
+    let running_here = active("here", JobState::Running);
+    let none = |_: &str| false;
+    let live = |id: &str| id == "here";
+
+    // A paused job is due at its own time, not at the next minute.
+    let jobs = vec![(quota.clone(), None), (for_user.clone(), None)];
+    assert_eq!(
+        next_check(&jobs, mine, now, none),
+        Some(now + TimeDelta::seconds(97))
+    );
+    // A job that waits for the user needs no check.
+    assert_eq!(next_check(&[(for_user, None)], mine, now, none), None);
+    // A job waiting for a model is looked at again within a minute.
+    assert_eq!(
+        next_check(&[(no_model, None)], mine, now, none),
+        Some(now + TimeDelta::seconds(MODEL_RECHECK_SECS))
+    );
+    // Another process's run: when its lease runs out.
+    assert_eq!(
+        next_check(&[(elsewhere, Some("other".to_string()))], mine, now, none),
+        Some(now + TimeDelta::minutes(LEASE_MINUTES - 3))
+    );
+    // A run live here asks for a check when it ends; one that is not live is due now.
+    let here = vec![(running_here, Some(mine.to_string()))];
+    assert_eq!(next_check(&here, mine, now, live), None);
+    assert_eq!(next_check(&here, mine, now, none), Some(now));
+    // A queued job is due now, whatever else waits.
+    let jobs = vec![(quota, None), (active("queued", JobState::Queued), None)];
+    assert_eq!(next_check(&jobs, mine, now, none), Some(now));
+    assert_eq!(next_check(&[], mine, now, none), None);
+}

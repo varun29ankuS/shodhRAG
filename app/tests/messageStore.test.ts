@@ -80,7 +80,7 @@ test('a new answer is saved from its start and restores as interrupted, with its
   // The app closed before the answer ended: it comes back interrupted, with Retry.
   const restored = fromStored(JSON.parse(JSON.stringify(checkpoint)));
   assert.equal(restored.transcript?.status, 'aborted');
-  assert.equal(restored.transcript?.error, 'The app closed before this answer finished.');
+  assert.equal(restored.transcript?.error, 'Stopped when Shodh closed');
   assert.deepEqual(restored.transcript?.priorRunIds, ['run-0']);
   assert.equal(isPersistable(restored), true);
 });

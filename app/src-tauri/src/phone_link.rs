@@ -1101,6 +1101,8 @@ async fn dispatch(
                     None,
                     a.suggestion_ignored,
                     a.turn,
+                    // A phone continues nothing: Continue is the desktop's.
+                    None,
                     app.state(),
                     app.state(),
                     app.state(),

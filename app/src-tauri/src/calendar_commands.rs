@@ -3,7 +3,7 @@
 //! change is reported through [`HostEffects::calendar_changed`], which
 //! re-indexes the record and emits [`CALENDAR_CHANGED_EVENT`].
 
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::agent_tools::{CalendarChange, HostEffects, TauriEffects};
 use crate::calendar_store::{CalendarStore, EventPatch, TaskPatch};
@@ -44,8 +44,15 @@ async fn check_workspace(workspaces: &WorkspaceState, id: Option<&str>) -> Resul
 /// tasks changed.
 pub fn detach_workspace_tasks(app: &AppHandle, workspace_id: &str) -> Result<usize, String> {
     let detached = store(app)?
-        .update(|d| Ok(d.detach_workspace(workspace_id)))
+        .update_as(
+            &crate::task_db::Actor::system().because("workspace deleted"),
+            |d| Ok(d.detach_workspace(workspace_id)),
+        )
         .map_err(|e| e.to_string())?;
+    // The workspace's projects go with it; the names stay with the tasks.
+    if let Some(db) = store(app)?.task_db() {
+        db.delete_workspace_projects(workspace_id)?;
+    }
     let count = detached.len();
     for task in detached {
         report(app, CalendarChange::TaskSaved(task));
@@ -244,6 +251,9 @@ pub async fn update_task(
         workspace_id: workspace_id.map(Some),
         reminder: reminder.map(Some),
         subtasks: None,
+        // Sub-issues and owners are set from the issue pages (PR 7), not this command.
+        parent_id: None,
+        owner: None,
     }
     .clearing(&clear.unwrap_or_default())
     .map_err(|e| e.to_string())?;
@@ -462,4 +472,87 @@ pub async fn reindex_all_calendar_data(app: &AppHandle) {
             Err(e) => tracing::warn!(error = %e, "Failed to index calendar data into RAG"),
         }
     });
+}
+
+/// What changed on a task, oldest first, and who changed it: the History of its sheet.
+/// Empty while tasks are kept in the calendar file (the app database could not be opened).
+#[tauri::command]
+pub async fn task_history(
+    app: AppHandle,
+    task_id: String,
+) -> Result<Vec<crate::task_db::TaskChange>, String> {
+    let store = store(&app)?;
+    tokio::task::spawn_blocking(move || match store.task_db() {
+        Some(db) => db.history(&task_id),
+        None => Ok(Vec::new()),
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The key a workspace's tasks are numbered under (`THE` of `THE-12`).
+#[tauri::command]
+pub async fn task_issue_key_get(app: AppHandle, workspace_id: String) -> Result<String, String> {
+    let db = task_db_of(&app)?;
+    tokio::task::spawn_blocking(move || db.issue_key(Some(&workspace_id)))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Changes the key a workspace's new tasks are numbered under; tasks numbered already
+/// keep their ids. Returns the key as stored.
+#[tauri::command]
+pub async fn task_issue_key_set(
+    app: AppHandle,
+    workspace_id: String,
+    key: String,
+) -> Result<String, String> {
+    let db = task_db_of(&app)?;
+    tokio::task::spawn_blocking(move || db.set_issue_key(&workspace_id, &key))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Links a task to another (`blocks`, `relates`, `duplicate_of`): a block that would make
+/// a task wait for itself is refused, naming the chain.
+#[tauri::command]
+pub async fn task_link(
+    app: AppHandle,
+    task_id: String,
+    kind: String,
+    target: String,
+) -> Result<(), String> {
+    if !matches!(kind.as_str(), "blocks" | "relates" | "duplicate_of") {
+        return Err(format!(
+            "A task links as blocks, relates or duplicate_of, not {kind:?}."
+        ));
+    }
+    let db = task_db_of(&app)?;
+    tokio::task::spawn_blocking(move || {
+        db.link(&task_id, &kind, &target, &crate::task_db::Actor::user())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Deletes a project. Its tasks stay in their workspace without a project. Returns how
+/// many tasks it had.
+#[tauri::command]
+pub async fn task_project_delete(app: AppHandle, project_id: String) -> Result<usize, String> {
+    let db = task_db_of(&app)?;
+    let removed = tokio::task::spawn_blocking(move || {
+        db.delete_project(&project_id, &crate::task_db::Actor::user())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    if let Err(e) = app.emit(CALENDAR_CHANGED_EVENT, ()) {
+        tracing::warn!(error = %e, "could not emit {}", CALENDAR_CHANGED_EVENT);
+    }
+    Ok(removed)
+}
+
+fn task_db_of(app: &AppHandle) -> Result<std::sync::Arc<crate::task_db::TaskDb>, String> {
+    store(app)?.task_db().cloned().ok_or_else(|| {
+        "Task ids need the app database (shodh.db), which could not be opened.".to_string()
+    })
 }

@@ -185,6 +185,19 @@ export interface SendExtras {
    * saved by the app, not the window, from the moment the question is sent.
    */
   turn?: SendTurn | null;
+  /**
+   * Continue: the answer Shodh closed during that this run goes on from. The backend
+   * reads it from the conversation and gives the model what it had: its finished steps
+   * and their results, its passages and the text written so far.
+   */
+  continues?: ContinueFrom | null;
+}
+
+/** The stopped answer a Continue goes on from (`agent_send`'s `continues`). */
+export interface ContinueFrom {
+  conversationId: string;
+  /** The stopped answer's run id. */
+  runId: string;
 }
 
 /**
@@ -310,6 +323,7 @@ export const agentApi = {
     reviewAction: extras.reviewAction === true ? true : null,
     suggestionIgnored: extras.suggestionIgnored === true ? true : null,
     turn: extras.turn ?? null,
+    continues: extras.continues ?? null,
   }),
   /**
    * Stop a running Code-mode command now (its process and everything it

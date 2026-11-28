@@ -482,7 +482,7 @@ impl HostTool for CreateTaskTool {
             ..NewTask::default()
         };
         let task = store(&self.host)
-            .update(|d| d.insert_task(new))
+            .update_as(&agent_actor(ctx), |d| d.insert_task(new))
             .map_err(|e| tool_error(tool, e))?;
         self.host
             .effects
@@ -889,6 +889,11 @@ fn preview_task_patch(
     Ok((before, changes))
 }
 
+/// The assistant, in the run (the answer) `ctx` is of: a task's history names it.
+fn agent_actor(ctx: &ToolContext) -> crate::task_db::Actor {
+    crate::task_db::Actor::agent(Some(format!("run:{}", ctx.run_id)))
+}
+
 /// Save `patch` to the task and report it.
 fn save_task_patch(
     host: &AgentHost,
@@ -898,7 +903,7 @@ fn save_task_patch(
     patch: &TaskPatch,
 ) -> Result<ToolOutput, ToolError> {
     let (before, after, changes) = store(host)
-        .update(|d| d.patch_task(task_id, patch))
+        .update_as(&agent_actor(ctx), |d| d.patch_task(task_id, patch))
         .map_err(|e| tool_error(tool, e))?;
     reveal_task(ctx, &after);
     if changes.is_empty() {
@@ -1415,7 +1420,7 @@ impl HostTool for DeleteTaskTool {
         let task_id =
             str_arg(&args, "task_id").ok_or_else(|| invalid(tool, "`task_id` is required"))?;
         let removed = store(&self.host)
-            .update(|d| d.delete_task(task_id))
+            .update_as(&agent_actor(ctx), |d| d.delete_task(task_id))
             .map_err(|e| tool_error(tool, e))?;
         self.host
             .effects

@@ -1,5 +1,5 @@
 import React, { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ArrowUpRight, Check, Copy, CornerLeftUp, FileDown, FileText, FolderPlus, Globe, MessagesSquare, RotateCcw } from 'lucide-react';
+import { ArrowUpRight, Check, Copy, CornerLeftUp, FileDown, FileText, FolderPlus, Globe, MessagesSquare, Play, RotateCcw } from 'lucide-react';
 import { useTheme } from '../../contexts/ThemeContext';
 import { invoke } from '@tauri-apps/api/core';
 import { cn } from '../../lib/utils';
@@ -16,7 +16,7 @@ import { ConnectorConversationView, SeedNotice } from '../connectors/ConnectorCo
 import { continueSeed, readSeed, seedGoesWithNextQuestion } from '../connectors/conversations';
 import type { AgentComposerHandle, PastedImage } from '../agent/AgentComposer';
 import { passageHits } from '../agent/citations';
-import { answerText, pendingApproval, isLive } from '../agent/reducer';
+import { answerText, canContinue, pendingApproval, isLive } from '../agent/reducer';
 import type { ClaimCheck } from '../agent/events';
 import type { CorrectionOutcome } from '../agent/grounding';
 import { CORRECTION_BUSY, CORRECTION_NOT_RECORDED, CorrectionGuard, applyAuditedCorrection, citationCorrection, citeSuggested, sameCorrection } from '../agent/grounding';
@@ -386,6 +386,8 @@ interface AssistantMessageProps {
   onOpenSource: (messageId: string, hit: SearchHit, trigger: HTMLElement) => void;
   onOpenArtifact: (artifactId: string) => void;
   onRetry: (message: ChatMessage, fallback?: FallbackRun | null) => void;
+  /** Continue an answer Shodh closed during (the newest only). */
+  onContinue: (message: ChatMessage) => void;
   onDecide: (stepId: string, approved: boolean, forConversation?: boolean, reviewToken?: string) => void;
   onRuntimeInstalled: () => void;
   onOpenSettings: () => void;
@@ -421,6 +423,7 @@ function AssistantMessageView({
   onOpenSource,
   onOpenArtifact,
   onRetry,
+  onContinue,
   onDecide,
   onRuntimeInstalled,
   onOpenSettings,
@@ -559,6 +562,23 @@ function AssistantMessageView({
             <p className="text-body text-shodh-text-muted">{tr('ask.askView.youStoppedThisAnswerBefore')}</p>
           )}
         </>
+      )}
+
+      {latest && canRetry && canContinue(transcript) && (
+        <div>
+          <button
+            type="button"
+            onClick={() => onContinue(message)}
+            title={tr('ask.askView.goOnFromWhereIt')}
+            className={cn(
+              'inline-flex h-8 items-center gap-1.5 rounded-lg border border-shodh-border bg-shodh-raised px-3 text-small font-medium text-shodh-text hover:border-shodh-accent hover:text-shodh-accent-text transition-colors duration-micro',
+              FOCUS_RING,
+            )}
+          >
+            <Play className="w-3.5 h-3.5" aria-hidden="true" />
+            {tr('ask.askView.continue')}
+          </button>
+        </div>
       )}
 
       {!running && <SourceChips groups={groups} activeFile={activeFile} onOpen={handleOpen} />}
@@ -703,7 +723,7 @@ function SystemNotice({ message }: { message: ChatMessage }) {
 export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage, onPasteImage, isDraggingFile = false, dropHandlers, draftRequest = null, onDraftApplied, topBarSlot = null }: AskViewProps) {
   const { theme } = useTheme();
   const session = useChatSession();
-  const { messages, isStreaming, streamingConversationId, sideRun, send, retry, cancel, steer, approve, setRuntimeInstalled, updateMessage } = session;
+  const { messages, isStreaming, streamingConversationId, sideRun, send, retry, continueAnswer, cancel, steer, approve, setRuntimeInstalled, updateMessage } = session;
   const focus = useFocus();
 
   // Kept per conversation outside this view, which unmounts on every view switch.
@@ -1319,6 +1339,10 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
     });
   }, [retry, sendOptions]);
 
+  const handleContinue = useCallback((message: ChatMessage) => {
+    continueAnswer(message.id, sendOptions);
+  }, [continueAnswer, sendOptions]);
+
   const previewSiblings = useMemo(() => {
     if (!preview) return [];
     const message = messages.find(m => m.id === preview.messageId);
@@ -1506,6 +1530,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
         onOpenSource={openSource}
         onOpenArtifact={setOpenArtifactId}
         onRetry={handleRetry}
+        onContinue={handleContinue}
         onDecide={approve}
         onRuntimeInstalled={markRuntimeInstalled}
         onOpenSettings={openSettings}

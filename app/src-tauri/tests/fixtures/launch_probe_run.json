@@ -248,6 +248,11 @@
       "actions": 8
     },
     {
+      "scene": "run-stopped",
+      "actions": 11,
+      "closed": true
+    },
+    {
       "scene": "run-summary",
       "actions": 13,
       "open": true

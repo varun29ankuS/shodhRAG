@@ -21,13 +21,15 @@ export function Failed({ message }: { message: string }) {
       <div className="scroll">
         <div className="pair" style={{ paddingTop: 24 }}>
           <h1 className="title">Shodh could not start</h1>
+          {/* The title says what failed; the line says what to do; the cause is one tap away. */}
           <div className="callout callout-error" role="alert">
             <TriangleAlert aria-hidden="true" className="icon" />
-            <p>{message}</p>
+            <p>Start over, then pair this phone again.</p>
           </div>
-          <p className="panel-text">
-            Data from another phone? Start over and pair again.
-          </p>
+          <details className="panel-text">
+            <summary>Details</summary>
+            {message}
+          </details>
           <button type="button" className="button button-primary" disabled={busy} onClick={startOver}>
             <RotateCcw aria-hidden="true" className="icon-small" />
             Start over

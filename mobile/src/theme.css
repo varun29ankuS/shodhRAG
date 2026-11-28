@@ -2437,3 +2437,12 @@ html.scanning #root {
 .chip + .chip {
   margin-left: 3px;
 }
+
+/* A pushed screen's bar (Back, the title, the status) has the page's own ground, and a
+   hairline under it, so what scrolls under its edge is cut cleanly, in both themes. */
+.navbar {
+  position: relative;
+  z-index: 4;
+  background: var(--background);
+  box-shadow: 0 0.5px 0 var(--separator);
+}

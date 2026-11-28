@@ -46,10 +46,10 @@ test('after the views, a scene: Ask with the sample conversation, the sidebar fo
   assert.deepEqual(list('TOUR_SCENES'), ['conversation', 'run-plan', 'run-progress', 'run-stopped', 'run-summary', 'build-card', 'settings-background', 'code-map']);
   // The sample conversations are written before the first view, as a window saves one.
   const tour = probe.slice(probe.indexOf('async fn views_tour'), probe.indexOf('/// The event main'));
-  assert.match(tour, /let run = sample_run\(\)\?;\s*write_sample_conversations\(app, data_dir, &run\)\?;\s*let mut clipped_total/);
-  // The sample project is written for its scene only, and removed after its picture.
-  assert.match(tour, /if \*view == "code-map" \{\s*write_code_scene\(app, data_dir\)\.await\?;\s*\}/);
-  assert.match(tour, /if \*view == "code-map" \{\s*remove_code_scene\(app, data_dir\)\.await\?;\s*\}/);
+  // The sample project (a workspace with a chat) is there for every view, so each view's
+  // chat check runs with a workspace group in the sidebar, as a user's has.
+  assert.match(tour, /let run = sample_run\(\)\?;\s*write_sample_conversations\(app, data_dir, &run\)\?;[\s\S]*?write_code_scene\(app, data_dir\)\.await\?;\s*let mut clipped_total/);
+  assert.doesNotMatch(probe, /remove_code_scene/);
   assert.match(probe, /\.write_turns\(&sample\.id, writes, &\[\], true\)\?/);
   assert.match(probe, /crate::conversation_commands::emit_changed\(app, &sample\.id\);/);
   assert.match(tour, /"conversation": conversation, "run": run_state/);

@@ -3266,6 +3266,9 @@ pub struct ContinuedAnswer {
     passages: Vec<CarriedPassage>,
 }
 
+/// Most answers a continuation goes back through (Shodh closed during a continuation).
+const MAX_CONTINUED_LINKS: usize = 8;
+
 /// The stopped answer `from` names, read from its saved conversation, for run `run_id`
 /// that continues it. Refused unless it is the conversation's latest answer (only this
 /// run's own starting answer may follow it) and Shodh closed while it was written.
@@ -3322,7 +3325,32 @@ fn continued_from(
             "Only an answer Shodh closed during can be continued.",
         ));
     }
-    let continuation = crate::agent_transcript::continuation(stored);
+    // The answers it went on from, oldest first: Shodh closed during a continuation too.
+    let mut earlier: Vec<&serde_json::Value> = Vec::new();
+    let mut link = at;
+    while earlier.len() < MAX_CONTINUED_LINKS {
+        let Some(previous) = messages[link]
+            .transcript
+            .as_ref()
+            .and_then(|t| t.get("continuesRunId"))
+            .and_then(serde_json::Value::as_str)
+        else {
+            break;
+        };
+        let Some(index) = messages[..link]
+            .iter()
+            .rposition(|m| m.role == "assistant" && run_of(m).as_deref() == Some(previous))
+        else {
+            break;
+        };
+        let Some(transcript) = messages[index].transcript.as_ref() else {
+            break;
+        };
+        earlier.push(transcript);
+        link = index;
+    }
+    earlier.reverse();
+    let continuation = crate::agent_transcript::continuation(&earlier, stored);
     let passages = continuation
         .passages
         .into_iter()

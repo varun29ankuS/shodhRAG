@@ -226,7 +226,16 @@ impl Engine {
             }
             let Some(schedule) = &job.schedule else {
                 // A due time its owner set: taken when it has come, and served by the
-                // active run when there is one (it reads the same state).
+                // active run when there is one (it reads the same state). Most jobs without
+                // a schedule have none, and are not written to.
+                let come = job
+                    .next_due_at
+                    .as_deref()
+                    .and_then(parse_instant)
+                    .is_some_and(|due| due <= now);
+                if !come {
+                    continue;
+                }
                 let id = job.id.clone();
                 let due = blocking(&self.store, move |s| s.take_due(&id, now)).await?;
                 if let (Some(due), None) = (due, &active) {

@@ -69,6 +69,7 @@ export const en = {
   "settings.appearanceSettings.textSize": "Text size",
   "settings.backgroundSettings.backgroundWorkIsPausedFrom": "Background work is paused from the tray: indexing the assistant starts waits until you resume it there.",
   "settings.backgroundSettings.loading": "Loading…",
+  "settings.backgroundSettings.scheduledWorkRunsWhileShodh": "Scheduled work runs while Shodh is open or in the tray.",
   "settings.backgroundSettings.stopTheAssistantSRuntime": "Stop the assistant's runtime when idle for",
   "settings.backgroundSettings.theRuntimeThatAnswersQuestions": "The runtime that answers questions uses several hundred megabytes of memory. It starts when you ask and stops after this long without use; the next question starts it again, with the conversation's recent turns.",
   "settings.codeSkillsSettings.buildingSkills": "Building skills",

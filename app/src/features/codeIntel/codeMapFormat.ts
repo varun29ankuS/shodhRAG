@@ -112,8 +112,26 @@ export function codeMapDetails(view: CodeMapView, now: Date): string[] {
   } else if (run?.stopped) {
     lines.push('The last update was stopped before the end; the rest is read next time.');
   }
+  const nightly = nightlyLine(view, now);
+  if (nightly) lines.push(nightly);
   if (view.state === 'failed' && view.error) lines.push(`Error: ${view.error}`);
   return lines;
+}
+
+/**
+ * The nightly refresh in a line: "Refreshed nightly · last 02:00" (the day too when it
+ * was not in the last day), "Refreshed nightly · not yet". Null for a view that does not
+ * say (sent before the nightly refresh existed).
+ */
+export function nightlyLine(view: CodeMapView, now: Date): string | null {
+  if (view.nightly === undefined) return null;
+  const at = view.nightly ? new Date(view.nightly) : null;
+  if (!at || Number.isNaN(at.getTime())) return 'Refreshed nightly · not yet';
+  const time = formatDate(at, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+  const recent = now.getTime() - at.getTime() < 24 * 60 * 60 * 1000;
+  return recent
+    ? `Refreshed nightly · last ${time}`
+    : `Refreshed nightly · last ${formatDate(at, { day: 'numeric', month: 'short' })}, ${time}`;
 }
 
 /** A symbol jump row: "method Store::open", and where it is. */

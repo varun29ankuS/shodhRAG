@@ -120,6 +120,7 @@ export default function BackgroundSettings() {
           ))}
         </select>
       </div>
+      <p className="m-0 text-small text-shodh-text-muted">{tr('settings.backgroundSettings.scheduledWorkRunsWhileShodh')}</p>
       {status.paused && (
         <p className="m-0 text-small text-shodh-warning" role="status">
           {tr('settings.backgroundSettings.backgroundWorkIsPausedFrom')}

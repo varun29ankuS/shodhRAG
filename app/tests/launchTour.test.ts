@@ -43,7 +43,7 @@ test('the main window opens a toured view as the sidebar does, in the theme aske
 });
 
 test('after the views, a scene: Ask with the sample conversation, the sidebar folded', () => {
-  assert.deepEqual(list('TOUR_SCENES'), ['conversation', 'run-plan', 'run-progress', 'run-summary', 'build-card']);
+  assert.deepEqual(list('TOUR_SCENES'), ['conversation', 'run-plan', 'run-progress', 'run-stopped', 'run-summary', 'build-card']);
   // The sample conversations are written before the first view, as a window saves one.
   const tour = probe.slice(probe.indexOf('async fn views_tour'), probe.indexOf('/// The event main'));
   assert.match(tour, /let run = sample_run\(\)\?;\s*write_sample_conversations\(app, data_dir, &run\)\?;\s*let mut clipped_total/);
@@ -54,6 +54,6 @@ test('after the views, a scene: Ask with the sample conversation, the sidebar fo
   // to the next view.
   assert.match(host, /SCENES\.has\(payload\.view\) && typeof payload\.conversation === 'string'/);
   assert.match(host, /sidebarRef\.current\.setSidebarCollapsed\(true\);\s*const conversationId = payload\.conversation;\s*sessionRef\.current\.switchConversation\(conversationId\);/);
-  assert.match(host, /const SCENES = new Set\(\['conversation', 'run-plan', 'run-progress', 'run-summary', 'build-card']\);/);
+  assert.match(host, /const SCENES = new Set\(\['conversation', 'run-plan', 'run-progress', 'run-stopped', 'run-summary', 'build-card'\]\);/);
   assert.match(host, /sidebarRef\.current\.setSidebarCollapsed\(before\.collapsed\);\s*if \(before\.conversationId\) sessionRef\.current\.switchConversation\(before\.conversationId\);/);
 });

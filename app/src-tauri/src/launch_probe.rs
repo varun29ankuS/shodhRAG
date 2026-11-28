@@ -433,11 +433,14 @@ pub const TOUR_VIEWS: &[&str] = &[
 /// (`features/launch/LaunchProbeHost.tsx`): `conversation` is Ask with the sample
 /// conversation open ([`SAMPLE_CONVERSATION_ID`]), for the column, its wide blocks
 /// and the question rail; each `run-*` is the sample agent run ([`SAMPLE_RUN`]) at
-/// one of its states, for the run view: its plan, its progress, its summary.
+/// one of its states, for the run view: its plan, its progress, the answer Shodh closed
+/// during (stopped, with Continue), its summary. `build-card` is the build offer under an
+/// answer in Ask.
 pub const TOUR_SCENES: &[&str] = &[
     "conversation",
     "run-plan",
     "run-progress",
+    "run-stopped",
     "run-summary",
     "build-card",
 ];
@@ -484,14 +487,18 @@ struct SampleRun {
     stages: Vec<RunStage>,
 }
 
-/// One state of the run: its scene, how many actions lead to it, and whether
-/// the run view is opened there as a click opens it (a finished run's is closed).
+/// One state of the run: its scene, how many actions lead to it, whether the run
+/// view is opened there as a click opens it (a finished run's is closed), and whether
+/// Shodh closed there (the answer is shown as the app restores it: stopped, with
+/// Continue).
 #[derive(Debug, serde::Deserialize)]
 struct RunStage {
     scene: String,
     actions: usize,
     #[serde(default)]
     open: bool,
+    #[serde(default)]
+    closed: bool,
 }
 
 fn sample_run() -> Result<SampleRun, String> {
@@ -513,6 +520,7 @@ fn run_scene(run: &SampleRun, view: &str) -> Result<serde_json::Value, String> {
         "seed": run.seed,
         "actions": actions,
         "open": stage.open,
+        "closed": stage.closed,
     }))
 }
 /// How long a view is given to load its code and its first data and paint,
@@ -1096,7 +1104,7 @@ mod tests {
         files.sort();
         files.dedup();
         assert_eq!(files.len(), count);
-        assert_eq!(count, 28);
+        assert_eq!(count, 30);
         // A scene is not a view of the app.
         assert!(TOUR_SCENES.iter().all(|scene| !TOUR_VIEWS.contains(scene)));
     }

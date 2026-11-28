@@ -9,7 +9,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { currentStep, isLive, reduceAll } from '../src/features/agent/reducer.ts';
+import { STOPPED_WHEN_CLOSED, answerText, canContinue, currentStep, fromPersisted, isLive, reduceAll, toPersisted } from '../src/features/agent/reducer.ts';
 import type { TranscriptAction, TranscriptState } from '../src/features/agent/reducer.ts';
 import { workFold } from '../src/features/agent/workSummary.ts';
 import { runSummary } from '../src/features/agent/runSummary.ts';
@@ -54,6 +54,22 @@ test('progress: a step runs, one is done, the plan is part done', () => {
   assert.equal(currentStep(state)?.label, 'Reading ivf-benchmarks.pdf');
   assert.equal(state.plan?.filter(item => item.status === 'done').length, 1);
   assert.ok(workFold(state)?.live);
+});
+
+test('stopped: Shodh closed mid-answer; the answer shows it, with Continue', () => {
+  const at = fixture.stages.find(s => s.scene === 'run-stopped') as { actions: number; closed?: boolean } | undefined;
+  assert.ok(at?.closed, 'shown as the app restores it');
+  const live = stage('run-stopped');
+  assert.ok(isLive(live), 'closed while it ran');
+  const shown = fromPersisted(JSON.parse(JSON.stringify(toPersisted(live))));
+  assert.ok(shown);
+  assert.equal(shown.error, STOPPED_WHEN_CLOSED);
+  assert.ok(canContinue(shown));
+  assert.ok(answerText(shown).length > 0, 'with the text written so far');
+  // The window shows it so: saved and restored, set on the answer as the session does.
+  const host = withoutComments(source('features/launch/LaunchProbeHost.tsx'));
+  assert.match(host, /return fromPersisted\(JSON\.parse\(JSON\.stringify\(toPersisted\(transcript\)\)\)\) \?\? transcript;/);
+  assert.match(host, /if \(run\.closed\) \{\s*sessionRef\.current\.updateMessage\(run\.answerId, \{ transcript: closedDuring\(transcript\) \}\);/);
 });
 
 test('summary: the run finished, with sources to open, its view opened as a click opens it', () => {

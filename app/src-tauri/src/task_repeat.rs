@@ -25,8 +25,8 @@ use shodh_rag::engine::clock::resolve_local;
 use shodh_rag::engine::runner::{Engine, Handled, JobHandler, Tick};
 use shodh_rag::engine::schedule::{local_key, Schedule};
 use shodh_rag::engine::store::{
-    parse_instant, CatchUp, CreatedBy, EngineResult, EngineStore, HoldReason, Job, JobKind,
-    JobPatch, NewJob, NewRun, Overlap, Run, RunState, Trigger, WaitReason,
+    parse_instant, CatchUp, CreatedBy, EngineResult, EngineStore, Job, JobKind, JobPatch, NewJob,
+    NewRun, Overlap, Run, RunState, Trigger, WaitReason,
 };
 use shodh_rag::inbox::{InboxKind, InboxLink, InboxStatus, NewInboxItem};
 
@@ -1318,6 +1318,7 @@ pub(crate) mod testing {
 mod tests {
     use super::*;
     use shodh_rag::engine::clock::Clock;
+    use shodh_rag::engine::store::HoldReason;
 
     struct TestClock(Mutex<DateTime<Utc>>);
 

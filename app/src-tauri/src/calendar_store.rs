@@ -417,7 +417,9 @@ impl CalendarStore {
         }
     }
 
-    /// The calendar of `data_dir`, its tasks in `tasks`.
+    /// The calendar of `data_dir`, its tasks in `tasks` (the app registers its database
+    /// instead, [`crate::task_db::use_database`]).
+    #[cfg(test)]
     pub fn with_tasks(data_dir: &Path, tasks: Arc<TaskDb>) -> Self {
         Self {
             path: data_dir.join(CALENDAR_FILE),

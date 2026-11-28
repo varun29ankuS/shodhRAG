@@ -1097,6 +1097,8 @@ pub fn run() {
             calendar_commands::task_history,
             calendar_commands::task_issue_key_get,
             calendar_commands::task_issue_key_set,
+            calendar_commands::task_link,
+            calendar_commands::task_project_delete,
             calendar_commands::add_subtask,
             calendar_commands::toggle_subtask,
             calendar_commands::rename_subtask,

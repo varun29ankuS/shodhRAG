@@ -52,6 +52,8 @@
     "dismiss_missed_reminders": { "excluded": "Dismissing the missed-reminders notice is the user acknowledging it; an agent doing it would hide reminders the user never saw." },
     "task_history": { "excluded": "A task's change history is the record of who changed it, read in its sheet; the agent reads tasks with list_tasks and leaves the record to the app." },
     "task_issue_key_get": { "tool": "list_tasks" },
+    "task_link": { "excluded": "Relations are set from the issue page; the agent's link_tasks tool, with its preview, comes with the project tools." },
+    "task_project_delete": { "excluded": "Deleting a project is the user's, from its page; the agent's delete_project tool, with a preview that counts the tasks, comes with the project tools." },
     "task_issue_key_set": { "excluded": "A workspace's issue key is the user's naming of its task ids; the agent reads ids with list_tasks and never renames them." },
     "task_repeat_get": { "tool": "list_tasks" },
     "task_repeat_set": { "tools": ["create_task", "update_task"] },

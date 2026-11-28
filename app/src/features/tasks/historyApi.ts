@@ -16,3 +16,13 @@ export function issueKey(workspaceId: string): Promise<string> {
 export function setIssueKey(workspaceId: string, key: string): Promise<string> {
   return invoke<string>('task_issue_key_set', { workspaceId, key });
 }
+
+/** Links a task to another; a block that would make a task wait for itself is refused. */
+export function linkTasks(taskId: string, kind: 'blocks' | 'relates' | 'duplicate_of', target: string): Promise<void> {
+  return invoke<void>('task_link', { taskId, kind, target });
+}
+
+/** Deletes a project; its tasks stay in their workspace. Returns how many it had. */
+export function deleteProject(projectId: string): Promise<number> {
+  return invoke<number>('task_project_delete', { projectId });
+}

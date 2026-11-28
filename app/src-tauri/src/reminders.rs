@@ -38,7 +38,7 @@ use std::time::Duration;
 use chrono::{DateTime, NaiveDateTime, TimeZone, Timelike, Utc};
 use serde::Serialize;
 pub use shodh_rag::engine::clock::resolve_local;
-pub use shodh_rag::engine::plan::{sleep_for, LATE_AFTER_MINUTES, MAX_SLEEP};
+pub use shodh_rag::engine::plan::{LATE_AFTER_MINUTES, MAX_SLEEP};
 use shodh_rag::engine::runner::Handled;
 use shodh_rag::inbox::{InboxKind, InboxLink, InboxStatus, NewInboxItem};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -597,8 +597,10 @@ pub async fn snooze_reminder(
 mod tests {
     use super::*;
     use crate::calendar_store::{NewTask, TaskPatch};
+    // The reminders sleep as the engine's loop does, which plans them now.
     use chrono::NaiveDate;
     use chrono_tz::{America::New_York, Asia::Kolkata, Europe::London};
+    use shodh_rag::engine::plan::sleep_for;
 
     fn local(y: i32, m: u32, d: u32, h: u32, min: u32) -> NaiveDateTime {
         NaiveDate::from_ymd_opt(y, m, d)

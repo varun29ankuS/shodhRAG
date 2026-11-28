@@ -744,7 +744,7 @@ pub fn spawn(app: AppHandle) {
                 (None, direct_works(&app))
             }
         };
-        run_loop(app, state, dispatcher, direct).await;
+        run_loop(state, dispatcher, direct).await;
     });
 }
 
@@ -807,7 +807,6 @@ fn launch_kinds(
 
 /// The one loop (see the module documentation).
 async fn run_loop(
-    app: AppHandle,
     state: EngineState,
     dispatcher: Option<Arc<Dispatcher>>,
     mut direct: Vec<Direct>,

@@ -53,10 +53,6 @@ impl Actor {
     pub fn agent(reference: Option<String>) -> Self {
         Self::of("agent", reference)
     }
-    /// The user's phone.
-    pub fn phone(device: Option<String>) -> Self {
-        Self::of("phone", device)
-    }
     /// An automation or a repeating task's run.
     pub fn automation(reference: Option<String>) -> Self {
         Self::of("automation", reference)

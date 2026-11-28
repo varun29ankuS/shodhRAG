@@ -38,12 +38,16 @@ import { RUN_PANEL_TOGGLE } from '../agent/RunPanel';
 import { CODE_MAP_CHIP } from '../codeIntel/CodeMapChip';
 import { BACKGROUND_SETTINGS } from '../../components/BackgroundSettings';
 import { requestSettingsSection } from '../memory/navigation';
+import { openInTasks } from '../tasks/openInTasks';
 
 /** Rust → main only (`launch_probe::LAUNCH_PROBE_EVENT`). */
 export const LAUNCH_PROBE_EVENT = 'launch-probe';
 
 /** The tour's scenes (`launch_probe::TOUR_SCENES`): Ask with a sample conversation open. */
 const SCENES = new Set(['conversation', 'run-plan', 'run-progress', 'run-stopped', 'run-summary', 'build-card', 'code-map']);
+
+/** The `task-sheet` scene's task (`launch_probe::SAMPLE_TASK_ID`). */
+const SAMPLE_TASK = 'launch-probe-task';
 
 /** How long the window waits for a scene's conversation to be open before setting its run. */
 const SCENE_OPEN_TRIES = 30;
@@ -188,6 +192,19 @@ export function LaunchProbeHost(): null {
         if (payload.view === 'code-map') {
           void whenShownRef.current(`[data-testid="${CODE_MAP_CHIP}"][aria-expanded="false"]`, chip => chip.click());
         }
+      } else if (payload.kind === 'show' && payload.view === 'task-sheet') {
+        // The sample task's sheet, as a click on its card opens it.
+        reviewRef.current?.close();
+        if ((payload.theme === 'light' || payload.theme === 'dark') && payload.theme !== themeRef.current.theme) {
+          themeRef.current.toggleTheme();
+        }
+        const before = beforeSceneRef.current;
+        if (before) {
+          beforeSceneRef.current = null;
+          sidebarRef.current.setSidebarCollapsed(before.collapsed);
+          if (before.conversationId) sessionRef.current.switchConversation(before.conversationId);
+        }
+        openInTasks({ taskId: SAMPLE_TASK });
       } else if (payload.kind === 'show' && payload.view === 'settings-background') {
         // Settings at its Background part, as the section's menu opens it.
         reviewRef.current?.close();

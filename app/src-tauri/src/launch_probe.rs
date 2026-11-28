@@ -448,16 +448,19 @@ pub const TOUR_SCENES: &[&str] = &[
     "build-card",
     "settings-background",
     "code-map",
+    "task-sheet",
 ];
 /// The `build-card` scene's conversation: a request to build a page, answered in Ask,
 /// under which the app offers to build it in Creator (finding K).
 pub const BUILD_CONVERSATION_ID: &str = "launch-probe-build";
+/// The `task-sheet` scene's task, with its id and History.
+pub const SAMPLE_TASK_ID: &str = "launch-probe-task";
 /// The sample project of the `code-map` scene: a workspace whose one folder is a small
 /// project the tour writes into the profile, and a Code conversation in it.
 pub const CODE_WORKSPACE_ID: &str = "ws-launch-probe-code";
 pub const CODE_CONVERSATION_ID: &str = "launch-probe-code-conversation";
 /// The tour's scenes that show no conversation.
-const SCENES_WITHOUT_CONVERSATION: &[&str] = &["settings-background"];
+const SCENES_WITHOUT_CONVERSATION: &[&str] = &["settings-background", "task-sheet"];
 /// Both themes, each view in each.
 pub const TOUR_THEMES: &[&str] = &["dark", "light"];
 /// The sample conversations the tour writes before its first view, so the
@@ -677,6 +680,50 @@ pub fn recall(found: usize, wanted: usize) -> f64 {
     Ok(())
 }
 
+/// Writes the `task-sheet` scene's task, as the user makes and changes one, so its sheet
+/// shows its id and History. It is there for its scene only ([`remove_sample_task`]).
+fn write_sample_task(data_dir: &Path) -> Result<(), String> {
+    use crate::calendar_store::{CalendarStore, NewTask, TaskPatch};
+    let store = CalendarStore::in_dir(data_dir);
+    let (_, made) = store
+        .update(|d| {
+            d.insert_task_if_absent(
+                SAMPLE_TASK_ID,
+                NewTask {
+                    title: "Compare recall at 1M vectors".to_string(),
+                    description: Some("HNSW against IVF, same hardware.".to_string()),
+                    due_date: Some("2026-12-04".to_string()),
+                    tags: Some(vec!["experiments".to_string()]),
+                    ..NewTask::default()
+                },
+                &["HNSW".to_string(), "IVF".to_string()],
+            )
+        })
+        .map_err(|e| format!("the sample task: {e}"))?;
+    if made {
+        store
+            .update(|d| {
+                d.patch_task(
+                    SAMPLE_TASK_ID,
+                    &TaskPatch {
+                        status: Some("in_progress".to_string()),
+                        priority: Some("high".to_string()),
+                        ..TaskPatch::default()
+                    },
+                )
+            })
+            .map_err(|e| format!("the sample task: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Removes the `task-sheet` scene's task after its picture.
+fn remove_sample_task(data_dir: &Path) -> Result<(), String> {
+    crate::calendar_store::CalendarStore::in_dir(data_dir)
+        .update(|d| d.delete_task(SAMPLE_TASK_ID).map(|_| ()))
+        .map_err(|e| format!("the sample task: {e}"))
+}
+
 /// Writes the sample conversations and the sample run's into the profile, as a
 /// window saves one, and tells the windows, which list them.
 fn write_sample_conversations(
@@ -731,6 +778,9 @@ async fn views_tour(app: &AppHandle, data_dir: &Path) -> Result<(), String> {
     for theme in TOUR_THEMES {
         for view in TOUR_VIEWS.iter().chain(TOUR_SCENES.iter()) {
             let scene = TOUR_SCENES.contains(view);
+            if *view == "task-sheet" {
+                write_sample_task(data_dir)?;
+            }
             let run_state = run_scene(&run, view)?;
             let conversation = if scene {
                 scene_conversation(view, &run, &run_state)
@@ -787,6 +837,9 @@ async fn views_tour(app: &AppHandle, data_dir: &Path) -> Result<(), String> {
                 captured.exists()
             })
             .await?;
+            if *view == "task-sheet" {
+                remove_sample_task(data_dir)?;
+            }
         }
     }
     tracing::info!(
@@ -1242,7 +1295,7 @@ mod tests {
         files.sort();
         files.dedup();
         assert_eq!(files.len(), count);
-        assert_eq!(count, 34, "9 views and 8 scenes, in 2 themes");
+        assert_eq!(count, 36, "9 views and 9 scenes, in 2 themes");
         // A scene is not a view of the app.
         assert!(TOUR_SCENES.iter().all(|scene| !TOUR_VIEWS.contains(scene)));
     }

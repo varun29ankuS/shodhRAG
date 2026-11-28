@@ -43,7 +43,7 @@ test('the main window opens a toured view as the sidebar does, in the theme aske
 });
 
 test('after the views, a scene: Ask with the sample conversation, the sidebar folded', () => {
-  assert.deepEqual(list('TOUR_SCENES'), ['conversation', 'run-plan', 'run-progress', 'run-stopped', 'run-summary', 'build-card', 'settings-background', 'code-map']);
+  assert.deepEqual(list('TOUR_SCENES'), ['conversation', 'run-plan', 'run-progress', 'run-stopped', 'run-summary', 'build-card', 'settings-background', 'code-map', 'task-sheet']);
   // The sample conversations are written before the first view, as a window saves one.
   const tour = probe.slice(probe.indexOf('async fn views_tour'), probe.indexOf('/// The event main'));
   // The sample project (a workspace with a chat) is there for every view, so each view's
@@ -72,4 +72,16 @@ test('the Background part of Settings and the code map details have their scenes
   assert.match(host, /\[data-testid="\$\{CODE_MAP_CHIP\}"\]\[aria-expanded="false"\]`, chip => chip\.click\(\)\)/);
   // Its details say the nightly refresh ran at the last 02:00.
   assert.match(probe, /\.ran_nightly\(night\);/);
+});
+
+test("a task's sheet has its scene, with its id and History", () => {
+  assert.match(probe, /pub const SAMPLE_TASK_ID: &str = "launch-probe-task";/);
+  assert.match(host, /const SAMPLE_TASK = 'launch-probe-task';/);
+  assert.match(host, /payload\.kind === 'show' && payload\.view === 'task-sheet'/);
+  assert.match(host, /openInTasks\(\{ taskId: SAMPLE_TASK \}\);/);
+  // Made and then changed, so its History has rows.
+  assert.match(probe, /status: Some\("in_progress"\.to_string\(\)\),/);
+  // Written for its scene only, and removed after its picture.
+  assert.match(probe, /if \*view == "task-sheet" \{\s*write_sample_task\(data_dir\)\?;\s*\}/);
+  assert.match(probe, /if \*view == "task-sheet" \{\s*remove_sample_task\(data_dir\)\?;\s*\}/);
 });

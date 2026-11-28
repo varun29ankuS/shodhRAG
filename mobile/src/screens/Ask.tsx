@@ -205,6 +205,19 @@ export function Ask({
       .catch(e => show(errorText(e), 'problem'));
   };
 
+  // The follow-up bar's height, measured: it grows with what is typed in it.
+  const askboxRef = useRef<HTMLFormElement>(null);
+  const [askboxHeight, setAskboxHeight] = useState(48);
+  useEffect(() => {
+    const box = askboxRef.current;
+    if (!box || typeof ResizeObserver === 'undefined') return;
+    const measure = () => setAskboxHeight(Math.ceil(box.getBoundingClientRect().height));
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(box);
+    return () => observer.disconnect();
+  }, []);
+
   // This conversation's questions waiting for the computer, until the saved conversation holds them.
   const savedIds = new Set((saved.data?.messages ?? []).map(m => m.id));
   const queuedHere = queue.items.filter(
@@ -222,7 +235,13 @@ export function Ask({
           {words.short}
         </span>
       </BackBar>
-      <div className={kind === 'code' ? 'scroll scroll-with-composer layout-code' : 'scroll scroll-with-composer'} data-layout={kind}>
+      <div
+        className={kind === 'code' ? 'scroll scroll-with-composer layout-code' : 'scroll scroll-with-composer'}
+        data-layout={kind}
+        // The follow-up bar's own height is kept clear under the answer (it grows with its
+        // text), so the answer's last line is never under it.
+        style={{ ['--askbox-h' as string]: `${askboxHeight}px` }}
+      >
         {kind === 'code' && <CodeNote />}
         {kind === 'creator' && <CreatorPreview work={creationWork(turns)} />}
         {saved.data === undefined && !showLive && !connected && queuedHere.length === 0 && <NotConnected what="this conversation" />}
@@ -288,7 +307,7 @@ export function Ask({
         )}
       </div>
 
-      <form className="askbox askbox-floating" onSubmit={submit}>
+      <form ref={askboxRef} className="askbox askbox-floating" onSubmit={submit}>
         <label htmlFor="follow-up" className="visually-hidden">
           Ask a follow-up
         </label>
@@ -297,7 +316,7 @@ export function Ask({
           value={followUp}
           onChange={event => setFollowUp(event.target.value)}
           placeholder={
-            connected ? (kind === 'code' ? 'Ask a question about this code' : 'Ask a follow-up') : queueable ? 'Ask now. It is sent when your computer wakes' : 'Connect to your computer to ask'
+            connected ? (kind === 'code' ? 'Ask about this code' : 'Ask a follow-up') : queueable ? 'Sent when it wakes' : 'Not connected'
           }
           enterKeyHint="send"
           autoComplete="off"

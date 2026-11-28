@@ -21,7 +21,7 @@ import { ago } from '../lib/time';
 function context(approval: PendingApproval, conversations: ConversationSummary[] | undefined, now: Date): string {
   const conversation = conversations?.find(c => c.id === approval.conversationId);
   const when = ago(approval.requestedAt, now);
-  return conversation ? `${conversation.title}, ${when.toLowerCase()}` : when;
+  return conversation ? `${conversation.title} · ${when.toLowerCase()}` : when;
 }
 
 export function Approvals({ now = () => new Date() }: { now?: () => Date }) {
@@ -113,7 +113,7 @@ export function ApprovalSheet({ target }: { target: SheetTarget }) {
       <div className="sheet-card">
         <span className="sheet-card-title">{approval?.title ?? 'Approve a step'}</span>
         <span className="sheet-card-text">
-          Allow it and the assistant goes on with this step on your computer. Decline it and the assistant is told, and asks how to continue.
+          Allow: it goes on. Decline: it asks how to continue.
         </span>
       </div>
       {approval && !approval.phoneMay ? (

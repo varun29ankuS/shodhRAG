@@ -12,6 +12,8 @@
  */
 import type { LinkSource, LinkStatus } from './link';
 import { initialNav, type Nav } from './nav';
+import type { Device } from './device';
+import { IOS } from './platform';
 
 const ROOT = '/Users/sample/Papers';
 const RETRIEVAL = `${ROOT}/Retrieval`;
@@ -261,12 +263,12 @@ function drawPage(path: string, page: number, width: number): { png: string; wid
 const extension = (path: string) => path.split('.').pop()?.toLowerCase() ?? '';
 
 /** The scripted computer, connected. */
-export function demoLink(): LinkSource {
+export function demoLink(start: LinkStatus = { state: 'connected' }): LinkSource {
   const handlers = new Set<(name: string, payload: unknown) => void>();
   const send = (name: string, payload: unknown) => {
     for (const handler of [...handlers]) handler(name, payload);
   };
-  const status: LinkStatus = { state: 'connected' };
+  const status: LinkStatus = start;
 
   const call = async (command: string, args: Record<string, unknown>): Promise<unknown> => {
     switch (command) {
@@ -382,7 +384,66 @@ export function demoNav(screen: string): Nav | null {
       return initialNav('workspaces');
     case 'menu':
       return { ...initialNav('ask'), drawer: true };
+    // The end of the long answer: its last line clear of the follow-up bar.
+    case 'answer-end':
+      return answer;
+    // States drawn over the app: the link failed, the PIN lock, a file shared to Shodh.
+    case 'failed':
+    case 'lock':
+    case 'send':
+      return initialNav('ask');
+    case 'settings-calendar':
+      return initialNav('settings');
     default:
       return null;
   }
+}
+
+/** The link state a demo screen opens in: the link failed for `failed`, else connected. */
+export function demoStatus(screen: string): LinkStatus {
+  return screen === 'failed'
+    ? { state: 'failed', message: 'The link to your computer could not start.' }
+    : { state: 'connected' };
+}
+
+/** Where a demo screen scrolls once shown: the end of the answer, or the Calendar settings. */
+export function demoScroll(screen: string): string | null {
+  if (screen === 'answer-end') return 'end';
+  if (screen === 'settings-calendar') return 'settings-calendar';
+  return null;
+}
+
+/**
+ * The phone a demo screen runs on: for `lock`, one whose lock is on with no PIN yet (the
+ * screen that sets it); for `send`, one that a file was just shared to. Every other
+ * screen, the phone as it is.
+ */
+export function demoDevice(screen: string, base: Device): Device {
+  if (screen === 'lock') {
+    return {
+      ...base,
+      lock: {
+        ...base.lock,
+        status: async () => ({ required: true, hasPin: false, biometric: false, biometry: IOS ? 'face' : 'fingerprint', locked: true }),
+        hidden: async () => undefined,
+        shown: async () => false,
+      },
+    };
+  }
+  if (screen === 'send') {
+    let shared = false;
+    return {
+      ...base,
+      files: {
+        ...base.files,
+        onIncoming: async () => () => undefined,
+        takeIncoming: async () => {
+          if (shared) return { kind: 'none' };
+          shared = true;
+          return { kind: 'files', files: [{ path: '/storage/emulated/0/Download/ivf-benchmarks.pdf', name: 'ivf-benchmarks.pdf' }] };
+        },
+      },
+    };
+  }
+  return base;
 }

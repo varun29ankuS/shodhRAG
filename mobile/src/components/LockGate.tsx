@@ -8,16 +8,28 @@
  * A debug build opened at a screen for CI's screenshots (`skip`) is not locked.
  */
 import { useEffect, useState, type ReactNode } from 'react';
-import { useLinkStatus } from '../lib/context';
+import { useLinkStatus, useThemeChoice } from '../lib/context';
 import type { LockStatus } from '../lib/device';
 import type { LinkSource } from '../lib/link';
 import { useDevice } from '../lib/queue';
 import { LockScreen } from './LockScreen';
 import { IOS } from '../lib/platform';
 
-export function LockGate({ source, skip, children }: { source: LinkSource; skip: boolean; children: ReactNode }) {
+export function LockGate({
+  source,
+  skip,
+  readyAs = null,
+  children,
+}: {
+  source: LinkSource;
+  skip: boolean;
+  /** CI's lock screen: the screen name its ready line gives once the lock is shown. */
+  readyAs?: string | null;
+  children: ReactNode;
+}) {
   const { lock } = useDevice();
   const status = useLinkStatus(source);
+  const { theme } = useThemeChoice();
   const [state, setState] = useState<LockStatus | null>(null);
 
   useEffect(() => {
@@ -57,7 +69,8 @@ export function LockGate({ source, skip, children }: { source: LinkSource; skip:
   const paired = !['unpaired', 'refused', 'starting', 'failed'].includes(status.state);
   const shut = !skip && paired && (state === null || (state.required && (state.locked || !state.hasPin)));
   if (shut && state !== null) {
-    return <LockScreen status={state} onOpen={() => setState({ ...state, hasPin: true, locked: false })} />;
+    return <LockScreen
+      onShown={readyAs ? () => void source.ready(readyAs, theme).catch(() => undefined) : undefined} status={state} onOpen={() => setState({ ...state, hasPin: true, locked: false })} />;
   }
   if (shut) return null;
   return <>{children}</>;

@@ -5,6 +5,7 @@ import { App, type Start } from './App';
 import { tauriLink, type LinkSource } from './lib/link';
 import { startNav } from './lib/start';
 import type { ThemeChoice } from './lib/theme';
+import { tauriDevice, type Device } from './lib/device';
 import './theme.css';
 
 // The desktop's colour tokens (tokens.ts), before anything renders.
@@ -15,6 +16,8 @@ document.head.prepend(tokens);
 interface Opening {
   source: LinkSource;
   start: Start | null;
+  /** The phone a demo screen runs on (CI's screenshots); the real one otherwise. */
+  device?: Device;
 }
 
 /**
@@ -25,9 +28,14 @@ interface Opening {
 async function opening(screen: string | null): Promise<Opening> {
   if (!screen) return { source: tauriLink, start: null };
   if (__SHODH_DEMO__ && screen.startsWith('demo-')) {
-    const { demoLink, demoNav } = await import('./lib/demo');
+    const { demoDevice, demoLink, demoNav, demoScroll, demoStatus } = await import('./lib/demo');
+    const name = screen.slice('demo-'.length);
     // The ready line is still the app's own, so CI waits for it as for any screen.
-    return { source: { ...demoLink(), ready: tauriLink.ready }, start: { screen, nav: demoNav(screen.slice('demo-'.length)) } };
+    return {
+      source: { ...demoLink(demoStatus(name)), ready: tauriLink.ready },
+      start: { screen, nav: demoNav(name), lock: name === 'lock', scrollTo: demoScroll(name) },
+      device: demoDevice(name, tauriDevice),
+    };
   }
   return { source: tauriLink, start: { screen, nav: startNav(screen) } };
 }
@@ -39,11 +47,11 @@ const root = createRoot(element);
 // Each opening is a new App (its key), so a screen the tour asks for starts
 // as fresh as at launch: the splash, the link's state and the ready line.
 let openings = 0;
-function show({ source, start }: Opening, theme?: ThemeChoice) {
+function show({ source, start, device }: Opening, theme?: ThemeChoice) {
   openings += 1;
   root.render(
     <StrictMode>
-      <App key={openings} source={source} start={start} theme={theme} />
+      <App key={openings} source={source} start={start} theme={theme} device={device} />
     </StrictMode>,
   );
 }

@@ -26,8 +26,7 @@ export function Failed({ message }: { message: string }) {
             <p>{message}</p>
           </div>
           <p className="panel-text">
-            If this phone's data came from another phone, start over: this phone gets a new key, and you pair it with your computer
-            again.
+            Data from another phone? Start over and pair again.
           </p>
           <button type="button" className="button button-primary" disabled={busy} onClick={startOver}>
             <RotateCcw aria-hidden="true" className="icon-small" />

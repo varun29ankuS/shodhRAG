@@ -75,9 +75,7 @@ export function NotConnected({ what }: { what: string }) {
           <Smartphone aria-hidden="true" className="icon" />
         </span>
         <p className="panel-title">Pair this phone with your computer</p>
-        <p className="panel-text">
-          {`Your phone shows ${what} from Shodh on your computer. On your computer, open Settings, then Phone, and choose Pair a phone.`}
-        </p>
+        <p className="panel-text">On your computer: Settings › Phone › Pair a phone.</p>
         <button type="button" className="button button-primary" onClick={openPairing}>
           <Smartphone aria-hidden="true" className="icon-small" />
           Pair this phone

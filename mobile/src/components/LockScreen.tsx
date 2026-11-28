@@ -5,15 +5,19 @@
  * PIN. Five wrong PINs and it waits 30 seconds (the app's Rust side counts,
  * and refuses every call to the computer while it is locked).
  */
-import { useState, type FormEvent } from 'react';
+import { useState, type FormEvent, useRef, useEffect } from 'react';
 import { Fingerprint, LockKeyhole, ScanFace } from 'lucide-react';
 import type { LockStatus } from '../lib/device';
 import { errorText } from '../lib/link';
 import { BIOMETRY } from '../lib/platform';
 import { useDevice } from '../lib/queue';
 
-export function LockScreen({ status, onOpen }: { status: LockStatus; onOpen: () => void }) {
+export function LockScreen({ status, onOpen, onShown }: { status: LockStatus; onOpen: () => void; /** Called once the lock is drawn (CI's screenshot of it). */ onShown?: () => void }) {
   const { lock } = useDevice();
+  const shownRef = useRef(onShown);
+  useEffect(() => {
+    shownRef.current?.();
+  }, []);
   const [pin, setPin] = useState('');
   const [again, setAgain] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -54,7 +58,7 @@ export function LockScreen({ status, onOpen }: { status: LockStatus; onOpen: () 
       <h1 className="title">{setting ? 'Keep Shodh private' : 'Shodh is locked'}</h1>
       <p className="panel-text">
         {setting
-          ? 'Set a PIN of 4 to 12 digits. Shodh asks for it when it opens, so nobody else can ask your computer anything from this phone. You can change this in Settings.'
+          ? 'A PIN of 4 to 12 digits, asked when Shodh opens.'
           : 'Enter your PIN to open Shodh.'}
       </p>
       <form className="lock-form" onSubmit={submit}>

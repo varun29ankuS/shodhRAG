@@ -103,8 +103,7 @@ export function Pair({ refusal, onClose }: { refusal: string | null; onClose: ((
         <div className="pair">
           <h1 className="title">Pair with your computer</h1>
           <p className="panel-text">
-            On your computer, open Shodh, go to Settings, then Phone, and choose Pair a phone. Scan the code it shows. Your phone then
-            talks to your computer directly, end to end encrypted.
+            On your computer: Settings › Phone › Pair a phone. End-to-end encrypted.
           </p>
           {refusal && (
             <div className="callout callout-error" role="alert">

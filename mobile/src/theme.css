@@ -195,7 +195,7 @@ h3 {
    tab bar, the field above it and a little more, so the last line and the last
    command's output can be read above them. */
 .scroll-with-composer {
-  padding-bottom: calc(50px + 8px + 48px + 32px + var(--inset-bottom));
+  padding-bottom: calc(50px + 8px + var(--askbox-h, 48px) + 32px + var(--inset-bottom));
 }
 
 .pad {

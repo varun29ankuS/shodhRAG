@@ -83,7 +83,7 @@ export function SendSheet({ files }: { files: Picked[] }) {
           </button>
         ))}
       </div>
-      <p className="panel-text">Shodh on your computer adds it as it adds any file: files that may hold secrets, and files too large to read, are kept back.</p>
+      <p className="panel-text">Files that may hold secrets, or are too large, are kept back.</p>
       <div className="sheet-actions">
         <button type="button" className="button" onClick={cancel} disabled={sending}>
           <X aria-hidden="true" className="icon-small" />

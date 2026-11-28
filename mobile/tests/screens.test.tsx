@@ -289,7 +289,7 @@ describe('Ask', () => {
     expect(screen.queryByRole('button', { name: /^(Allow|Approve|Review)\b/ })).toBeNull();
 
     // A follow-up question is asked, in a session that is not Code (the computer refuses Code from a phone).
-    expect((screen.getByLabelText('Ask a follow-up') as HTMLInputElement).placeholder).toBe('Ask a question about this code');
+    expect((screen.getByLabelText('Ask a follow-up') as HTMLInputElement).placeholder).toBe('Ask about this code');
     fireEvent.change(screen.getByLabelText('Ask a follow-up'), { target: { value: 'Why skip them?' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
     await waitFor(() => expect(link.calls.some(c => c.command === 'agent_start')).toBe(true));
@@ -614,7 +614,7 @@ describe('Settings, Calendar', () => {
     fireEvent.click(await screen.findByRole('checkbox', { name: /Work/ }));
     await waitFor(() => expect(phone.calendar.current.chosen).toEqual([2]));
     expect(phone.calendar.current.shodhCalendar).toBe(9);
-    expect(screen.getByText(/Off: events of the calendars you ticked show here only/)).toBeTruthy();
+    expect(screen.getByText(/Off: shown here only/)).toBeTruthy();
     fireEvent.click(screen.getByRole('switch', { name: 'Let Shodh use my calendar' }));
     await waitFor(() => expect(phone.calendar.current.useWithShodh).toBe(true));
   });

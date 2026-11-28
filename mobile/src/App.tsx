@@ -43,6 +43,10 @@ import { Workspaces } from './screens/Workspaces';
 export interface Start {
   screen: string;
   nav: Nav | null;
+  /** CI's lock screen: the lock is shown, not skipped as for every other screen asked for. */
+  lock?: boolean;
+  /** Where the screen scrolls once shown: `end` (the end of the open screen) or an element's id. */
+  scrollTo?: string | null;
 }
 
 /**
@@ -68,7 +72,7 @@ export function App({
     <MotionConfig reducedMotion="user">
       <ThemeProvider systemBars={device.systemBars} pinned={theme}>
         <DeviceProvider device={device}>
-          <LockGate source={source} skip={start !== null}>
+          <LockGate source={source} skip={start !== null && start.lock !== true} readyAs={start?.lock ? start.screen : null}>
         <LinkProvider source={source} openPairing={openPairing}>
             <QueueProvider>
               <NavProvider initial={start?.nav ?? undefined}>
@@ -113,6 +117,25 @@ function Shell({ start, pairing, closePairing }: { start: Start | null; pairing:
       // The app logged why it is not ready, and the screen says it too.
     });
   }, [screen, theme, source, splashGone, waitsForMenu, menuShown]);
+
+  // CI's screenshots of a screen scrolled somewhere: once shown, and again while its
+  // content arrives, until it has settled.
+  const scrollTo = start?.scrollTo ?? null;
+  useEffect(() => {
+    if (!scrollTo || !splashGone) return;
+    let tries = 0;
+    const timer = window.setInterval(() => {
+      tries += 1;
+      if (scrollTo === 'end') {
+        const scroller = document.querySelector<HTMLElement>('.scroll');
+        if (scroller) scroller.scrollTop = scroller.scrollHeight;
+      } else {
+        document.getElementById(scrollTo)?.scrollIntoView({ block: 'start' });
+      }
+      if (tries >= 12) window.clearInterval(timer);
+    }, 150);
+    return () => window.clearInterval(timer);
+  }, [scrollTo, splashGone]);
 
   return (
     <div className="app">

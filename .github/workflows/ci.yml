@@ -1990,6 +1990,11 @@ jobs:
           "connected-approval-sheet:demo-sheet:demo-sheet"
           "connected-workspaces:demo-workspaces:demo-workspaces"
           "connected-menu:demo-menu:demo-menu"
+          "connected-answer-end:demo-answer-end:demo-answer-end"
+          "connected-failed:demo-failed:failed"
+          "connected-lock:demo-lock:demo-lock"
+          "connected-send:demo-send:demo-send"
+          "connected-settings-calendar:demo-settings-calendar:demo-settings-calendar"
         )
         for theme in light dark; do
           for shot in "${shots[@]}"; do
@@ -2783,12 +2788,13 @@ jobs:
           taken=1
           for theme in light dark; do
             xcrun simctl ui "$udid" appearance "$theme"
-            for shot in pair:pair home:home settings:settings connected-home:demo-home connected-answer:demo-answer connected-library:demo-library connected-approvals:demo-approvals connected-code:demo-code connected-menu:demo-menu; do
-              name=${shot%%:*}
-              screen=${shot#*:}
+            # The same screens as Android's tour (android-tour), as name:request:screen,
+            # the screen being the one the ready line names.
+            for shot in pair:pair:pair home:home:home conversations:conversations:conversations library:library:library approvals:approvals:approvals menu:menu:menu settings:settings:settings tasks:tasks:tasks connected-home:demo-home:demo-home connected-answer:demo-answer:demo-answer connected-conversations:demo-conversations:demo-conversations connected-conversations-research:demo-conversations-research:demo-conversations-research connected-conversations-code:demo-conversations-code:demo-conversations-code connected-conversations-creator:demo-conversations-creator:demo-conversations-creator connected-code:demo-code:demo-code connected-library:demo-library:demo-library connected-reader:demo-reader:demo-reader connected-approvals:demo-approvals:demo-approvals connected-approval-sheet:demo-sheet:demo-sheet connected-workspaces:demo-workspaces:demo-workspaces connected-menu:demo-menu:demo-menu connected-answer-end:demo-answer-end:demo-answer-end connected-failed:demo-failed:failed connected-lock:demo-lock:demo-lock connected-send:demo-send:demo-send connected-settings-calendar:demo-settings-calendar:demo-settings-calendar; do
+              IFS=: read -r name request screen <<< "$shot"
               # The pair screen in light is the first start's, taken above.
               if [ "$name" = pair ] && [ "$theme" = light ]; then continue; fi
-              launch "$screen" 60
+              launch "$request" 60
               if ! grep -q "Shodh ready: the $screen screen is shown" <<< "$ready_line"; then
                 echo "::error::$name ($theme) did not reach its screen: $ready_line"
                 exit 1

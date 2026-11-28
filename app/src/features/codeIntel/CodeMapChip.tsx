@@ -27,6 +27,9 @@ const TONE_DOT: Record<CodeMapTone, string> = {
   bad: 'bg-shodh-error',
 };
 
+/** The chip's button (the launch tour opens its details by it). */
+export const CODE_MAP_CHIP = 'code-map-chip';
+
 interface CodeMapChipProps {
   /** The Code conversation's workspace, whose folder is the project. */
   workspaceId: string;
@@ -132,6 +135,7 @@ export function CodeMapChip({ workspaceId }: CodeMapChipProps) {
       <button
         ref={buttonRef}
         type="button"
+        data-testid={CODE_MAP_CHIP}
         onClick={() => setOpen(o => !o)}
         aria-haspopup="dialog"
         aria-expanded={open}

@@ -274,7 +274,7 @@ impl CodeMapState {
     }
 
     /// The nightly refresh ran at `at`.
-    fn ran_nightly(&self, at: chrono::DateTime<chrono::Utc>) {
+    pub(crate) fn ran_nightly(&self, at: chrono::DateTime<chrono::Utc>) {
         *self.inner.nightly.lock().unwrap_or_else(|e| e.into_inner()) =
             Some(Some(shodh_rag::engine::lease::timestamp(at)));
     }

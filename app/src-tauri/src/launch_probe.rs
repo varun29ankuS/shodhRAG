@@ -435,7 +435,10 @@ pub const TOUR_VIEWS: &[&str] = &[
 /// and the question rail; each `run-*` is the sample agent run ([`SAMPLE_RUN`]) at
 /// one of its states, for the run view: its plan, its progress, the answer Shodh closed
 /// during (stopped, with Continue), its summary. `build-card` is the build offer under an
-/// answer in Ask.
+/// answer in Ask. `settings-background` is Settings at its Background part (when scheduled
+/// work runs); `code-map` is a Code conversation of the sample project
+/// ([`CODE_CONVERSATION_ID`]) with its code map's details open, which say when the nightly
+/// refresh last ran.
 pub const TOUR_SCENES: &[&str] = &[
     "conversation",
     "run-plan",
@@ -443,10 +446,18 @@ pub const TOUR_SCENES: &[&str] = &[
     "run-stopped",
     "run-summary",
     "build-card",
+    "settings-background",
+    "code-map",
 ];
 /// The `build-card` scene's conversation: a request to build a page, answered in Ask,
 /// under which the app offers to build it in Creator (finding K).
 pub const BUILD_CONVERSATION_ID: &str = "launch-probe-build";
+/// The sample project of the `code-map` scene: a workspace whose one folder is a small
+/// project the tour writes into the profile, and a Code conversation in it.
+pub const CODE_WORKSPACE_ID: &str = "ws-launch-probe-code";
+pub const CODE_CONVERSATION_ID: &str = "launch-probe-code-conversation";
+/// The tour's scenes that show no conversation.
+const SCENES_WITHOUT_CONVERSATION: &[&str] = &["settings-background"];
 /// Both themes, each view in each.
 pub const TOUR_THEMES: &[&str] = &["dark", "light"];
 /// The sample conversations the tour writes before its first view, so the
@@ -538,6 +549,134 @@ pub fn view_captured_file(view: &str, theme: &str) -> String {
     format!("launch-probe-captured-view-{view}-{theme}")
 }
 
+/// The conversation a scene opens: the code map's sample project's, the build offer's,
+/// the sample run's, the sample conversation, or none (`settings-background`).
+fn scene_conversation<'a>(
+    view: &str,
+    run: &'a SampleRun,
+    run_state: &serde_json::Value,
+) -> Option<&'a str> {
+    if SCENES_WITHOUT_CONVERSATION.contains(&view) {
+        None
+    } else if view == "code-map" {
+        Some(CODE_CONVERSATION_ID)
+    } else if view == "build-card" {
+        Some(BUILD_CONVERSATION_ID)
+    } else if run_state.is_null() {
+        Some(SAMPLE_CONVERSATION_ID)
+    } else {
+        Some(run.id.as_str())
+    }
+}
+
+/// The last 02:00 (local) at or before `now`: when the sample project's map was last
+/// refreshed at night, as the `code-map` scene shows.
+fn last_night(now: chrono::DateTime<chrono::Local>) -> Option<chrono::DateTime<chrono::Utc>> {
+    let (hour, minute) = crate::system_jobs::NIGHTLY_AT;
+    let at = chrono::NaiveTime::from_hms_opt(hour, minute, 0)?;
+    let today = crate::reminders::resolve_local(&chrono::Local, now.date_naive().and_time(at))?;
+    if today <= now.with_timezone(&chrono::Utc) {
+        return Some(today);
+    }
+    let yesterday = now.date_naive().pred_opt()?;
+    crate::reminders::resolve_local(&chrono::Local, yesterday.and_time(at))
+}
+
+/// Writes the `code-map` scene's sample project: a small project folder in the profile,
+/// a workspace whose one folder it is, and a Code conversation in it; and records the
+/// nightly refresh at the last 02:00, as one that ran at night would.
+async fn write_code_scene(app: &AppHandle, data_dir: &Path) -> Result<(), String> {
+    use crate::workspace_commands::WorkspaceState;
+    use shodh_rag::workspaces::{NewSource, NewWorkspace, SourceKind, WorkspaceAuthor};
+
+    let folder = data_dir.join("launch-probe-project");
+    let src = folder.join("src");
+    std::fs::create_dir_all(&src).map_err(|e| format!("the sample project: {e}"))?;
+    std::fs::write(
+        src.join("lib.rs"),
+        "//! Recall of a vector index.
+
+/// The share of the true neighbours found.
+pub fn recall(found: usize, wanted: usize) -> f64 {
+    found as f64 / wanted.max(1) as f64
+}
+",
+    )
+    .map_err(|e| format!("the sample project: {e}"))?;
+    let path = folder.to_string_lossy().into_owned();
+    let workspaces = app.state::<WorkspaceState>().inner().clone();
+    let made = workspaces
+        .run(move |s| {
+            if s.list(true)?.iter().any(|w| w.id == CODE_WORKSPACE_ID) {
+                return Ok(());
+            }
+            let new = NewWorkspace {
+                name: "Sample project".to_string(),
+                description: String::new(),
+                template: None,
+                icon: None,
+                color: None,
+                instructions: None,
+            };
+            let source = NewSource {
+                kind: SourceKind::Folder,
+                reference: "launch-probe-project".to_string(),
+                label: "launch-probe-project".to_string(),
+                path: Some(path),
+            };
+            s.create_with_sources(CODE_WORKSPACE_ID, &new, &[source], WorkspaceAuthor::User)
+                .map(|_| ())
+        })
+        .await;
+    made.map_err(|e| format!("the sample project's workspace: {}", e.message))?;
+    crate::workspace_commands::broadcast_change(app, Some(CODE_WORKSPACE_ID));
+
+    let store = ConversationStore::in_dir(data_dir);
+    let message = |id: &str, role: &str, content: &str| ConversationMessage {
+        id: id.to_string(),
+        role: role.to_string(),
+        content: content.to_string(),
+        timestamp: "2026-11-27T10:00:00.000Z".to_string(),
+        artifacts: None,
+        search_results: None,
+        metadata: None,
+        run: None,
+        transcript: None,
+    };
+    let writes = vec![
+        TurnWrite::Whole(message(
+            "launch-probe-code-q1",
+            "user",
+            "Where is recall computed?",
+        )),
+        TurnWrite::Whole(message(
+            "launch-probe-code-a1",
+            "assistant",
+            "In `src/lib.rs`: `recall` divides the neighbours found by those wanted.",
+        )),
+    ];
+    store
+        .write_turns(CODE_CONVERSATION_ID, writes, &[], true)?
+        .ok_or_else(|| "the sample project's conversation was not saved".to_string())?;
+    store.update(|conversations| {
+        let record = conversations
+            .iter_mut()
+            .find(|c| c.id == CODE_CONVERSATION_ID)
+            .ok_or_else(|| "the sample project's conversation is gone".to_string())?;
+        record.title = "Where is recall computed?".to_string();
+        record.workspace_id = Some(CODE_WORKSPACE_ID.to_string());
+        record.mode = Some(crate::conversation_commands::ConversationMode::Code);
+        Ok(())
+    })?;
+    crate::conversation_commands::emit_changed(app, CODE_CONVERSATION_ID);
+
+    let night = last_night(chrono::Local::now())
+        .ok_or_else(|| "the last 02:00 could not be told".to_string())?;
+    app.state::<crate::code_map_commands::CodeMapState>()
+        .ran_nightly(night);
+    Ok(())
+}
+
 /// Writes the sample conversations and the sample run's into the profile, as a
 /// window saves one, and tells the windows, which list them.
 fn write_sample_conversations(
@@ -584,20 +723,17 @@ async fn views_tour(app: &AppHandle, data_dir: &Path) -> Result<(), String> {
     };
     let run = sample_run()?;
     write_sample_conversations(app, data_dir, &run)?;
+    write_code_scene(app, data_dir).await?;
     let mut clipped_total: u32 = 0;
     let mut chats_short: u32 = 0;
     for theme in TOUR_THEMES {
         for view in TOUR_VIEWS.iter().chain(TOUR_SCENES.iter()) {
             let scene = TOUR_SCENES.contains(view);
             let run_state = run_scene(&run, view)?;
-            let conversation = if !scene {
-                None
-            } else if *view == "build-card" {
-                Some(BUILD_CONVERSATION_ID)
-            } else if run_state.is_null() {
-                Some(SAMPLE_CONVERSATION_ID)
+            let conversation = if scene {
+                scene_conversation(view, &run, &run_state)
             } else {
-                Some(run.id.as_str())
+                None
             };
             app.emit_to(
                 to_main(),
@@ -1104,7 +1240,7 @@ mod tests {
         files.sort();
         files.dedup();
         assert_eq!(files.len(), count);
-        assert_eq!(count, 30);
+        assert_eq!(count, 34);
         // A scene is not a view of the app.
         assert!(TOUR_SCENES.iter().all(|scene| !TOUR_VIEWS.contains(scene)));
     }

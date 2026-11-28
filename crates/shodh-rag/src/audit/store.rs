@@ -862,6 +862,105 @@ const MIGRATIONS: &[(i64, &str)] = &[
             PRIMARY KEY (job_id, input_key)
         );",
     ),
+    (
+        24,
+        // Tasks and projects (`app/src-tauri/src/task_db.rs`), moved from
+        // `calendar_data.json`: a task keeps its id and is numbered under its workspace's
+        // issue key (`THE-12`). Statuses keep the words the phone reads (`pending` is Todo,
+        // `completed` is Done). Labels are shared and coloured; a task's labels keep their
+        // order. Every change of a task is recorded with who made it (`task_change`).
+        "CREATE TABLE task_issue_key (
+            workspace_id TEXT PRIMARY KEY,
+            issue_key TEXT NOT NULL UNIQUE
+        );
+        CREATE TABLE issue_counter (
+            issue_key TEXT PRIMARY KEY,
+            next INTEGER NOT NULL CHECK (next >= 1)
+        );
+        CREATE TABLE task_project (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'backlog' CHECK (status IN
+                ('backlog', 'planned', 'in_progress', 'paused', 'completed', 'canceled')),
+            lead_kind TEXT NULL CHECK (lead_kind IN ('me', 'person', 'shodh')),
+            lead_ref TEXT NULL,
+            target_date TEXT NULL,
+            position INTEGER NOT NULL DEFAULT 0,
+            archived_at TEXT NULL,
+            provenance_json TEXT NOT NULL DEFAULT '{}',
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE (workspace_id, name)
+        );
+        CREATE TABLE task (
+            id TEXT PRIMARY KEY,
+            issue_key TEXT NOT NULL,
+            number INTEGER NOT NULL CHECK (number >= 1),
+            position INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL CHECK (status IN
+                ('backlog', 'pending', 'in_progress', 'completed', 'canceled')),
+            priority TEXT NOT NULL CHECK (priority IN ('none', 'urgent', 'high', 'medium', 'low')),
+            due TEXT NULL,
+            reminder TEXT NULL,
+            reminder_fired_at TEXT NULL,
+            snoozed_until TEXT NULL,
+            owner_kind TEXT NOT NULL DEFAULT 'me' CHECK (owner_kind IN ('me', 'person', 'shodh')),
+            owner_ref TEXT NULL,
+            workspace_id TEXT NULL,
+            project_id TEXT NULL,
+            project_name TEXT NULL,
+            parent_id TEXT NULL,
+            subtasks_json TEXT NOT NULL DEFAULT '[]',
+            source TEXT NOT NULL,
+            source_ref TEXT NULL,
+            provenance_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            completed_at TEXT NULL,
+            UNIQUE (issue_key, number)
+        );
+        CREATE INDEX task_workspace ON task (workspace_id, project_id);
+        CREATE INDEX task_parent ON task (parent_id);
+        CREATE TABLE task_label_def (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            color TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE task_label (
+            task_id TEXT NOT NULL,
+            label_id TEXT NOT NULL,
+            position INTEGER NOT NULL,
+            PRIMARY KEY (task_id, label_id)
+        );
+        CREATE TABLE task_link (
+            task_id TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('blocks', 'relates', 'duplicate_of', 'person',
+                'document', 'decision', 'workspace', 'conversation')),
+            target TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            PRIMARY KEY (task_id, kind, target)
+        );
+        CREATE TABLE task_change (
+            id INTEGER PRIMARY KEY,
+            task_id TEXT NOT NULL,
+            at TEXT NOT NULL,
+            actor TEXT NOT NULL CHECK (actor IN
+                ('user', 'agent', 'phone', 'automation', 'import', 'system')),
+            actor_ref TEXT NULL,
+            field TEXT NOT NULL,
+            before_json TEXT NULL,
+            after_json TEXT NULL,
+            reason TEXT NULL
+        );
+        CREATE INDEX task_change_task ON task_change (task_id, id);",
+    ),
 ];
 
 fn latest_schema_version() -> i64 {
